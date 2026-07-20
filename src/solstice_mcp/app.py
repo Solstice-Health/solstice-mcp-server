@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 from sqlalchemy.orm import Session
@@ -16,7 +17,20 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from solstice_mcp.auth import JWKSCache, MCPAccessTokenVerifier
+from solstice_mcp.brands import (
+    UserRole,
+    list_brands_for_user,
+    require_brand_role,
+    reset_brand_role,
+)
 from solstice_mcp.gate import SolsticeAccessGate
+from solstice_mcp.operations import (
+    get_operation_info,
+    get_project_info,
+    list_operation_messages,
+    list_operations_for_brand,
+    list_projects_for_brand,
+)
 from solstice_mcp.settings import Settings, settings
 from solstice_mcp.sibling_mcps import SiblingMCPRegistry
 from solstice_mcp.slack_stub import slack_react, slack_read, slack_search, slack_send
@@ -31,6 +45,31 @@ from solstice_mcp.tenants import (
 MCP_REQUIRED_SCOPE = "mcp:connect"
 MCP_SERVER_NAME = "solstice-mcp"
 MCP_SERVER_VERSION = "1.0.0"
+
+MCP_INSTRUCTIONS = (
+    "Solstice is an MLR (Medical / Legal / Regulatory) content-review platform. "
+    "Structure: tenant -> company -> brand -> project -> operation. Each tenant has "
+    "its own database.\n"
+    "Access model: a user is a member of a tenant, and per-brand access is granted "
+    "via the brand_team_members table with roles ADMIN, MEMBER (normal users) and "
+    "SOLSTICE_STAFF (brand-scoped super user). A user may hold different roles on "
+    "different brands within the same tenant. SOLSTICE_STAFF is per-brand, not "
+    "tenant-wide.\n"
+    "Content model: a brand has projects; each project has a dir_map (a folder tree "
+    "whose leaves reference operation_ids). An operation is a content-generation "
+    "workspace with a chat (n_cg_operation_messages). Message type is text/html/pdf/"
+    "blueprint; document rows (html/pdf) carry an intent of draft or final. HTML "
+    "bodies live in tenant S3 under cg_operation_msg_html/ and are returned by their "
+    "key, not inline.\n"
+    "Intent visibility: SOLSTICE_STAFF sees draft and final document messages; "
+    "MEMBER and ADMIN see final only. This filter is enforced server-side from your "
+    "token - you cannot request draft messages by passing an argument.\n"
+    "Authorization is derived server-side from your OAuth token. NEVER pass a role, "
+    "user_id, or assumed privilege as a tool argument - it is ignored. Always call "
+    "solstice_list_tenants, then solstice_list_brands(tenant_slug) to discover what "
+    "you may access; the server returns only the brands the authenticated user can "
+    "see. Slack tools are non-operational stubs."
+)
 
 
 def build_mcp_app(
@@ -65,10 +104,7 @@ def build_mcp_app(
 
     mcp = FastMCP(
         name=MCP_SERVER_NAME,
-        instructions=(
-            "Call solstice_list_tenants after OAuth, then pass tenant_slug to tenant-bound tools. "
-            "Slack tools are non-operational stubs."
-        ),
+        instructions=MCP_INSTRUCTIONS,
         stateless_http=True,
         json_response=True,
         token_verifier=MCPAccessTokenVerifier(audience=resource, issuer=issuer, jwks_cache=jwks_cache),
@@ -98,12 +134,19 @@ def build_mcp_app(
 
     @mcp.tool()
     def solstice_server_info() -> dict[str, Any]:
-        """Return public server and tool metadata."""
+        """Return public server and tool metadata, including the RBAC model."""
         return {
             "name": MCP_SERVER_NAME,
             "version": MCP_SERVER_VERSION,
             "resource_url": resource,
             "required_scope": MCP_REQUIRED_SCOPE,
+            "product": "Solstice — MLR content-review platform (tenant -> company -> brand)",
+            "rbac": {
+                "access_chain": "tenant membership -> brand_team_members row",
+                "roles": ["MEMBER", "ADMIN", "SOLSTICE_STAFF"],
+                "super_user": "SOLSTICE_STAFF (brand-scoped, not tenant-wide)",
+                "rule": "Role is derived server-side from the OAuth subject. Tool arguments never grant authority.",
+            },
             "slack_status": "not_connected",
             "tools": [
                 "solstice_server_info",
@@ -111,6 +154,13 @@ def build_mcp_app(
                 "solstice_whoami",
                 "solstice_check_access",
                 "solstice_list_sibling_mcps",
+                "solstice_list_brands",
+                "solstice_brand_info",
+                "solstice_list_projects",
+                "solstice_project_info",
+                "solstice_list_operations",
+                "solstice_operation_info",
+                "solstice_operation_messages",
                 "solstice_slack_search",
                 "solstice_slack_read",
                 "solstice_slack_send",
@@ -179,6 +229,106 @@ def build_mcp_app(
             "sibling_mcps": sibling_registry.list(),
             "count": len(sibling_registry.list()),
         }
+
+    @mcp.tool()
+    def solstice_list_brands(tenant_slug: str) -> dict[str, Any]:
+        """List brands the authenticated user can access in a tenant, with per-brand role.
+
+        Returns exactly the brands where the subject has a live
+        brand_team_members row in that tenant's database. A user who is MEMBER
+        on one brand and SOLSTICE_STAFF on another (same tenant) gets both,
+        each with its own role. The tenant_slug argument selects the tenant;
+        it never grants access — membership is re-derived from the token.
+        """
+        memberships = list_brands_for_user(
+            require_subject(),
+            tenant_slug,
+            registry=tenant_registry,
+            session_factory=open_session,
+        )
+        return {
+            "tenant_slug": tenant_slug,
+            "brands": [m.as_dict() for m in memberships],
+            "count": len(memberships),
+        }
+
+    @mcp.tool()
+    def solstice_brand_info(tenant_slug: str, brand_id: str) -> dict[str, Any]:
+        """Return details for one brand after revalidating the caller's per-brand membership.
+
+        Gated at UserRole.MEMBER: any brand member may read their brand's info.
+        brand_id selects the resource; it does not grant access — the subject's
+        own brand_team_members row is checked by require_brand_role.
+        """
+        try:
+            identity = require_brand_role(
+                require_subject(),
+                tenant_slug,
+                brand_id,
+                min_role=UserRole.MEMBER,
+                registry=tenant_registry,
+                session_factory=open_session,
+            )
+            return {"status": "ok", **identity.as_dict()}
+        finally:
+            reset_brand_role()
+
+    @mcp.tool()
+    def solstice_list_projects(tenant_slug: str, brand_id: str) -> dict[str, Any]:
+        """List projects for a brand. Read-only; gated at MEMBER."""
+        projects = list_projects_for_brand(
+            require_subject(), tenant_slug, brand_id,
+            registry=tenant_registry, session_factory=open_session,
+        )
+        return {"tenant_slug": tenant_slug, "brand_id": brand_id, "projects": projects, "count": len(projects)}
+
+    @mcp.tool()
+    def solstice_project_info(tenant_slug: str, project_id: str) -> dict[str, Any]:
+        """Return one project's directory map (folders + operation_ids).
+
+        Read-only; gated at MEMBER on the project's brand.
+        """
+        info = get_project_info(
+            require_subject(), tenant_slug, project_id,
+            registry=tenant_registry, session_factory=open_session,
+        )
+        if info is None:
+            raise ToolError("not_found: unknown project")
+        return {"status": "ok", **info}
+
+    @mcp.tool()
+    def solstice_list_operations(tenant_slug: str, brand_id: str) -> dict[str, Any]:
+        """List content-generation operations for a brand. Read-only; gated at MEMBER."""
+        ops = list_operations_for_brand(
+            require_subject(), tenant_slug, brand_id,
+            registry=tenant_registry, session_factory=open_session,
+        )
+        return {"tenant_slug": tenant_slug, "brand_id": brand_id, "operations": ops, "count": len(ops)}
+
+    @mcp.tool()
+    def solstice_operation_info(tenant_slug: str, operation_id: str) -> dict[str, Any]:
+        """Return one operation's metadata (no messages). Read-only; gated at MEMBER on the operation's brand."""
+        info = get_operation_info(
+            require_subject(), tenant_slug, operation_id,
+            registry=tenant_registry, session_factory=open_session,
+        )
+        if info is None:
+            raise ToolError("not_found: unknown operation")
+        return {"status": "ok", **info}
+
+    @mcp.tool()
+    def solstice_operation_messages(tenant_slug: str, operation_id: str) -> dict[str, Any]:
+        """Return an operation's chat + document-version summaries. Read-only; gated at MEMBER.
+
+        Intent visibility is enforced server-side: SOLSTICE_STAFF sees draft and
+        final document messages; MEMBER and ADMIN see final only. There is no
+        intent/role argument — the filter is derived from your token.
+        """
+        messages = list_operation_messages(
+            require_subject(), tenant_slug, operation_id,
+            registry=tenant_registry, session_factory=open_session,
+        )
+        return {"tenant_slug": tenant_slug, "operation_id": operation_id, "messages": messages, "count": len(messages)}
 
     @mcp.tool()
     def solstice_slack_search(query: str, channel: str | None = None, limit: int = 20) -> dict[str, Any]:
