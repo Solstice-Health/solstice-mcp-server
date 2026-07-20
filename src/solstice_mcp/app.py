@@ -16,7 +16,9 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from solstice_mcp.auth import JWKSCache, MCPAccessTokenVerifier
+from solstice_mcp.gate import SolsticeAccessGate
 from solstice_mcp.settings import Settings, settings
+from solstice_mcp.sibling_mcps import SiblingMCPRegistry
 from solstice_mcp.slack_stub import slack_react, slack_read, slack_search, slack_send
 from solstice_mcp.tenants import (
     TenantDatabaseFactory,
@@ -57,6 +59,9 @@ def build_mcp_app(
             raise ValueError("At least one database URL template is required (DATABASE_URL_TEMPLATE_DEV/PROD)")
         open_session = TenantDatabaseFactory(tenant_registry, templates)
     membership_cache = cache or TenantMembershipCache()
+    access_gate = SolsticeAccessGate(allowed_domain=runtime_settings.ALLOWED_EMAIL_DOMAIN)
+    sibling_registry = SiblingMCPRegistry()
+    sibling_registry.load(runtime_settings.SIBLING_MCP_CONFIG_PATH)
 
     mcp = FastMCP(
         name=MCP_SERVER_NAME,
@@ -85,6 +90,12 @@ def build_mcp_app(
             raise RuntimeError("Authenticated MCP subject is missing")
         return token.subject
 
+    def require_access_token() -> Any:
+        token = get_access_token()
+        if token is None or not token.subject:
+            raise RuntimeError("Authenticated MCP subject is missing")
+        return token
+
     @mcp.tool()
     def solstice_server_info() -> dict[str, Any]:
         """Return public server and tool metadata."""
@@ -98,6 +109,8 @@ def build_mcp_app(
                 "solstice_server_info",
                 "solstice_list_tenants",
                 "solstice_whoami",
+                "solstice_check_access",
+                "solstice_list_sibling_mcps",
                 "solstice_slack_search",
                 "solstice_slack_read",
                 "solstice_slack_send",
@@ -132,6 +145,40 @@ def build_mcp_app(
                 "message": "Unknown tenant, environment mismatch, or user is not a member.",
             }
         return {"status": "ok", **identity.as_dict()}
+
+    @mcp.tool()
+    def solstice_check_access() -> dict[str, Any]:
+        """Return whether the caller may see the sibling MCP directory."""
+        token = require_access_token()
+        claims = token.claims or {}
+        email = claims.get("email")
+        if isinstance(email, str):
+            email_value: str | None = email
+        else:
+            email_value = None
+        decision = access_gate.evaluate(token.subject, email_value)
+        return {
+            "allowed": decision.allowed,
+            "email": decision.email,
+            "reason": decision.reason,
+            "allowed_domain": access_gate.allowed_domain,
+        }
+
+    @mcp.tool()
+    def solstice_list_sibling_mcps() -> dict[str, Any]:
+        """List sibling MCPs the caller is authorized to use, if allowed."""
+        token = require_access_token()
+        claims = token.claims or {}
+        email = claims.get("email")
+        email_value = email if isinstance(email, str) else None
+        decision = access_gate.evaluate(token.subject, email_value)
+        if not decision.allowed:
+            return {"allowed": False, "reason": decision.reason, "sibling_mcps": []}
+        return {
+            "allowed": True,
+            "sibling_mcps": sibling_registry.list(),
+            "count": len(sibling_registry.list()),
+        }
 
     @mcp.tool()
     def solstice_slack_search(query: str, channel: str | None = None, limit: int = 20) -> dict[str, Any]:

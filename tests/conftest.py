@@ -71,18 +71,22 @@ def mint_token(signing_material: tuple[bytes, dict[str, Any]]) -> Callable[..., 
         aud: str = TEST_RESOURCE,
         scope: str = "mcp:connect",
         exp_delta: int = 300,
+        email: str | None = None,
     ) -> str:
         now = int(time.time())
+        payload: dict[str, Any] = {
+            "iss": TEST_ISSUER,
+            "aud": aud,
+            "sub": sub,
+            "scope": scope,
+            "azp": "cursor-test-client",
+            "iat": now,
+            "exp": now + exp_delta,
+        }
+        if email is not None:
+            payload["email"] = email
         return jwt.encode(
-            {
-                "iss": TEST_ISSUER,
-                "aud": aud,
-                "sub": sub,
-                "scope": scope,
-                "azp": "cursor-test-client",
-                "iat": now,
-                "exp": now + exp_delta,
-            },
+            payload,
             private_pem,
             algorithm="RS256",
             headers={"kid": TEST_KID},
@@ -108,6 +112,30 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
                 "tenant_a": {"db_name": "tenant_a", "env": "development"},
                 "tenant_b": {"db_name": "tenant_b", "env": "development"},
                 "tenant_prod": {"db_name": "tenant_prod", "env": "production"},
+            }
+        )
+    )
+
+    sibling_file = tmp_path / "sibling_mcps.json"
+    sibling_file.write_text(
+        json.dumps(
+            {
+                "_comment": "Test sibling MCP directory.",
+                "linear": {
+                    "url": "https://mcp.linear.app/mcp",
+                    "auth_type": "oauth",
+                    "scopes": ["mcp:linear"],
+                    "setup_instructions": "OAuth via Linear in Cursor MCP settings.",
+                },
+                "slack": {
+                    "url": "",
+                    "auth_type": "bot_token",
+                    "scopes": [],
+                    "setup_instructions": (
+                        "Requires a Slack bot token configured in Cursor MCP settings; "
+                        "no public MCP endpoint."
+                    ),
+                },
             }
         )
     )
@@ -180,6 +208,7 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
         AUTH0_DOMAIN="test.auth0.local",
         MCP_RESOURCE_URL=TEST_RESOURCE,
         TENANT_CONFIG_PATH=str(tenant_file),
+        SIBLING_MCP_CONFIG_PATH=str(sibling_file),
     )
     registry = TenantRegistry()
     _private, jwks = signing_material

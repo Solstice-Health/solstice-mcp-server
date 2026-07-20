@@ -12,6 +12,8 @@ class Settings:
     AUTH0_DOMAIN: str = ""
     MCP_RESOURCE_URL: str = ""
     TENANT_CONFIG_PATH: str = "config/tenants.json"
+    ALLOWED_EMAIL_DOMAIN: str = "@solsticehealth.co"
+    SIBLING_MCP_CONFIG_PATH: str = "config/sibling_mcps.json"
     DATABASE_URL_TEMPLATE: str = ""
     DATABASE_URL_TEMPLATE_DEV: str = ""
     DATABASE_URL_TEMPLATE_PROD: str = ""

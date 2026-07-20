@@ -1,0 +1,21 @@
+{
+  "_comment": "Sibling MCP directory advertised by the Solstice discovery hub. The hub holds no sibling credentials and relays no calls; the IDE connects to each sibling MCP directly using the auth_type and setup_instructions shown here.",
+  "linear": {
+    "url": "https://mcp.linear.app/mcp",
+    "auth_type": "oauth",
+    "scopes": ["mcp:linear"],
+    "setup_instructions": "OAuth via Linear in Cursor MCP settings."
+  },
+  "jam": {
+    "url": "https://mcp.jam.dev/mcp",
+    "auth_type": "oauth",
+    "scopes": ["mcp:jam"],
+    "setup_instructions": "OAuth via Jam in Cursor MCP settings."
+  },
+  "slack": {
+    "url": "",
+    "auth_type": "bot_token",
+    "scopes": [],
+    "setup_instructions": "Requires a Slack bot token configured in Cursor MCP settings; no public MCP endpoint."
+  }
+}

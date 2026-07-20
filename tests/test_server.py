@@ -8,6 +8,7 @@ import pytest
 from conftest import DELETED_SUB, OTHER_SUB, SHARED_SUB, TEST_ISSUER, TEST_RESOURCE, AppHarness
 
 from solstice_mcp.auth import fetch_jwks
+from solstice_mcp.gate import SolsticeAccessGate
 from solstice_mcp.tenants import (
     TenantDatabaseFactory,
     TenantMembershipCache,
@@ -109,6 +110,8 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
         "solstice_server_info",
         "solstice_list_tenants",
         "solstice_whoami",
+        "solstice_check_access",
+        "solstice_list_sibling_mcps",
         "solstice_slack_search",
         "solstice_slack_read",
         "solstice_slack_send",
@@ -300,3 +303,122 @@ def test_tenant_database_factory_rejects_empty_templates(tmp_path):
     registry = TenantRegistry()
     with pytest.raises(ValueError, match="At least one database URL template is required"):
         TenantDatabaseFactory(registry, {})
+
+
+def test_solstice_access_gate_allows_solstice_domain():
+    gate = SolsticeAccessGate(allowed_domain="@solsticehealth.co")
+    decision = gate.evaluate("auth0|alice", "alice@solsticehealth.co")
+    assert decision.allowed is True
+    assert decision.email == "alice@solsticehealth.co"
+    assert decision.reason == "email domain allowed"
+
+
+def test_solstice_access_gate_denies_other_domain():
+    gate = SolsticeAccessGate(allowed_domain="@solsticehealth.co")
+    decision = gate.evaluate("auth0|eve", "eve@example.com")
+    assert decision.allowed is False
+    assert decision.email == "eve@example.com"
+    assert decision.reason == "email domain not allowed"
+
+
+def test_solstice_access_gate_denies_missing_email():
+    gate = SolsticeAccessGate(allowed_domain="@solsticehealth.co")
+    decision = gate.evaluate("auth0|anon", None)
+    assert decision.allowed is False
+    assert decision.email is None
+    assert decision.reason == "missing email claim"
+
+
+def test_solstice_access_gate_is_case_insensitive():
+    gate = SolsticeAccessGate(allowed_domain="@solsticehealth.co")
+    decision = gate.evaluate("auth0|bob", "Bob@SolsticeHealth.co")
+    assert decision.allowed is True
+    assert decision.email == "Bob@SolsticeHealth.co"
+
+
+def test_solstice_access_gate_cache_hit_returns_same_decision():
+    gate = SolsticeAccessGate(allowed_domain="@solsticehealth.co", ttl_seconds=60, max_entries=8)
+    first = gate.evaluate("auth0|alice", "alice@solsticehealth.co")
+    second = gate.evaluate("auth0|alice", "alice@solsticehealth.co")
+    assert first is second
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"allowed_domain": "", "ttl_seconds": 60, "max_entries": 8}, "allowed_domain is required"),
+        ({"allowed_domain": "@x.co", "ttl_seconds": 0, "max_entries": 8}, "Cache TTL and size must be positive"),
+        ({"allowed_domain": "@x.co", "ttl_seconds": 60, "max_entries": 0}, "Cache TTL and size must be positive"),
+    ],
+)
+def test_solstice_access_gate_rejects_invalid_config(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        SolsticeAccessGate(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("email", "allowed"),
+    [
+        ("alice@solsticehealth.co", True),
+        ("Alice@SolsticeHealth.co", True),
+        ("eve@example.com", False),
+        (None, False),
+    ],
+)
+def test_solstice_check_access_integration(app_harness: AppHarness, mint_token, email, allowed):
+    response = rpc(
+        app_harness,
+        "tools/call",
+        token=mint_token(email=email),
+        params={"name": "solstice_check_access", "arguments": {}},
+    )
+    payload = tool_payload(response)
+    assert payload["allowed"] is allowed
+    assert payload["allowed_domain"] == "@solsticehealth.co"
+    if allowed:
+        assert payload["email"] == email
+        assert payload["reason"] == "email domain allowed"
+    elif email is None:
+        assert payload["email"] is None
+        assert payload["reason"] == "missing email claim"
+    else:
+        assert payload["email"] == email
+        assert payload["reason"] == "email domain not allowed"
+
+
+def test_solstice_list_sibling_mcps_allowed_user_sees_directory(app_harness: AppHarness, mint_token):
+    response = rpc(
+        app_harness,
+        "tools/call",
+        token=mint_token(email="alice@solsticehealth.co"),
+        params={"name": "solstice_list_sibling_mcps", "arguments": {}},
+    )
+    payload = tool_payload(response)
+    assert payload["allowed"] is True
+    names = {entry["name"] for entry in payload["sibling_mcps"]}
+    assert names == {"linear", "slack"}
+    assert payload["count"] == 2
+
+
+def test_solstice_list_sibling_mcps_denied_user_sees_empty_list(app_harness: AppHarness, mint_token):
+    response = rpc(
+        app_harness,
+        "tools/call",
+        token=mint_token(email="eve@example.com"),
+        params={"name": "solstice_list_sibling_mcps", "arguments": {}},
+    )
+    payload = tool_payload(response)
+    assert payload["allowed"] is False
+    assert payload["sibling_mcps"] == []
+
+
+def test_solstice_list_sibling_mcps_missing_email_sees_empty_list(app_harness: AppHarness, mint_token):
+    response = rpc(
+        app_harness,
+        "tools/call",
+        token=mint_token(),
+        params={"name": "solstice_list_sibling_mcps", "arguments": {}},
+    )
+    payload = tool_payload(response)
+    assert payload["allowed"] is False
+    assert payload["sibling_mcps"] == []

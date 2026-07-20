@@ -4,7 +4,7 @@
       "url": "https://api.solsticehealth.co/mcp",
       "auth": {
         "CLIENT_ID": "uoOiEXHZxyDBkkBEfnOQEp6IhqcnAgTP",
-        "scopes": ["mcp:connect"]
+        "scopes": ["mcp:connect", "openid", "email"]
       }
     }
   }
