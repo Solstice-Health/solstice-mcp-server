@@ -1,0 +1,15 @@
+{
+  "name": "solstice-platform",
+  "displayName": "Solstice Platform",
+  "description": "Remote Solstice MCP tools for tenant discovery and identity, plus non-operational Slack stubs.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Solstice Health",
+    "email": "engineering@solsticehealth.co"
+  },
+  "publisher": "Solstice Health",
+  "homepage": "https://github.com/solsticehealth/solstice-mcp-server",
+  "repository": "https://github.com/solsticehealth/solstice-mcp-server",
+  "license": "UNLICENSED",
+  "keywords": ["mcp", "solstice", "life-sciences", "auth0", "remote-mcp"]
+}

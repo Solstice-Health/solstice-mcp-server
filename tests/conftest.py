@@ -1,0 +1,194 @@
+from __future__ import annotations
+
+import base64
+import json
+import time
+from collections import Counter
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import jwt
+import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+from starlette.testclient import TestClient
+
+from solstice_mcp.app import build_mcp_app
+from solstice_mcp.auth import JWKSCache
+from solstice_mcp.settings import Settings
+from solstice_mcp.tenants import Base, TenantMembershipCache, TenantRegistry, User
+
+TEST_ISSUER = "https://test.auth0.local/"
+TEST_RESOURCE = "https://mcp.test.local/mcp"
+TEST_KID = "test-key"
+SHARED_SUB = "auth0|shared"
+OTHER_SUB = "auth0|other"
+DELETED_SUB = "auth0|deleted"
+
+
+def _b64(value: int) -> str:
+    size = (value.bit_length() + 7) // 8
+    return base64.urlsafe_b64encode(value.to_bytes(size, "big")).rstrip(b"=").decode()
+
+
+@pytest.fixture(scope="session")
+def signing_material() -> tuple[bytes, dict[str, Any]]:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem = private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    numbers = private_key.public_key().public_numbers()
+    jwks = {
+        "keys": [
+            {
+                "kty": "RSA",
+                "kid": TEST_KID,
+                "use": "sig",
+                "alg": "RS256",
+                "n": _b64(numbers.n),
+                "e": _b64(numbers.e),
+            }
+        ]
+    }
+    return private_pem, jwks
+
+
+@pytest.fixture
+def mint_token(signing_material: tuple[bytes, dict[str, Any]]) -> Callable[..., str]:
+    private_pem, _jwks = signing_material
+
+    def mint(
+        *,
+        sub: str = SHARED_SUB,
+        aud: str = TEST_RESOURCE,
+        scope: str = "mcp:connect",
+        exp_delta: int = 300,
+    ) -> str:
+        now = int(time.time())
+        return jwt.encode(
+            {
+                "iss": TEST_ISSUER,
+                "aud": aud,
+                "sub": sub,
+                "scope": scope,
+                "azp": "cursor-test-client",
+                "iat": now,
+                "exp": now + exp_delta,
+            },
+            private_pem,
+            algorithm="RS256",
+            headers={"kid": TEST_KID},
+        )
+
+    return mint
+
+
+@dataclass
+class AppHarness:
+    client: TestClient
+    registry: TenantRegistry
+    session_factory: Callable[[str], Session]
+    calls: Counter[str]
+
+
+@pytest.fixture
+def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) -> Iterator[AppHarness]:
+    tenant_file = tmp_path / "tenants.json"
+    tenant_file.write_text(
+        json.dumps(
+            {
+                "tenant_a": {"db_name": "tenant_a", "env": "development"},
+                "tenant_b": {"db_name": "tenant_b", "env": "development"},
+                "tenant_prod": {"db_name": "tenant_prod", "env": "production"},
+            }
+        )
+    )
+
+    rows = {
+        "tenant_a": [
+            User(
+                id="00000000-0000-0000-0000-000000000001",
+                auth0_id=SHARED_SUB,
+                name="Alice",
+                email="alice@a.test",
+                deleted_at=None,
+            ),
+            User(
+                id="00000000-0000-0000-0000-000000000002",
+                auth0_id=OTHER_SUB,
+                name="Other",
+                email="other@a.test",
+                deleted_at=None,
+            ),
+            User(
+                id="00000000-0000-0000-0000-000000000003",
+                auth0_id=DELETED_SUB,
+                name="Deleted",
+                email="deleted@a.test",
+                deleted_at=datetime.now(UTC),
+            ),
+        ],
+        "tenant_b": [
+            User(
+                id="00000000-0000-0000-0000-000000000004",
+                auth0_id=SHARED_SUB,
+                name="Alice B",
+                email="alice@b.test",
+                deleted_at=None,
+            ),
+        ],
+        "tenant_prod": [
+            User(
+                id="00000000-0000-0000-0000-000000000005",
+                auth0_id=SHARED_SUB,
+                name="Alice P",
+                email="alice@p.test",
+                deleted_at=None,
+            ),
+        ],
+    }
+    factories: dict[str, sessionmaker[Session]] = {}
+    for slug, users in rows.items():
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        factory = sessionmaker(engine, expire_on_commit=False)
+        with factory() as session:
+            session.add_all(users)
+            session.commit()
+        factories[slug] = factory
+
+    calls: Counter[str] = Counter()
+
+    def open_session(slug: str) -> Session:
+        calls[slug] += 1
+        return factories[slug]()
+
+    settings = Settings(
+        ENV="development",
+        AUTH0_DOMAIN="test.auth0.local",
+        MCP_RESOURCE_URL=TEST_RESOURCE,
+        TENANT_CONFIG_PATH=str(tenant_file),
+    )
+    registry = TenantRegistry()
+    _private, jwks = signing_material
+    mcp = build_mcp_app(
+        runtime_settings=settings,
+        registry=registry,
+        session_factory=open_session,
+        cache=TenantMembershipCache(ttl_seconds=60, max_entries=8),
+        jwks_cache=JWKSCache(f"{TEST_ISSUER}.well-known/jwks.json", initial=jwks),
+    )
+    with TestClient(mcp.streamable_http_app(), base_url="https://mcp.test.local") as client:
+        yield AppHarness(client, registry, open_session, calls)

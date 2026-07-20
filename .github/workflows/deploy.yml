@@ -1,0 +1,163 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - staging
+          - platform-testing
+          - prod
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: solstice-mcp-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') && 'prod' || 'dev' }}
+    env:
+      AWS_REGION: us-east-1
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Verify
+        run: |
+          pip install -r requirements-dev.txt
+          ruff check .
+          pytest
+
+      - name: Select target
+        id: target
+        shell: bash
+        run: |
+          TARGET="${{ inputs.environment || 'dev' }}"
+          case "$TARGET" in
+            dev)
+              echo "cluster=solstice-dev-cluster" >> "$GITHUB_OUTPUT"
+              echo "service=solstice-dev-mcp-server" >> "$GITHUB_OUTPUT"
+              echo "repository=solstice-dev-mcp" >> "$GITHUB_OUTPUT"
+              echo "resource_url=https://api-dev.solsticehealth.co/mcp" >> "$GITHUB_OUTPUT"
+              ;;
+            staging)
+              echo "cluster=solstice-dev-cluster" >> "$GITHUB_OUTPUT"
+              echo "service=solstice-stg-mcp-server" >> "$GITHUB_OUTPUT"
+              echo "repository=solstice-dev-mcp" >> "$GITHUB_OUTPUT"
+              echo "resource_url=https://api-staging.solsticehealth.co/mcp" >> "$GITHUB_OUTPUT"
+              ;;
+            platform-testing)
+              echo "cluster=solstice-dev-cluster" >> "$GITHUB_OUTPUT"
+              echo "service=solstice-plt-mcp-server" >> "$GITHUB_OUTPUT"
+              echo "repository=solstice-dev-mcp" >> "$GITHUB_OUTPUT"
+              echo "resource_url=https://api-platform-testing.solsticehealth.co/mcp" >> "$GITHUB_OUTPUT"
+              ;;
+            prod)
+              echo "cluster=solstice-prod-cluster" >> "$GITHUB_OUTPUT"
+              echo "service=solstice-prod-mcp-server" >> "$GITHUB_OUTPUT"
+              echo "repository=solstice-prod-mcp" >> "$GITHUB_OUTPUT"
+              echo "resource_url=https://api.solsticehealth.co/mcp" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unknown environment: $TARGET" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64
+
+      - name: Build and push image
+        id: image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPOSITORY: ${{ steps.target.outputs.repository }}
+        run: |
+          IMAGE="$REGISTRY/$REPOSITORY:${GITHUB_SHA::12}-${GITHUB_RUN_ATTEMPT}"
+          docker build --tag "$IMAGE" .
+          docker push "$IMAGE"
+          echo "uri=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Register task definition
+        id: task
+        env:
+          CLUSTER: ${{ steps.target.outputs.cluster }}
+          SERVICE: ${{ steps.target.outputs.service }}
+          IMAGE: ${{ steps.image.outputs.uri }}
+        run: |
+          TASK_DEFINITION=$(aws ecs describe-services \
+            --cluster "$CLUSTER" \
+            --services "$SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+          aws ecs describe-task-definition \
+            --task-definition "$TASK_DEFINITION" \
+            --query taskDefinition > task-definition.json
+          jq --arg image "$IMAGE" '
+            (.containerDefinitions[] | select(.name == "mcp-server").image) = $image
+            | del(
+                .taskDefinitionArn,
+                .revision,
+                .status,
+                .requiresAttributes,
+                .compatibilities,
+                .registeredAt,
+                .registeredBy
+              )
+          ' task-definition.json > next-task-definition.json
+          jq -e --arg image "$IMAGE" \
+            '.containerDefinitions | any(.name == "mcp-server" and .image == $image)' \
+            next-task-definition.json > /dev/null
+          TASK_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://next-task-definition.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy ECS service
+        env:
+          CLUSTER: ${{ steps.target.outputs.cluster }}
+          SERVICE: ${{ steps.target.outputs.service }}
+          TASK_ARN: ${{ steps.task.outputs.arn }}
+        run: |
+          aws ecs update-service \
+            --cluster "$CLUSTER" \
+            --service "$SERVICE" \
+            --task-definition "$TASK_ARN" \
+            --force-new-deployment
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
+
+      - name: Smoke test
+        env:
+          RESOURCE_URL: ${{ steps.target.outputs.resource_url }}
+        run: |
+          ORIGIN="${RESOURCE_URL%/mcp}"
+          curl --fail --silent --show-error "$ORIGIN/health" | jq -e '.status == "ok"'
+          curl --fail --silent --show-error \
+            "$ORIGIN/.well-known/oauth-protected-resource/mcp" \
+            | jq -e --arg resource "$RESOURCE_URL" \
+              '.resource == $resource and (.scopes_supported | index("mcp:connect"))'
+          STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" "$RESOURCE_URL")
+          test "$STATUS" = "401"
