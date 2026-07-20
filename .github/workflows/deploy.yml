@@ -3,33 +3,26 @@ name: Deploy
 on:
   push:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      environment:
-        description: Target environment
-        required: true
-        default: dev
-        type: choice
-        options:
-          - dev
-          - staging
-          - platform-testing
-          - prod
+  workflow_dispatch: # manual redeploy of current main to prod
 
 permissions:
   id-token: write
   contents: read
 
 concurrency:
-  group: solstice-mcp-${{ inputs.environment || 'dev' }}
+  group: solstice-mcp-prod
   cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') && 'prod' || 'dev' }}
+    environment: prod
     env:
       AWS_REGION: us-east-1
+      ECS_CLUSTER: solstice-prod-cluster
+      ECS_SERVICE: solstice-prod-mcp-server
+      ECR_REPOSITORY: solstice-prod-mcp
+      RESOURCE_URL: https://api.solsticehealth.co/mcp
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -42,42 +35,6 @@ jobs:
           pip install -r requirements-dev.txt
           ruff check .
           pytest
-
-      - name: Select target
-        id: target
-        shell: bash
-        run: |
-          TARGET="${{ inputs.environment || 'dev' }}"
-          case "$TARGET" in
-            dev)
-              echo "cluster=solstice-dev-cluster" >> "$GITHUB_OUTPUT"
-              echo "service=solstice-dev-mcp-server" >> "$GITHUB_OUTPUT"
-              echo "repository=solstice-dev-mcp" >> "$GITHUB_OUTPUT"
-              echo "resource_url=https://api-dev.solsticehealth.co/mcp" >> "$GITHUB_OUTPUT"
-              ;;
-            staging)
-              echo "cluster=solstice-dev-cluster" >> "$GITHUB_OUTPUT"
-              echo "service=solstice-stg-mcp-server" >> "$GITHUB_OUTPUT"
-              echo "repository=solstice-dev-mcp" >> "$GITHUB_OUTPUT"
-              echo "resource_url=https://api-staging.solsticehealth.co/mcp" >> "$GITHUB_OUTPUT"
-              ;;
-            platform-testing)
-              echo "cluster=solstice-dev-cluster" >> "$GITHUB_OUTPUT"
-              echo "service=solstice-plt-mcp-server" >> "$GITHUB_OUTPUT"
-              echo "repository=solstice-dev-mcp" >> "$GITHUB_OUTPUT"
-              echo "resource_url=https://api-platform-testing.solsticehealth.co/mcp" >> "$GITHUB_OUTPUT"
-              ;;
-            prod)
-              echo "cluster=solstice-prod-cluster" >> "$GITHUB_OUTPUT"
-              echo "service=solstice-prod-mcp-server" >> "$GITHUB_OUTPUT"
-              echo "repository=solstice-prod-mcp" >> "$GITHUB_OUTPUT"
-              echo "resource_url=https://api.solsticehealth.co/mcp" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "Unknown environment: $TARGET" >&2
-              exit 1
-              ;;
-          esac
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
@@ -93,9 +50,8 @@ jobs:
         id: image
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
-          REPOSITORY: ${{ steps.target.outputs.repository }}
         run: |
-          IMAGE="$REGISTRY/$REPOSITORY:${GITHUB_SHA::12}-${GITHUB_RUN_ATTEMPT}"
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:${GITHUB_SHA::12}-${GITHUB_RUN_ATTEMPT}"
           docker build --tag "$IMAGE" .
           docker push "$IMAGE"
           echo "uri=$IMAGE" >> "$GITHUB_OUTPUT"
@@ -103,13 +59,11 @@ jobs:
       - name: Register task definition
         id: task
         env:
-          CLUSTER: ${{ steps.target.outputs.cluster }}
-          SERVICE: ${{ steps.target.outputs.service }}
           IMAGE: ${{ steps.image.outputs.uri }}
         run: |
           TASK_DEFINITION=$(aws ecs describe-services \
-            --cluster "$CLUSTER" \
-            --services "$SERVICE" \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
             --query 'services[0].taskDefinition' \
             --output text)
           aws ecs describe-task-definition \
@@ -138,20 +92,18 @@ jobs:
 
       - name: Deploy ECS service
         env:
-          CLUSTER: ${{ steps.target.outputs.cluster }}
-          SERVICE: ${{ steps.target.outputs.service }}
           TASK_ARN: ${{ steps.task.outputs.arn }}
         run: |
           aws ecs update-service \
-            --cluster "$CLUSTER" \
-            --service "$SERVICE" \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
             --task-definition "$TASK_ARN" \
             --force-new-deployment
-          aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
 
       - name: Smoke test
         env:
-          RESOURCE_URL: ${{ steps.target.outputs.resource_url }}
+          RESOURCE_URL: ${{ env.RESOURCE_URL }}
         run: |
           ORIGIN="${RESOURCE_URL%/mcp}"
           curl --fail --silent --show-error "$ORIGIN/health" | jq -e '.status == "ok"'
