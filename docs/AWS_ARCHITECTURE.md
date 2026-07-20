@@ -101,3 +101,13 @@ egress through the existing NAT gateway for Auth0 JWKS and ECR access. The ALB
 is internet-facing across three public subnets. MCP tasks have no public IP;
 their service security group accepts port 8000 only from the matching ALB
 security group and is the only MCP source allowed to reach PostgreSQL on 5432.
+
+## CI deployment identity
+
+GitHub Actions requests a short-lived OIDC token with audience
+`sts.amazonaws.com`. AWS validates that token and allows
+`sts:AssumeRoleWithWebIdentity` only for this repository's immutable subject in
+the `dev` or `prod` GitHub environment. The resulting role session can push the
+image and update ECS; no AWS access key is stored in GitHub. A subject,
+audience, or signature mismatch prevents the workflow from obtaining AWS
+credentials, so the deployment stops before ECR or ECS changes.
