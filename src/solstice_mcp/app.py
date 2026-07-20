@@ -52,9 +52,10 @@ def build_mcp_app(
         tenant_registry.load(runtime_settings.TENANT_CONFIG_PATH)
     open_session = session_factory
     if open_session is None:
-        if not runtime_settings.database_url_template:
-            raise ValueError("A database URL template is required")
-        open_session = TenantDatabaseFactory(tenant_registry, runtime_settings.database_url_template)
+        templates = runtime_settings.database_url_templates
+        if not templates:
+            raise ValueError("At least one database URL template is required (DATABASE_URL_TEMPLATE_DEV/PROD)")
+        open_session = TenantDatabaseFactory(tenant_registry, templates)
     membership_cache = cache or TenantMembershipCache()
 
     mcp = FastMCP(
@@ -112,7 +113,6 @@ def build_mcp_app(
             registry=tenant_registry,
             session_factory=open_session,
             cache=membership_cache,
-            tenant_environment=runtime_settings.tenant_environment,
         )
         return {"tenants": [membership.as_dict() for membership in memberships], "count": len(memberships)}
 
@@ -124,7 +124,6 @@ def build_mcp_app(
             tenant_slug,
             registry=tenant_registry,
             session_factory=open_session,
-            tenant_environment=runtime_settings.tenant_environment,
         )
         if identity is None:
             return {

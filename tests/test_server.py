@@ -9,7 +9,9 @@ from conftest import DELETED_SUB, OTHER_SUB, SHARED_SUB, TEST_ISSUER, TEST_RESOU
 
 from solstice_mcp.auth import fetch_jwks
 from solstice_mcp.tenants import (
+    TenantDatabaseFactory,
     TenantMembershipCache,
+    TenantRegistry,
     current_tenant,
     discover_tenants_for_sub,
     resolve_tenant_identity,
@@ -114,7 +116,7 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
     }
 
 
-def test_multi_tenant_discovery_filters_runtime_environment(app_harness: AppHarness, mint_token):
+def test_cross_environment_discovery_returns_all_tenants_with_user(app_harness: AppHarness, mint_token):
     response = rpc(
         app_harness,
         "tools/call",
@@ -122,8 +124,14 @@ def test_multi_tenant_discovery_filters_runtime_environment(app_harness: AppHarn
         params={"name": "solstice_list_tenants", "arguments": {}},
     )
     payload = tool_payload(response)
-    assert {tenant["slug"] for tenant in payload["tenants"]} == {"tenant_a", "tenant_b"}
-    assert payload["count"] == 2
+    assert {tenant["slug"] for tenant in payload["tenants"]} == {
+        "tenant_a",
+        "tenant_b",
+        "tenant_prod",
+    }
+    assert payload["count"] == 3
+    envs = {tenant["env"] for tenant in payload["tenants"]}
+    assert envs == {"development", "production"}
 
 
 def test_cross_tenant_membership_is_rejected(app_harness: AppHarness, mint_token):
@@ -164,7 +172,6 @@ def test_context_is_cleared_when_database_factory_fails(app_harness: AppHarness)
         registry=app_harness.registry,
         session_factory=fail,
         cache=TenantMembershipCache(ttl_seconds=60, max_entries=2),
-        tenant_environment="development",
         slugs=["tenant_a"],
     )
     assert memberships == []
@@ -176,7 +183,6 @@ def test_context_is_cleared_when_database_factory_fails(app_harness: AppHarness)
             "tenant_a",
             registry=app_harness.registry,
             session_factory=fail,
-            tenant_environment="development",
         )
     assert current_tenant.get() is None
 
@@ -209,3 +215,88 @@ def test_slack_stubs_are_truthful(app_harness: AppHarness, mint_token, name, arg
         assert payload[false_field] is False
     if empty_field:
         assert payload[empty_field] == []
+
+
+def test_tenant_database_factory_routes_by_env(tmp_path):
+    import json
+
+    config_path = tmp_path / "tenants.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "tenant_dev": {"db_name": "tenant_dev", "env": "development"},
+                "tenant_prod": {"db_name": "tenant_prod", "env": "production"},
+            }
+        )
+    )
+    registry = TenantRegistry()
+    registry.load(config_path)
+
+    seen: dict[str, str] = {}
+
+    class _RecordingEngine:
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        def connect(self, *_args, **_kwargs):  # pragma: no cover - not exercised
+            raise RuntimeError("connect should not be called in this test")
+
+    import sqlalchemy
+
+    real_create_engine = sqlalchemy.create_engine
+
+    def fake_create_engine(url: str, **_kwargs):
+        seen[url] = url
+        # Return a real in-memory sqlite engine so sessionmaker() works downstream.
+        return real_create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
+
+    from sqlalchemy.pool import StaticPool
+
+    factory = TenantDatabaseFactory(
+        registry,
+        {
+            "development": "postgresql+psycopg://dev-host:5432/{db_name}",
+            "production": "postgresql+psycopg://prod-host:5432/{db_name}",
+        },
+    )
+
+    import solstice_mcp.tenants as tenants_mod
+
+    original = tenants_mod.create_engine
+    tenants_mod.create_engine = fake_create_engine
+    try:
+        factory("tenant_dev")
+        factory("tenant_prod")
+        # Re-call should reuse the cached sessionmaker, not create a new engine.
+        factory("tenant_dev")
+    finally:
+        tenants_mod.create_engine = original
+
+    assert seen == {
+        "postgresql+psycopg://dev-host:5432/tenant_dev": "postgresql+psycopg://dev-host:5432/tenant_dev",
+        "postgresql+psycopg://prod-host:5432/tenant_prod": "postgresql+psycopg://prod-host:5432/tenant_prod",
+    }
+
+
+def test_tenant_database_factory_rejects_missing_env(tmp_path):
+    import json
+
+    config_path = tmp_path / "tenants.json"
+    config_path.write_text(
+        json.dumps({"tenant_dev": {"db_name": "tenant_dev", "env": "development"}})
+    )
+    registry = TenantRegistry()
+    registry.load(config_path)
+
+    factory = TenantDatabaseFactory(
+        registry,
+        {"production": "postgresql+psycopg://prod-host:5432/{db_name}"},
+    )
+    with pytest.raises(ValueError, match="No database URL template registered for env 'development'"):
+        factory("tenant_dev")
+
+
+def test_tenant_database_factory_rejects_empty_templates(tmp_path):
+    registry = TenantRegistry()
+    with pytest.raises(ValueError, match="At least one database URL template is required"):
+        TenantDatabaseFactory(registry, {})

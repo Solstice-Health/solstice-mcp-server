@@ -33,6 +33,23 @@ class Settings:
         return self.DATABASE_URL_TEMPLATE_DEV
 
     @property
+    def database_url_templates(self) -> dict[str, str]:
+        """Per-env URL templates for cross-environment tenant discovery.
+
+        The MCP task probes tenant databases in any environment it has a template
+        for; access is gated by the ``users`` table in each tenant DB, not by the
+        task's own environment.
+        """
+        templates: dict[str, str] = {}
+        if self.DATABASE_URL_TEMPLATE:
+            templates[self.tenant_environment] = self.DATABASE_URL_TEMPLATE
+        if self.DATABASE_URL_TEMPLATE_DEV:
+            templates["development"] = self.DATABASE_URL_TEMPLATE_DEV
+        if self.DATABASE_URL_TEMPLATE_PROD:
+            templates["production"] = self.DATABASE_URL_TEMPLATE_PROD
+        return templates
+
+    @property
     def issuer_url(self) -> str:
         return f"https://{self.AUTH0_DOMAIN.strip().rstrip('/')}/"
 

@@ -6,7 +6,7 @@ import json
 import logging
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
@@ -66,13 +66,24 @@ class TenantRegistry:
 
 
 class TenantDatabaseFactory:
-    """Create sessions for configured tenant databases."""
+    """Create sessions for configured tenant databases, across multiple environments.
 
-    def __init__(self, registry: TenantRegistry, url_template: str) -> None:
-        if "{db_name}" not in url_template:
-            raise ValueError("Database URL template must contain {db_name}")
+    Each tenant's config declares an ``env`` (``development`` or ``production``);
+    the factory picks the URL template matching that env so a single MCP task
+    can reach tenant databases in any environment it is allowed to read.
+    """
+
+    def __init__(self, registry: TenantRegistry, url_templates: Mapping[str, str]) -> None:
+        if not url_templates:
+            raise ValueError("At least one database URL template is required")
+        normalized = {
+            env.strip().lower(): template for env, template in url_templates.items()
+        }
+        for env, template in normalized.items():
+            if "{db_name}" not in template:
+                raise ValueError(f"Database URL template for env {env!r} must contain {{db_name}}")
         self.registry = registry
-        self.url_template = url_template
+        self.url_templates = normalized
         self._sessions: dict[str, sessionmaker[Session]] = {}
         self._lock = threading.Lock()
 
@@ -80,10 +91,14 @@ class TenantDatabaseFactory:
         config = self.registry.get(slug)
         if config is None:
             raise ValueError(f"Unknown tenant slug: {slug!r}")
+        env = config.env.strip().lower()
+        template = self.url_templates.get(env)
+        if template is None:
+            raise ValueError(f"No database URL template registered for env {env!r} (tenant {slug!r})")
         with self._lock:
             factory = self._sessions.get(slug)
             if factory is None:
-                engine = create_engine(self.url_template.format(db_name=config.db_name), pool_pre_ping=True)
+                engine = create_engine(template.format(db_name=config.db_name), pool_pre_ping=True)
                 factory = sessionmaker(engine, expire_on_commit=False)
                 self._sessions[slug] = factory
         return factory()
@@ -167,13 +182,17 @@ def discover_tenants_for_sub(
     registry: TenantRegistry,
     session_factory: SessionFactory,
     cache: TenantMembershipCache,
-    tenant_environment: str,
     slugs: Iterable[str] | None = None,
 ) -> list[TenantMembership]:
     """Return configured tenants containing a live user with this Auth0 subject.
 
-    ponytail: each cache miss scans one database per configured tenant. Replace
-    this with a central membership directory if tenant count makes that costly.
+    Cross-environment discovery: every configured tenant is probed regardless of
+    the MCP task's own environment. Access is gated entirely by the presence of a
+    live row in that tenant's ``users`` table.
+
+    ponytail: each cache miss scans one database per configured tenant, across
+    dev and prod RDS. Replace with a central membership directory if tenant count
+    makes that costly.
     """
     cached = cache.get(subject)
     if cached is not None:
@@ -182,7 +201,7 @@ def discover_tenants_for_sub(
     memberships: list[TenantMembership] = []
     for slug in slugs if slugs is not None else registry.slugs:
         config = registry.get(slug)
-        if config is None or config.env.strip().lower() != tenant_environment:
+        if config is None:
             continue
         try:
             with tenant_session(slug, session_factory) as session:
@@ -202,10 +221,9 @@ def resolve_tenant_identity(
     *,
     registry: TenantRegistry,
     session_factory: SessionFactory,
-    tenant_environment: str,
 ) -> TenantIdentity | None:
     config = registry.get(tenant_slug)
-    if config is None or config.env.strip().lower() != tenant_environment:
+    if config is None:
         return None
 
     with tenant_session(tenant_slug, session_factory) as session:
