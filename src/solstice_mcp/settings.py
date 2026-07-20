@@ -17,6 +17,9 @@ class Settings:
     DATABASE_URL_TEMPLATE: str = ""
     DATABASE_URL_TEMPLATE_DEV: str = ""
     DATABASE_URL_TEMPLATE_PROD: str = ""
+    AWS_REGION: str = "us-east-1"
+    S3_PRESIGN_EXPIRY_SECONDS: int = 600
+    S3_MAX_INLINE_BYTES: int = 2_000_000
 
     @classmethod
     def from_env(cls) -> Settings:

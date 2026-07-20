@@ -25,6 +25,7 @@ from solstice_mcp.brands import (
 )
 from solstice_mcp.gate import SolsticeAccessGate
 from solstice_mcp.operations import (
+    get_operation_html,
     get_operation_info,
     get_project_info,
     list_operation_messages,
@@ -34,6 +35,7 @@ from solstice_mcp.operations import (
 from solstice_mcp.settings import Settings, settings
 from solstice_mcp.sibling_mcps import SiblingMCPRegistry
 from solstice_mcp.slack_stub import slack_react, slack_read, slack_search, slack_send
+from solstice_mcp.storage import S3Reader, TenantS3
 from solstice_mcp.tenants import (
     TenantDatabaseFactory,
     TenantMembershipCache,
@@ -60,7 +62,9 @@ MCP_INSTRUCTIONS = (
     "workspace with a chat (n_cg_operation_messages). Message type is text/html/pdf/"
     "blueprint; document rows (html/pdf) carry an intent of draft or final. HTML "
     "bodies live in tenant S3 under cg_operation_msg_html/ and are returned by their "
-    "key, not inline.\n"
+    "key, not inline. Use solstice_operation_html to get a presigned URL for an html "
+    "message; pass fetch=true only when the user explicitly asks to read, save, or "
+    "visualize the document body.\n"
     "Intent visibility: SOLSTICE_STAFF sees draft and final document messages; "
     "MEMBER and ADMIN see final only. This filter is enforced server-side from your "
     "token - you cannot request draft messages by passing an argument.\n"
@@ -79,6 +83,7 @@ def build_mcp_app(
     session_factory: Callable[[str], Session] | None = None,
     cache: TenantMembershipCache | None = None,
     jwks_cache: JWKSCache | None = None,
+    s3: S3Reader | None = None,
 ) -> FastMCP:
     resource = runtime_settings.MCP_RESOURCE_URL
     issuer = runtime_settings.issuer_url
@@ -98,6 +103,7 @@ def build_mcp_app(
             raise ValueError("At least one database URL template is required (DATABASE_URL_TEMPLATE_DEV/PROD)")
         open_session = TenantDatabaseFactory(tenant_registry, templates)
     membership_cache = cache or TenantMembershipCache()
+    s3_reader = s3 or TenantS3(region_name=runtime_settings.AWS_REGION)
     access_gate = SolsticeAccessGate(allowed_domain=runtime_settings.ALLOWED_EMAIL_DOMAIN)
     sibling_registry = SiblingMCPRegistry()
     sibling_registry.load(runtime_settings.SIBLING_MCP_CONFIG_PATH)
@@ -161,6 +167,7 @@ def build_mcp_app(
                 "solstice_list_operations",
                 "solstice_operation_info",
                 "solstice_operation_messages",
+                "solstice_operation_html",
                 "solstice_slack_search",
                 "solstice_slack_read",
                 "solstice_slack_send",
@@ -329,6 +336,29 @@ def build_mcp_app(
             registry=tenant_registry, session_factory=open_session,
         )
         return {"tenant_slug": tenant_slug, "operation_id": operation_id, "messages": messages, "count": len(messages)}
+
+    @mcp.tool()
+    def solstice_operation_html(
+        tenant_slug: str, operation_id: str, message_id: str, fetch: bool = False
+    ) -> dict[str, Any]:
+        """Return the HTML body for one operation message.
+
+        By default returns a presigned GET URL (no body transfer). Set
+        fetch=True to download the HTML inline — use that only when the user
+        explicitly asks to read, save, or visualize the document.
+
+        Gated at MEMBER on the operation's brand. Draft visibility is enforced
+        here too: a non-staff caller cannot retrieve a draft message's URL or
+        body (a presigned URL is a read capability, so it is not handed out for
+        drafts). SOLSTICE_STAFF sees drafts; MEMBER/ADMIN see final only.
+        """
+        return get_operation_html(
+            require_subject(), tenant_slug, operation_id, message_id,
+            fetch=fetch,
+            registry=tenant_registry, session_factory=open_session, s3=s3_reader,
+            presign_expiry=runtime_settings.S3_PRESIGN_EXPIRY_SECONDS,
+            max_inline_bytes=runtime_settings.S3_MAX_INLINE_BYTES,
+        )
 
     @mcp.tool()
     def solstice_slack_search(query: str, channel: str | None = None, limit: int = 20) -> dict[str, Any]:

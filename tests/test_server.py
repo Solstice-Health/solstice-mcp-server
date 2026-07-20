@@ -119,6 +119,7 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
         "solstice_list_operations",
         "solstice_operation_info",
         "solstice_operation_messages",
+        "solstice_operation_html",
         "solstice_slack_search",
         "solstice_slack_read",
         "solstice_slack_send",

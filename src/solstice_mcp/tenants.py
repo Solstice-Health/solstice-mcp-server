@@ -41,6 +41,7 @@ class TenantConfig:
     slug: str
     db_name: str
     env: str
+    s3_bucket: str = ""
 
 
 class TenantRegistry:
@@ -51,7 +52,12 @@ class TenantRegistry:
         with Path(path).open(encoding="utf-8") as config_file:
             raw = json.load(config_file)
         self._tenants = {
-            slug: TenantConfig(slug=slug, db_name=value["db_name"], env=value.get("env", "production"))
+            slug: TenantConfig(
+                slug=slug,
+                db_name=value["db_name"],
+                env=value.get("env", "production"),
+                s3_bucket=value.get("s3_bucket", ""),
+            )
             for slug, value in raw.items()
             if not slug.startswith("_")
         }

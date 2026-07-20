@@ -43,6 +43,7 @@ from solstice_mcp.brands import (
     reset_brand_role,
     role_satisfies,
 )
+from solstice_mcp.storage import S3Error, S3ObjectMissing, S3ObjectTooLarge, S3Reader
 from solstice_mcp.tenants import Base, SessionFactory, TenantRegistry, tenant_session
 
 logger = logging.getLogger(__name__)
@@ -356,10 +357,112 @@ def list_operation_messages(
         reset_brand_role()
 
 
+def get_operation_html(
+    subject: str,
+    tenant_slug: str,
+    operation_id: str,
+    message_id: str,
+    *,
+    fetch: bool,
+    registry: TenantRegistry,
+    session_factory: SessionFactory,
+    s3: S3Reader,
+    presign_expiry: int = 600,
+    max_inline_bytes: int = 2_000_000,
+) -> dict[str, Any]:
+    """Return the HTML body for one operation message.
+
+    By default returns a presigned GET URL only (no body transfer). When
+    ``fetch=True`` the body is downloaded inline, subject to a size cap.
+
+    Authorization + intent filter:
+    - Gated at MEMBER on the operation's brand (resolved from the row).
+    - The intent filter is re-applied here: a non-staff caller cannot retrieve
+      a ``draft`` document message at all — no URL, no body — because a
+      presigned URL is itself a read capability. Only SOLSTICE_STAFF sees
+      drafts; MEMBER/ADMIN see final only.
+    """
+    try:
+        with tenant_session(tenant_slug, session_factory) as session:
+            op = session.scalar(
+                select(CgOperation).where(
+                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
+                )
+            )
+            if op is None:
+                raise ToolError("not_authorized: unknown operation")
+            brand_id = op.brand_id
+        # Authorize BEFORE the message lookup so an unauthorized caller cannot
+        # learn whether a message exists on an operation they can't access.
+        identity = require_brand_role(
+            subject, tenant_slug, brand_id,
+            min_role=UserRole.MEMBER,
+            registry=registry, session_factory=session_factory,
+        )
+        staff = role_satisfies(identity.role, UserRole.SOLSTICE_STAFF)
+        with tenant_session(tenant_slug, session_factory) as session:
+            msg = session.scalar(
+                select(CgOperationMessage).where(
+                    CgOperationMessage.operation_id == operation_id,
+                    CgOperationMessage.message_id == message_id,
+                    CgOperationMessage.deleted_at.is_(None),
+                )
+            )
+            if msg is None:
+                raise ToolError("not_found: unknown message")
+        if msg.intent == "draft" and not staff:
+            # Draft visibility is enforced for both the URL and the body: a
+            # presigned URL is a read capability, so it must not be handed to a
+            # non-staff caller any more than the inline body would be.
+            raise ToolError("not_authorized: draft messages require SOLSTICE_STAFF")
+
+        result: dict[str, Any] = {
+            "operation_id": operation_id,
+            "message_id": message_id,
+            "type": msg.type,
+            "intent": msg.intent,
+            "version_number": msg.version_number,
+            "url": None,
+            "s3_key": None,
+            "html": None,
+        }
+
+        if msg.type != "html":
+            raise ToolError("not_found: message is not an html document")
+        if _looks_like_s3_key(msg.content):
+            s3_key = msg.content
+            tenant_config = registry.get(tenant_slug)
+            bucket = tenant_config.s3_bucket if tenant_config is not None else ""
+            if not bucket:
+                raise ToolError("not_configured: tenant has no s3_bucket")
+            result["s3_key"] = s3_key
+            result["url"] = s3.presign(bucket, s3_key, presign_expiry)
+            if fetch:
+                try:
+                    body = s3.download(bucket, s3_key, max_inline_bytes)
+                except S3ObjectTooLarge:
+                    result["too_large"] = True
+                except S3ObjectMissing:
+                    raise ToolError("not_found: html object missing in s3") from None
+                except S3Error as exc:
+                    raise ToolError(f"not_available: s3 read failed: {exc}") from exc
+                else:
+                    result["html"] = body.decode("utf-8", errors="replace")
+        else:
+            # Inline HTML stored in the row (not yet offloaded to S3).
+            result["inline"] = True
+            if fetch:
+                result["html"] = msg.content or ""
+        return result
+    finally:
+        reset_brand_role()
+
+
 __all__ = [
     "CgOperation",
     "CgOperationMessage",
     "Project",
+    "get_operation_html",
     "get_operation_info",
     "get_project_info",
     "list_operation_messages",

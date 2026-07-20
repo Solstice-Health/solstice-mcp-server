@@ -123,6 +123,46 @@ class AppHarness:
     registry: TenantRegistry
     session_factory: Callable[[str], Session]
     calls: Counter[str]
+    s3: FakeS3
+
+
+class FakeS3:
+    """In-memory S3Reader substitute. Stores bytes keyed by (bucket, key).
+
+    Records presign calls so tests can assert the URL was/wasn't issued.
+    """
+
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str], bytes] = {}
+        self.presign_calls: list[tuple[str, str, int]] = []
+        self.download_calls: list[tuple[str, str, int]] = []
+        self.too_large_keys: set[tuple[str, str]] = set()
+        self.missing_on_download: set[tuple[str, str]] = set()
+
+    def put(self, bucket: str, key: str, body: bytes) -> None:
+        self.objects[(bucket, key)] = body
+
+    def mark_too_large(self, bucket: str, key: str) -> None:
+        self.too_large_keys.add((bucket, key))
+
+    def mark_missing_on_download(self, bucket: str, key: str) -> None:
+        self.missing_on_download.add((bucket, key))
+
+    def presign(self, bucket: str, key: str, expires_in: int) -> str:
+        self.presign_calls.append((bucket, key, expires_in))
+        return f"https://fake-s3/{bucket}/{key}?expires={expires_in}"
+
+    def download(self, bucket: str, key: str, max_bytes: int) -> bytes:
+        self.download_calls.append((bucket, key, max_bytes))
+        if (bucket, key) in self.too_large_keys:
+            from solstice_mcp.storage import S3ObjectTooLarge
+
+            raise S3ObjectTooLarge(f"object {key!r} exceeds cap {max_bytes}")
+        if (bucket, key) in self.missing_on_download:
+            from solstice_mcp.storage import S3ObjectMissing
+
+            raise S3ObjectMissing(key)
+        return self.objects[(bucket, key)]
 
 
 @pytest.fixture
@@ -131,9 +171,9 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
     tenant_file.write_text(
         json.dumps(
             {
-                "tenant_a": {"db_name": "tenant_a", "env": "development"},
-                "tenant_b": {"db_name": "tenant_b", "env": "development"},
-                "tenant_prod": {"db_name": "tenant_prod", "env": "production"},
+                "tenant_a": {"db_name": "tenant_a", "s3_bucket": "test-bucket-a", "env": "development"},
+                "tenant_b": {"db_name": "tenant_b", "s3_bucket": "test-bucket-b", "env": "development"},
+                "tenant_prod": {"db_name": "tenant_prod", "s3_bucket": "test-bucket-prod", "env": "production"},
             }
         )
     )
@@ -332,12 +372,16 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
     )
     registry = TenantRegistry()
     _private, jwks = signing_material
+    fake_s3 = FakeS3()
+    fake_s3.put("test-bucket-a", f"cg_operation_msg_html/{OP_A1}/v1/m2/v1.html", b"<html>final v1 body</html>")
+    fake_s3.put("test-bucket-a", f"cg_operation_msg_html/{OP_A1}/v2/m3/v2.html", b"<html>draft v2 body</html>")
     mcp = build_mcp_app(
         runtime_settings=settings,
         registry=registry,
         session_factory=open_session,
         cache=TenantMembershipCache(ttl_seconds=60, max_entries=8),
         jwks_cache=JWKSCache(f"{TEST_ISSUER}.well-known/jwks.json", initial=jwks),
+        s3=fake_s3,
     )
     with TestClient(mcp.streamable_http_app(), base_url="https://mcp.test.local") as client:
-        yield AppHarness(client, registry, open_session, calls)
+        yield AppHarness(client, registry, open_session, calls, fake_s3)
