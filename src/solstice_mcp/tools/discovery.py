@@ -8,6 +8,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+from solstice_mcp.audit import audited_tool
 from solstice_mcp.brands import UserRole, list_brands_for_user, require_brand_role, reset_brand_role
 from solstice_mcp.gate import SolsticeAccessGate
 from solstice_mcp.sibling_mcps import SiblingMCPRegistry
@@ -42,7 +43,9 @@ def register_discovery_tools(
     access_gate: SolsticeAccessGate,
     sibling_registry: SiblingMCPRegistry,
 ) -> None:
-    @mcp.tool(annotations=READ_ONLY)
+    read_only_tool = audited_tool(mcp, require_access_token, annotations=READ_ONLY)
+
+    @read_only_tool
     def solstice_server_info() -> dict[str, Any]:
         """Return public server and tool metadata, including the RBAC model."""
         return {
@@ -85,7 +88,7 @@ def register_discovery_tools(
             ],
         }
 
-    @mcp.tool(annotations=READ_ONLY)
+    @read_only_tool
     def solstice_list_tenants() -> dict[str, Any]:
         """List tenant databases containing the authenticated user."""
         memberships = discover_tenants_for_sub(
@@ -96,7 +99,7 @@ def register_discovery_tools(
         )
         return {"tenants": [membership.as_dict() for membership in memberships], "count": len(memberships)}
 
-    @mcp.tool(annotations=READ_ONLY)
+    @read_only_tool
     def solstice_whoami(tenant_slug: str) -> dict[str, Any]:
         """Return identity after revalidating membership in one tenant."""
         identity = resolve_tenant_identity(
@@ -113,7 +116,7 @@ def register_discovery_tools(
             }
         return {"status": "ok", **identity.as_dict()}
 
-    @mcp.tool(annotations=READ_ONLY)
+    @read_only_tool
     def solstice_check_access() -> dict[str, Any]:
         """Return whether the caller may see the sibling MCP directory."""
         token = require_access_token()
@@ -128,7 +131,7 @@ def register_discovery_tools(
             "allowed_domain": access_gate.allowed_domain,
         }
 
-    @mcp.tool(annotations=READ_ONLY)
+    @read_only_tool
     def solstice_list_sibling_mcps() -> dict[str, Any]:
         """List sibling MCPs the caller is authorized to use, if allowed."""
         token = require_access_token()
@@ -141,7 +144,7 @@ def register_discovery_tools(
         entries = sibling_registry.list()
         return {"allowed": True, "sibling_mcps": entries, "count": len(entries)}
 
-    @mcp.tool(annotations=READ_ONLY)
+    @read_only_tool
     def solstice_list_brands(tenant_slug: str) -> dict[str, Any]:
         """List brands the authenticated user can access in a tenant, with per-brand role.
 
@@ -163,7 +166,7 @@ def register_discovery_tools(
             "count": len(memberships),
         }
 
-    @mcp.tool(annotations=READ_ONLY)
+    @read_only_tool
     def solstice_brand_info(tenant_slug: str, brand_id: str) -> dict[str, Any]:
         """Return details for one brand after revalidating the caller's per-brand membership.
 

@@ -156,6 +156,7 @@ def build_mcp_app(
     register_content_tools(
         mcp,
         require_subject=require_subject,
+        require_access_token=require_access_token,
         registry=tenant_registry,
         session_factory=open_session,
         s3=s3_reader,

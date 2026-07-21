@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 from typing import Any
 
 import pytest
-from conftest import DELETED_SUB, OTHER_SUB, SHARED_SUB, TEST_ISSUER, TEST_RESOURCE, AppHarness
+from conftest import BRAND_A3, DELETED_SUB, OTHER_SUB, SHARED_SUB, TEST_ISSUER, TEST_RESOURCE, AppHarness
 
+from solstice_mcp.audit import AUDIT_EVENT_NAME, AUDIT_LOGGER_NAME
 from solstice_mcp.auth import fetch_jwks
 from solstice_mcp.gate import SolsticeAccessGate
 from solstice_mcp.settings import Settings
@@ -65,6 +67,14 @@ def rpc(
 def tool_payload(response) -> dict[str, Any]:
     assert response.status_code == 200, response.text
     return json.loads(response.json()["result"]["content"][0]["text"])
+
+
+def audit_events(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    return [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.name == AUDIT_LOGGER_NAME and json.loads(record.message).get("event") == AUDIT_EVENT_NAME
+    ]
 
 
 def test_health_and_protected_resource_metadata_are_public(app_harness: AppHarness):
@@ -146,6 +156,82 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
             "idempotentHint": not is_write,
             "openWorldHint": False,
         }
+
+
+def test_tool_audit_logs_identity_resources_and_outcome_without_payloads(
+    app_harness: AppHarness,
+    mint_token,
+    caplog: pytest.LogCaptureFixture,
+):
+    caplog.set_level(logging.INFO, logger=AUDIT_LOGGER_NAME)
+
+    response = rpc(
+        app_harness,
+        "tools/call",
+        token=mint_token(email="private@example.com"),
+        params={"name": "solstice_whoami", "arguments": {"tenant_slug": "tenant_a"}},
+    )
+    assert tool_payload(response)["status"] == "ok"
+
+    event = audit_events(caplog)[-1]
+    assert event["subject"] == SHARED_SUB
+    assert event["client_id"] == "cursor-test-client"
+    assert event["tool"] == "solstice_whoami"
+    assert event["resources"] == {"tenant_slug": "tenant_a"}
+    assert event["outcome"] == "success"
+    assert "private@example.com" not in json.dumps(event)
+
+
+def test_tool_audit_classifies_authorization_denials(
+    app_harness: AppHarness,
+    mint_token,
+    caplog: pytest.LogCaptureFixture,
+):
+    caplog.set_level(logging.INFO, logger=AUDIT_LOGGER_NAME)
+
+    rpc(
+        app_harness,
+        "tools/call",
+        token=mint_token(),
+        params={
+            "name": "solstice_brand_info",
+            "arguments": {"tenant_slug": "tenant_a", "brand_id": BRAND_A3},
+        },
+    )
+
+    event = audit_events(caplog)[-1]
+    assert event["tool"] == "solstice_brand_info"
+    assert event["outcome"] == "denied"
+    assert event["error_code"] == "not_authorized"
+    assert event["resources"] == {"tenant_slug": "tenant_a", "brand_id": BRAND_A3}
+
+
+def test_tool_audit_classifies_tool_errors(
+    app_harness: AppHarness,
+    mint_token,
+    caplog: pytest.LogCaptureFixture,
+):
+    caplog.set_level(logging.INFO, logger=AUDIT_LOGGER_NAME)
+    unknown_project_id = "00000000-0000-0000-0000-000000000999"
+
+    rpc(
+        app_harness,
+        "tools/call",
+        token=mint_token(),
+        params={
+            "name": "solstice_project_info",
+            "arguments": {"tenant_slug": "tenant_a", "project_id": unknown_project_id},
+        },
+    )
+
+    event = audit_events(caplog)[-1]
+    assert event["tool"] == "solstice_project_info"
+    assert event["outcome"] == "error"
+    assert event["error_code"] == "not_found"
+    assert event["resources"] == {
+        "tenant_slug": "tenant_a",
+        "project_id": unknown_project_id,
+    }
 
 
 def test_cross_environment_discovery_returns_all_tenants_with_user(app_harness: AppHarness, mint_token):

@@ -9,6 +9,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
+from solstice_mcp.audit import audited_tool
 from solstice_mcp.operations import (
     commit_operation_version,
     get_operation_html,
@@ -41,13 +42,17 @@ def register_content_tools(
     mcp: FastMCP,
     *,
     require_subject: Callable[[], str],
+    require_access_token: Callable[[], Any],
     registry: TenantRegistry,
     session_factory: SessionFactory,
     s3: S3Reader,
     presign_expiry: int,
     max_inline_bytes: int,
 ) -> None:
-    @mcp.tool(annotations=READ_ONLY)
+    read_only_tool = audited_tool(mcp, require_access_token, annotations=READ_ONLY)
+    append_only_tool = audited_tool(mcp, require_access_token, annotations=APPEND_ONLY_WRITE)
+
+    @read_only_tool
     def solstice_list_projects(tenant_slug: str, brand_id: str) -> dict[str, Any]:
         """List projects for a brand. Read-only; gated at MEMBER."""
         projects = list_projects_for_brand(
@@ -64,7 +69,7 @@ def register_content_tools(
             "count": len(projects),
         }
 
-    @mcp.tool(annotations=READ_ONLY)
+    @read_only_tool
     def solstice_project_info(tenant_slug: str, project_id: str) -> dict[str, Any]:
         """Return one project's directory map (folders + operation_ids).
 
@@ -81,7 +86,7 @@ def register_content_tools(
             raise ToolError("not_found: unknown project")
         return {"status": "ok", **info}
 
-    @mcp.tool(annotations=READ_ONLY)
+    @read_only_tool
     def solstice_list_operations(tenant_slug: str, brand_id: str) -> dict[str, Any]:
         """List content-generation operations for a brand. Read-only; gated at MEMBER."""
         operations = list_operations_for_brand(
@@ -98,7 +103,7 @@ def register_content_tools(
             "count": len(operations),
         }
 
-    @mcp.tool(annotations=READ_ONLY)
+    @read_only_tool
     def solstice_operation_info(tenant_slug: str, operation_id: str) -> dict[str, Any]:
         """Return one operation's metadata (no messages). Read-only; gated at MEMBER on the operation's brand."""
         info = get_operation_info(
@@ -112,7 +117,7 @@ def register_content_tools(
             raise ToolError("not_found: unknown operation")
         return {"status": "ok", **info}
 
-    @mcp.tool(annotations=READ_ONLY)
+    @read_only_tool
     def solstice_operation_messages(tenant_slug: str, operation_id: str) -> dict[str, Any]:
         """Return an operation's chat + document-version summaries. Read-only; gated at MEMBER.
 
@@ -134,7 +139,7 @@ def register_content_tools(
             "count": len(messages),
         }
 
-    @mcp.tool(annotations=READ_ONLY)
+    @read_only_tool
     def solstice_operation_html(
         tenant_slug: str,
         operation_id: str,
@@ -165,7 +170,7 @@ def register_content_tools(
             max_inline_bytes=max_inline_bytes,
         )
 
-    @mcp.tool(annotations=APPEND_ONLY_WRITE)
+    @append_only_tool
     def solstice_prepare_operation_version(
         tenant_slug: str,
         operation_id: str,
@@ -192,7 +197,7 @@ def register_content_tools(
             presign_expiry=presign_expiry,
         )
 
-    @mcp.tool(annotations=APPEND_ONLY_WRITE)
+    @append_only_tool
     def solstice_commit_operation_version(
         tenant_slug: str,
         operation_id: str,
