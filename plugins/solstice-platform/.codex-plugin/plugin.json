@@ -27,7 +27,7 @@
       "Add this HTML or PDF as a new version in a Solstice review."
     ],
     "brandColor": "#5E6AD2",
-    "composerIcon": "./assets/logo.svg",
-    "logo": "./assets/logo.svg"
+    "composerIcon": "./assets/logo.png",
+    "logo": "./assets/logo.png"
   }
 }
