@@ -72,7 +72,18 @@ MCP_INSTRUCTIONS = (
     "user_id, or assumed privilege as a tool argument - it is ignored. Always call "
     "solstice_list_tenants, then solstice_list_brands(tenant_slug) to discover what "
     "you may access; the server returns only the brands the authenticated user can "
-    "see. Slack tools are non-operational stubs."
+    "see.\n"
+    "Deep links: a user may paste a Solstice asset URL like "
+    "https://www.incyte.solsticehealth.co/home/assets/<operation_id>. The subdomain "
+    "(strip any leading www.) is the tenant_slug; the trailing UUID path segment is "
+    "the operation_id. The operation tools (solstice_operation_info, "
+    "solstice_operation_messages, solstice_operation_html) take tenant_slug and "
+    "operation_id directly - no brand argument is needed, the server resolves the "
+    "brand and enforces RBAC. When given such a link, parse it and call those tools "
+    "directly; do not ask the user for a brand. The same pattern applies to other "
+    "Solstice routes that embed an id in the path (e.g. /home/generating/<operation_id>, "
+    "/home/review-request/<operation_id>, /home/projects/<project_id>).\n"
+    "Slack tools are non-operational stubs."
 )
 
 
@@ -154,6 +165,13 @@ def build_mcp_app(
                 "rule": "Role is derived server-side from the OAuth subject. Tool arguments never grant authority.",
             },
             "slack_status": "not_connected",
+            "deep_links": {
+                "asset_url": "https://[www.]<tenant_slug>.solsticehealth.co/home/assets/<operation_id>",
+                "parsing": "subdomain (strip leading www.) = tenant_slug; trailing UUID path segment = operation_id",
+                "usage": "Call solstice_operation_info / solstice_operation_messages / "
+                         "solstice_operation_html with tenant_slug + operation_id. No brand "
+                         "argument needed; the server resolves the brand and enforces RBAC.",
+            },
             "tools": [
                 "solstice_server_info",
                 "solstice_list_tenants",
