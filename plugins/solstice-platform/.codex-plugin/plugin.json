@@ -1,0 +1,31 @@
+{
+  "name": "solstice-platform",
+  "version": "0.3.0",
+  "description": "Access Solstice workspaces, reviews, and documents, including append-only HTML and PDF versions.",
+  "author": {
+    "name": "Solstice Health",
+    "email": "engineering@solsticehealth.co",
+    "url": "https://solsticehealth.co"
+  },
+  "homepage": "https://github.com/solsticehealth/solstice-mcp-server",
+  "repository": "https://github.com/solsticehealth/solstice-mcp-server",
+  "license": "UNLICENSED",
+  "keywords": ["mcp", "solstice", "life-sciences", "auth0", "remote-mcp"],
+  "skills": "./skills/",
+  "mcpServers": "./codex.mcp.json",
+  "interface": {
+    "displayName": "Solstice Platform",
+    "shortDescription": "Work with Solstice reviews and document versions",
+    "longDescription": "Access authorized Solstice workspaces, brands, projects, content reviews, review activity, documents, and append-only HTML or PDF versions.",
+    "developerName": "Solstice Health",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://github.com/solsticehealth/solstice-mcp-server",
+    "defaultPrompt": [
+      "Show me the Solstice workspaces I can access.",
+      "Open a document from a Solstice content review.",
+      "Add this HTML or PDF as a new version in a Solstice review."
+    ],
+    "brandColor": "#5E6AD2"
+  }
+}

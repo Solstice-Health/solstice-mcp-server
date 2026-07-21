@@ -1,0 +1,14 @@
+{
+  "mcp_servers": {
+    "solstice-platform": {
+      "url": "https://api.solsticehealth.co/mcp",
+      "auth": "oauth",
+      "scopes": ["mcp:connect", "openid", "email"],
+      "oauth": {
+        "client_id": "uoOiEXHZxyDBkkBEfnOQEp6IhqcnAgTP"
+      },
+      "oauth_resource": "https://api.solsticehealth.co/mcp",
+      "default_tools_approval_mode": "writes"
+    }
+  }
+}

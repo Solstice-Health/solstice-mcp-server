@@ -48,6 +48,24 @@ The round trip is:
 
 Authenticate from `/mcp`, or use `claude mcp login solstice-platform` when available in the installed Claude Code version. OAuth tokens are per user and are never included in the plugin.
 
+## Codex authentication round trip
+
+The Codex adapter is `plugins/solstice-platform/codex.mcp.json`. It uses Streamable HTTP, a pre-registered public client ID, the production audience, and scopes `mcp:connect openid email`. Codex 0.142.0 or newer is required for static MCP OAuth client IDs.
+
+Set `mcp_oauth_callback_port = 8788` at the top level of `~/.codex/config.toml`. For the production MCP URL, Codex derives the callback `http://127.0.0.1:8788/callback/rNbuDm0IFnc1`; Auth0 must contain that exact value.
+
+For the local pilot, the adapter temporarily uses the existing public Cursor client ID after Terraform adds the Codex callback to its allowlist. Terraform also provisions a dedicated Codex client. After apply, retrieve `codex_client_id` and update `codex.mcp.json` through a reviewed pull request.
+
+The round trip is:
+
+1. Codex loads the plugin's MCP server and connects to the production URL.
+2. `codex mcp login solstice-platform` starts Authorization Code with PKCE using the configured public client ID, production audience, and scopes.
+3. Auth0 redirects to the fixed loopback callback and Codex exchanges the code plus PKCE verifier for an RS256 access token.
+4. Codex stores the token in its configured credential store and sends it as a Bearer credential to the MCP endpoint.
+5. The MCP server performs the same token, tenant, brand, role, and draft-visibility checks used for Cursor and Claude Code.
+
+Codex's plugin policy uses `writes` approval mode, so read-only tools follow normal policy while the prepare and commit version-write tools prompt for approval.
+
 ## Workspace selection
 
 After OAuth:
@@ -62,12 +80,12 @@ The server is stateless. Never assume the first workspace or reuse a workspace c
 
 ## Other clients
 
-Other clients need their own registered public Auth0 client, exact callback URL, PKCE support, and the token contract above. The Cursor and Claude manifests are not portable client configuration. See [the plugin compatibility guide](../plugins/solstice-platform/clients.md) for the manual MCP and Agent Skill fallback.
+Other clients need their own registered public Auth0 client, exact callback URL, PKCE support, and the token contract above. The Cursor, Claude, and Codex manifests are not portable client configuration. See [the plugin compatibility guide](../plugins/solstice-platform/clients.md) for the manual MCP and Agent Skill fallback.
 
 ## Troubleshooting
 
 - **401:** reconnect OAuth. Check that the token's issuer and audience match the selected MCP environment.
 - **403:** reauthorize with `mcp:connect`.
-- **Callback failure:** confirm the client uses an Auth0-registered callback. Claude Code must use port `8787`.
+- **Callback failure:** confirm the client uses an Auth0-registered callback. Claude Code must use port `8787`; Codex must use port `8788` and the production callback ID shown above.
 - **`not_member`:** call `solstice_list_tenants` again. The workspace may be unknown, belong to another environment, or no longer contain a live membership.
 - **Access denied or not found:** do not infer that an inaccessible resource exists. Re-list the parent collection and choose only from returned results.

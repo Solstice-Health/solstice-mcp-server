@@ -2,7 +2,7 @@
 
 `solstice-mcp` is a **discovery and authorization hub**. It tells the agent
 which sibling MCPs (Linear, Jam, Slack) a Solstice internal user is allowed to
-use and how to connect them in their IDE. The IDE (Cursor) connects to each
+use and how to connect them in their agent host. Cursor, Claude Code, or Codex connects to each
 sibling MCP directly and calls them directly — `solstice-mcp` holds zero
 sibling credentials, relays zero calls, and stores zero per-user credentials.
 
@@ -22,9 +22,8 @@ claim is missing the gate fails closed: the caller sees an empty sibling MCP
 list. The directory is the authorization surface — non-Solstice users see
 nothing.
 
-The Cursor and Claude Code clients request `mcp:connect openid email` scopes
-(see `plugins/solstice-platform/mcp.json` and
-`plugins/solstice-platform/.mcp.json`). Auth0 mints the `email` claim into the
+The Cursor, Claude Code, and Codex clients request `mcp:connect openid email`
+scopes (see the host adapters in `plugins/solstice-platform`). Auth0 mints the `email` claim into the
 access token only when an Auth0 Action adds it; the default behavior puts
 `email` in the ID token, not the access token. The Action below is the bridge.
 
@@ -78,7 +77,7 @@ so the code is live after `terraform apply`.
 ## End-to-end verification
 
 1. Apply with `enable_email_claim_action = true`.
-2. In Cursor or Claude Code, reconnect the `solstice-platform` MCP server so a
+2. In Cursor, Claude Code, or Codex, reconnect the `solstice-platform` MCP server so a
    fresh access token is minted with the `email` claim.
 3. From the agent, call `solstice_check_access` with no arguments.
 4. Expect:

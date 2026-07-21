@@ -1,0 +1,20 @@
+{
+  "name": "solstice-tools",
+  "interface": {
+    "displayName": "Solstice Tools"
+  },
+  "plugins": [
+    {
+      "name": "solstice-platform",
+      "source": {
+        "source": "local",
+        "path": "./plugins/solstice-platform"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

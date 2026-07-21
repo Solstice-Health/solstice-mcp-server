@@ -18,6 +18,15 @@ The portable pieces are the production Streamable HTTP endpoint and `skills/sols
 - Team distribution: supported through the private Claude marketplace
 - OAuth: configured for a local pilot; the dedicated Claude public PKCE client is pending Terraform provision and sync
 
+**Codex**
+
+- Plugin package: supported by `.codex-plugin/plugin.json` and `codex.mcp.json`
+- Local loading: supported through the repo marketplace at `.agents/plugins/marketplace.json`
+- Team distribution: supported by adding the private repository as a Codex marketplace
+- Hosts: plugin installation works in Codex CLI and Codex in the ChatGPT desktop app; the Codex IDE extension supports the shared MCP and skill but not plugin installation
+- OAuth: requires Codex 0.142.0 or newer, `mcp_oauth_callback_port = 8788`, and the Terraform-registered fixed callback
+- Approval policy: read tools run normally; Codex prompts for the prepare and commit version-write tools
+
 **Other MCP clients**
 
 - Plugin package: not provided
@@ -35,4 +44,4 @@ For another MCP-capable client:
 4. Complete OAuth as the individual user.
 5. If the client supports Agent Skills, copy `skills/solstice-platform/SKILL.md` and its `references/` directory to that client's documented skill location.
 
-Do not reuse the Cursor or Claude manifest in another client. Do not place a client secret in local MCP configuration. A client without compatible OAuth cannot use the protected production endpoint.
+Do not reuse a Cursor, Claude, or Codex manifest in another client. Do not place a client secret in local MCP configuration. A client without compatible OAuth cannot use the protected production endpoint.
