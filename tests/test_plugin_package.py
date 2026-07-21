@@ -124,6 +124,9 @@ def test_package_has_no_secrets_placeholders_or_duplicate_skill() -> None:
     ]
     for path in package_paths:
         if path.is_file():
+            # ponytail: skip binary assets (e.g. logo.png) — secrets scan is for text.
+            if b"\x00" in path.read_bytes()[:2048]:
+                continue
             assert forbidden.search(path.read_text()) is None, path
 
     assert not (ROOT / "integrations" / "cursor" / "solstice-platform").exists()
