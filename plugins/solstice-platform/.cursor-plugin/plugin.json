@@ -11,5 +11,6 @@
   "homepage": "https://github.com/solsticehealth/solstice-mcp-server",
   "repository": "https://github.com/solsticehealth/solstice-mcp-server",
   "license": "UNLICENSED",
-  "keywords": ["mcp", "solstice", "life-sciences", "auth0", "remote-mcp"]
+  "keywords": ["mcp", "solstice", "life-sciences", "auth0", "remote-mcp"],
+  "logo": "assets/logo.svg"
 }

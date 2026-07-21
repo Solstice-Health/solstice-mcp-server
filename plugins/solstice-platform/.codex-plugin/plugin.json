@@ -26,6 +26,8 @@
       "Open a document from a Solstice content review.",
       "Add this HTML or PDF as a new version in a Solstice review."
     ],
-    "brandColor": "#5E6AD2"
+    "brandColor": "#5E6AD2",
+    "composerIcon": "./assets/logo.svg",
+    "logo": "./assets/logo.svg"
   }
 }
