@@ -68,7 +68,22 @@ class TenantRegistry:
         return list(self._tenants)
 
     def get(self, slug: str) -> TenantConfig | None:
-        return self._tenants.get(slug)
+        if not slug:
+            return None
+        cfg = self._tenants.get(slug)
+        if cfg is not None:
+            return cfg
+        # Solstice asset URLs use hyphens in the subdomain (e.g.
+        # sanofi-sandbox.solsticehealth.co) while tenant slugs use underscores
+        # (sanofi_sandbox). Accept either form so deep-link parsing tolerates a
+        # hyphen/underscore mismatch. The tenant registry mirrors
+        # Backend-Server/config/tenants.json (single source of truth).
+        for swapped in (slug.replace("-", "_"), slug.replace("_", "-")):
+            if swapped != slug:
+                found = self._tenants.get(swapped)
+                if found is not None:
+                    return found
+        return None
 
 
 class TenantDatabaseFactory:

@@ -59,7 +59,9 @@ def register_discovery_tools(
             },
             "deep_links": {
                 "asset_url": "https://[www.]<tenant_slug>.solsticehealth.co/home/assets/<operation_id>",
-                "parsing": "subdomain (strip leading www.) = tenant_slug; trailing UUID path segment = operation_id",
+                "parsing": "subdomain (strip leading www.) maps to tenant_slug; hyphens and "
+                "underscores are interchangeable (sanofi-sandbox -> sanofi_sandbox); "
+                "trailing UUID path segment = operation_id",
                 "usage": "Call solstice_operation_info / solstice_operation_messages / "
                 "solstice_operation_html with tenant_slug + operation_id. No brand "
                 "argument needed; the server resolves the brand and enforces RBAC.",
