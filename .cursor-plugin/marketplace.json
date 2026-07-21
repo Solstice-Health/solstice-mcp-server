@@ -1,0 +1,18 @@
+{
+  "name": "solstice-tools",
+  "owner": {
+    "name": "Solstice Health",
+    "email": "engineering@solsticehealth.co"
+  },
+  "metadata": {
+    "description": "Private Solstice tools for internal teams."
+  },
+  "plugins": [
+    {
+      "name": "solstice-platform",
+      "source": "plugins/solstice-platform",
+      "description": "Access Solstice review content and append document versions.",
+      "version": "0.2.0"
+    }
+  ]
+}

@@ -23,7 +23,10 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
-        return cls(**{name: os.getenv(name, field.default) for name, field in cls.__dataclass_fields__.items()})
+        values = {name: os.getenv(name, field.default) for name, field in cls.__dataclass_fields__.items()}
+        values["S3_PRESIGN_EXPIRY_SECONDS"] = int(values["S3_PRESIGN_EXPIRY_SECONDS"])
+        values["S3_MAX_INLINE_BYTES"] = int(values["S3_MAX_INLINE_BYTES"])
+        return cls(**values)
 
     @property
     def tenant_environment(self) -> str:

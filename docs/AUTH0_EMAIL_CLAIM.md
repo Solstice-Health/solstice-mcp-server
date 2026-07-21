@@ -22,11 +22,11 @@ claim is missing the gate fails closed: the caller sees an empty sibling MCP
 list. The directory is the authorization surface — non-Solstice users see
 nothing.
 
-The Cursor client requests `mcp:connect openid email` scopes (see
-`integrations/cursor/solstice-platform/mcp.json`). Auth0 mints the `email`
-claim into the access token only when an Auth0 Action adds it; the default
-behavior puts `email` in the ID token, not the access token. The Action below
-is the bridge.
+The Cursor and Claude Code clients request `mcp:connect openid email` scopes
+(see `plugins/solstice-platform/mcp.json` and
+`plugins/solstice-platform/.mcp.json`). Auth0 mints the `email` claim into the
+access token only when an Auth0 Action adds it; the default behavior puts
+`email` in the ID token, not the access token. The Action below is the bridge.
 
 ## Auth0 Action code
 
@@ -78,8 +78,8 @@ so the code is live after `terraform apply`.
 ## End-to-end verification
 
 1. Apply with `enable_email_claim_action = true`.
-2. In Cursor, reconnect the `solstice-platform` MCP server (Settings → MCP →
-   reconnect) so a fresh access token is minted with the `email` claim.
+2. In Cursor or Claude Code, reconnect the `solstice-platform` MCP server so a
+   fresh access token is minted with the `email` claim.
 3. From the agent, call `solstice_check_access` with no arguments.
 4. Expect:
    ```json

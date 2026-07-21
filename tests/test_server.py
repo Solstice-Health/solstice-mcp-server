@@ -9,6 +9,7 @@ from conftest import DELETED_SUB, OTHER_SUB, SHARED_SUB, TEST_ISSUER, TEST_RESOU
 
 from solstice_mcp.auth import fetch_jwks
 from solstice_mcp.gate import SolsticeAccessGate
+from solstice_mcp.settings import Settings
 from solstice_mcp.tenants import (
     TenantDatabaseFactory,
     TenantMembershipCache,
@@ -33,6 +34,16 @@ def test_fetch_jwks_reads_response_before_close(monkeypatch):
 
     assert fetch_jwks("https://auth.example/.well-known/jwks.json") == {"keys": [{"kid": "one"}]}
     assert response.closed
+
+
+def test_settings_from_env_coerces_numeric_values(monkeypatch):
+    monkeypatch.setenv("S3_PRESIGN_EXPIRY_SECONDS", "900")
+    monkeypatch.setenv("S3_MAX_INLINE_BYTES", "1234")
+
+    parsed = Settings.from_env()
+
+    assert parsed.S3_PRESIGN_EXPIRY_SECONDS == 900
+    assert parsed.S3_MAX_INLINE_BYTES == 1234
 
 
 def rpc(
@@ -105,7 +116,8 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
     assert initialized.json()["result"]["serverInfo"]["name"] == "solstice-mcp"
 
     tools = rpc(app_harness, "tools/list", token=mint_token())
-    names = {tool["name"] for tool in tools.json()["result"]["tools"]}
+    listed_tools = tools.json()["result"]["tools"]
+    names = {tool["name"] for tool in listed_tools}
     assert names == {
         "solstice_server_info",
         "solstice_list_tenants",
@@ -122,11 +134,18 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
         "solstice_operation_html",
         "solstice_prepare_operation_version",
         "solstice_commit_operation_version",
-        "solstice_slack_search",
-        "solstice_slack_read",
-        "solstice_slack_send",
-        "solstice_slack_react",
     }
+    for tool in listed_tools:
+        is_write = tool["name"] in {
+            "solstice_prepare_operation_version",
+            "solstice_commit_operation_version",
+        }
+        assert tool["annotations"] == {
+            "readOnlyHint": not is_write,
+            "destructiveHint": False,
+            "idempotentHint": not is_write,
+            "openWorldHint": False,
+        }
 
 
 def test_cross_environment_discovery_returns_all_tenants_with_user(app_harness: AppHarness, mint_token):
@@ -198,36 +217,6 @@ def test_context_is_cleared_when_database_factory_fails(app_harness: AppHarness)
             session_factory=fail,
         )
     assert current_tenant.get() is None
-
-
-@pytest.mark.parametrize(
-    ("name", "arguments", "false_field", "empty_field"),
-    [
-        ("solstice_slack_search", {"query": "q"}, None, "results"),
-        ("solstice_slack_read", {"channel": "C1"}, None, "messages"),
-        ("solstice_slack_send", {"channel": "C1", "message": "hello"}, "sent", None),
-        (
-            "solstice_slack_react",
-            {"channel": "C1", "timestamp": "1.2", "emoji": "thumbsup"},
-            "reacted",
-            None,
-        ),
-    ],
-)
-def test_slack_stubs_are_truthful(app_harness: AppHarness, mint_token, name, arguments, false_field, empty_field):
-    response = rpc(
-        app_harness,
-        "tools/call",
-        token=mint_token(),
-        params={"name": name, "arguments": arguments},
-    )
-    payload = tool_payload(response)
-    assert payload["status"] == "not_connected"
-    assert payload["connected"] is False
-    if false_field:
-        assert payload[false_field] is False
-    if empty_field:
-        assert payload[empty_field] == []
 
 
 def test_tenant_database_factory_routes_by_env(tmp_path):
