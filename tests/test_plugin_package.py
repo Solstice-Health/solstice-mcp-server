@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 PLUGIN = ROOT / "plugins" / "solstice-platform"
 PLUGIN_NAME = "solstice-platform"
-PLUGIN_VERSION = "0.3.0"
+PLUGIN_VERSION = "0.3.1"
 PRODUCTION_URL = "https://api.solsticehealth.co/mcp"
 PRODUCTION_AUDIENCE = PRODUCTION_URL
 CURSOR_CLIENT_ID = "uoOiEXHZxyDBkkBEfnOQEp6IhqcnAgTP"
@@ -66,15 +66,16 @@ def test_mcp_configs_share_the_production_auth_contract() -> None:
     codex = load_json(PLUGIN / "codex.mcp.json")["mcp_servers"][PLUGIN_NAME]
 
     assert cursor["url"] == claude["url"] == codex["url"] == PRODUCTION_URL == PRODUCTION_AUDIENCE
-    assert set(cursor["auth"]["scopes"]) == set(claude["oauth"]["scopes"].split()) == set(codex["scopes"]) == SCOPES
+    assert set(cursor["auth"]["scopes"]) == set(claude["auth"]["scopes"]) == set(codex["scopes"]) == SCOPES
     assert claude["type"] == "http"
-    assert claude["oauth"]["callbackPort"] == 8787
     assert codex["auth"] == "oauth"
     assert codex["oauth_resource"] == PRODUCTION_AUDIENCE
     assert codex["default_tools_approval_mode"] == "writes"
 
-    # Temporary pilot fallback; reviewed PRs replace host IDs after Terraform apply.
-    assert cursor["auth"]["CLIENT_ID"] == claude["oauth"]["clientId"] == codex["oauth"]["client_id"] == CURSOR_CLIENT_ID
+    # Static PKCE client (no secret); redirect URI is managed by the host and
+    # registered at Auth0 as http://localhost:8787/callback. DCR is disabled on
+    # the tenant, so the auth.CLIENT_ID block must be used (not oauth.clientId).
+    assert cursor["auth"]["CLIENT_ID"] == claude["auth"]["CLIENT_ID"] == codex["oauth"]["client_id"] == CURSOR_CLIENT_ID
 
 
 def test_shared_skill_is_portable_and_action_focused() -> None:
