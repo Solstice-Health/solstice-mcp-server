@@ -514,14 +514,22 @@ def _doc_message_metadata(
     *, version: int, intent: str, s3_key: str, message_id: str, now: datetime, file_name: str | None
 ) -> dict[str, Any]:
     """Mirror the Backend-Server bot document-message metadata shape so the
-    frontend renders an MCP-created version identically to a UI-created one."""
+    frontend renders an MCP-created version identically to a UI-created one.
+
+    ``type: "bot"`` is required: the FE version stepper
+    (isDocumentVersionMessage) reads the message ``type`` from this metadata
+    blob, not the DB ``type`` column, and drops any document row that isn't
+    ``type == "bot"``. Without it an MCP-created version is invisible in the UI.
+    ``htmlDocumentLastVersion`` mirrors BE (build_final_document_bot_metadata):
+    the *previous* version number, i.e. version - 1."""
     return {
         "id": message_id,
         "timestamp": now.isoformat(),
+        "type": "bot",
         "isFinalDocument": True,
         "documentVersion": version,
         "htmlDocumentVersion": version,
-        "htmlDocumentLastVersion": version,
+        "htmlDocumentLastVersion": version - 1,
         "versionIntent": intent,
         "finalContentS3Key": s3_key,
         "finalContent": "",
@@ -678,7 +686,13 @@ def commit_operation_version(
                 version_number=None,
                 intent=None,
                 position=base_pos,
-                message_metadata={"id": str(uuid4()), "timestamp": now.isoformat(), "kind": "user_feedback"},
+                message_metadata={
+                    "id": str(uuid4()),
+                    "timestamp": now.isoformat(),
+                    "type": "user",
+                    "finalContent": "Save new version",
+                    "kind": "user_feedback",
+                },
                 created_at=now,
                 deleted_at=None,
             )

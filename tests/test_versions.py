@@ -293,9 +293,13 @@ def test_commit_metadata_mirrors_be_shape(app_harness: AppHarness, mint_token):
          "s3_key": prep["s3_key"], "file_name": "op_a1.html"},
     )
     meta = _metadata_for(app_harness, OP_A1, prep["message_id"])
+    # type == "bot" is what the FE version stepper (isDocumentVersionMessage)
+    # gates on; without it the version is invisible in the UI.
+    assert meta["type"] == "bot"
     assert meta["documentVersion"] == 3
     assert meta["htmlDocumentVersion"] == 3
-    assert meta["htmlDocumentLastVersion"] == 3
+    # Mirrors BE: previous version number (N-1), not the current version.
+    assert meta["htmlDocumentLastVersion"] == 2
     assert meta["versionIntent"] == "final"
     assert meta["isFinalDocument"] is True
     assert meta["finalContentS3Key"] == prep["s3_key"]
