@@ -25,12 +25,14 @@ from solstice_mcp.brands import (
 )
 from solstice_mcp.gate import SolsticeAccessGate
 from solstice_mcp.operations import (
+    commit_operation_version,
     get_operation_html,
     get_operation_info,
     get_project_info,
     list_operation_messages,
     list_operations_for_brand,
     list_projects_for_brand,
+    prepare_operation_version,
 )
 from solstice_mcp.settings import Settings, settings
 from solstice_mcp.sibling_mcps import SiblingMCPRegistry
@@ -83,6 +85,14 @@ MCP_INSTRUCTIONS = (
     "directly; do not ask the user for a brand. The same pattern applies to other "
     "Solstice routes that embed an id in the path (e.g. /home/generating/<operation_id>, "
     "/home/review-request/<operation_id>, /home/projects/<project_id>).\n"
+    "Version writes: to add a new HTML or PDF version to an operation, call "
+    "solstice_prepare_operation_version(tenant_slug, operation_id, type, file_name) "
+    "to get a presigned PUT URL and target s3_key for the next version (v1 if none "
+    "exist, else max+1). Upload the file bytes directly to that URL, then call "
+    "solstice_commit_operation_version(tenant_slug, operation_id, type, s3_key, "
+    "file_name) to insert the version row. Versions are append-only - existing "
+    "versions are never overwritten. Intent is derived from your token, never an "
+    "argument: SOLSTICE_STAFF -> draft; MEMBER/ADMIN -> final.\n"
     "Slack tools are non-operational stubs."
 )
 
@@ -186,6 +196,8 @@ def build_mcp_app(
                 "solstice_operation_info",
                 "solstice_operation_messages",
                 "solstice_operation_html",
+                "solstice_prepare_operation_version",
+                "solstice_commit_operation_version",
                 "solstice_slack_search",
                 "solstice_slack_read",
                 "solstice_slack_send",
@@ -376,6 +388,41 @@ def build_mcp_app(
             registry=tenant_registry, session_factory=open_session, s3=s3_reader,
             presign_expiry=runtime_settings.S3_PRESIGN_EXPIRY_SECONDS,
             max_inline_bytes=runtime_settings.S3_MAX_INLINE_BYTES,
+        )
+
+    @mcp.tool()
+    def solstice_prepare_operation_version(
+        tenant_slug: str, operation_id: str, type: str, file_name: str | None = None
+    ) -> dict[str, Any]:
+        """Prepare a new HTML or PDF version upload on an operation. Step 1 of 2.
+
+        Returns a presigned PUT URL and target s3_key for the next version (v1
+        if the operation has no document versions, else max+1). Upload the file
+        bytes directly to upload_url, then call solstice_commit_operation_version
+        with the returned s3_key. Gated at MEMBER on the operation's brand.
+        ``type`` is ``html`` or ``pdf``.
+        """
+        return prepare_operation_version(
+            require_subject(), tenant_slug, operation_id, type, file_name,
+            registry=tenant_registry, session_factory=open_session, s3=s3_reader,
+            presign_expiry=runtime_settings.S3_PRESIGN_EXPIRY_SECONDS,
+        )
+
+    @mcp.tool()
+    def solstice_commit_operation_version(
+        tenant_slug: str, operation_id: str, type: str, s3_key: str, file_name: str | None = None
+    ) -> dict[str, Any]:
+        """Commit a new version row after uploading to S3. Step 2 of 2.
+
+        Append-only: inserts a new version row, never overwrites an existing
+        one. The s3_key is validated against the prepared version. Intent is
+        derived from your token (SOLSTICE_STAFF -> draft; MEMBER/ADMIN -> final)
+        and is NOT accepted as an argument. Gated at MEMBER on the operation's
+        brand. ``type`` is ``html`` or ``pdf``.
+        """
+        return commit_operation_version(
+            require_subject(), tenant_slug, operation_id, type, s3_key, file_name,
+            registry=tenant_registry, session_factory=open_session, s3=s3_reader,
         )
 
     @mcp.tool()

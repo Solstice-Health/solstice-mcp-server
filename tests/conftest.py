@@ -135,6 +135,8 @@ class FakeS3:
     def __init__(self) -> None:
         self.objects: dict[tuple[str, str], bytes] = {}
         self.presign_calls: list[tuple[str, str, int]] = []
+        self.presign_put_calls: list[tuple[str, str, int, str]] = []
+        self.head_calls: list[tuple[str, str]] = []
         self.download_calls: list[tuple[str, str, int]] = []
         self.too_large_keys: set[tuple[str, str]] = set()
         self.missing_on_download: set[tuple[str, str]] = set()
@@ -151,6 +153,19 @@ class FakeS3:
     def presign(self, bucket: str, key: str, expires_in: int) -> str:
         self.presign_calls.append((bucket, key, expires_in))
         return f"https://fake-s3/{bucket}/{key}?expires={expires_in}"
+
+    def presign_put(
+        self, bucket: str, key: str, expires_in: int, content_type: str
+    ) -> str:
+        self.presign_put_calls.append((bucket, key, expires_in, content_type))
+        return f"https://fake-s3/{bucket}/{key}?PUT&expires={expires_in}&ct={content_type}"
+
+    def head(self, bucket: str, key: str) -> int | None:
+        self.head_calls.append((bucket, key))
+        body = self.objects.get((bucket, key))
+        if body is None:
+            return None
+        return len(body)
 
     def download(self, bucket: str, key: str, max_bytes: int) -> bytes:
         self.download_calls.append((bucket, key, max_bytes))

@@ -30,11 +30,12 @@ Backend-Server does NOT enforce on its own GET /messages route):
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from mcp.server.fastmcp.exceptions import ToolError
-from sqlalchemy import JSON, DateTime, String, Uuid, or_, select
+from sqlalchemy import JSON, DateTime, String, Uuid, func, or_, select
 from sqlalchemy.orm import Mapped, mapped_column
 
 from solstice_mcp.brands import (
@@ -108,6 +109,12 @@ class CgOperationMessage(Base):
     version_number: Mapped[int | None] = mapped_column(nullable=True)
     intent: Mapped[str | None] = mapped_column(String, nullable=True)
     position: Mapped[int] = mapped_column()
+    # The DB column ``metadata`` (jsonb in prod) is mapped to ``message_metadata``
+    # and loaded deferred so read queries never pull the blob. The write path
+    # (version commit) populates it; reads in this module never access it.
+    message_metadata: Mapped[Any | None] = mapped_column(
+        "metadata", JSON, nullable=True, deferred=True
+    )
     created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -458,14 +465,266 @@ def get_operation_html(
         reset_brand_role()
 
 
+def _sanitize_file_name(file_name: str | None) -> str:
+    """Reduce a user-supplied file name to a safe S3 path segment."""
+    if not file_name:
+        return ""
+    base = file_name.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    return base.replace(" ", "_")
+
+
+def _version_s3_key(
+    kind: str, operation_id: str, version: int, message_id: str, file_name: str | None
+) -> str:
+    if kind == "html":
+        return f"cg_operation_msg_html/{operation_id}/v{version}/{message_id}/v{version}.html"
+    return f"approved_pdfs/{operation_id}/v{version}_{_sanitize_file_name(file_name) or f'v{version}.pdf'}"
+
+
+def _validate_version_key(
+    kind: str, s3_key: str, operation_id: str, version: int
+) -> str:
+    """Strictly validate a client-supplied s3_key for a committed version.
+
+    Returns the message_id embedded in the key (html) or "" (pdf). Raises
+    ToolError on any deviation from the expected shape so a caller cannot
+    target an arbitrary key, another operation, or a stale version segment.
+    """
+    if kind == "html":
+        prefix = f"cg_operation_msg_html/{operation_id}/v{version}/"
+        suffix = f"/v{version}.html"
+        if not (s3_key.startswith(prefix) and s3_key.endswith(suffix)):
+            raise ToolError("invalid_key: key does not match the prepared version")
+        message_id = s3_key[len(prefix) : -len(suffix)]
+        if not message_id or "/" in message_id:
+            raise ToolError("invalid_key: malformed message_id segment")
+        return message_id
+    if kind == "pdf":
+        prefix = f"approved_pdfs/{operation_id}/v{version}_"
+        if not s3_key.startswith(prefix):
+            raise ToolError("invalid_key: key does not match the prepared version")
+        suffix = s3_key[len(prefix) :]
+        if not suffix or "/" in suffix:
+            raise ToolError("invalid_key: malformed pdf file name segment")
+        return ""
+    raise ToolError(f"invalid_key: unsupported type {kind!r}")
+
+
+def _doc_message_metadata(
+    *, version: int, intent: str, s3_key: str, message_id: str, now: datetime, file_name: str | None
+) -> dict[str, Any]:
+    """Mirror the Backend-Server bot document-message metadata shape so the
+    frontend renders an MCP-created version identically to a UI-created one."""
+    return {
+        "id": message_id,
+        "timestamp": now.isoformat(),
+        "isFinalDocument": True,
+        "documentVersion": version,
+        "htmlDocumentVersion": version,
+        "htmlDocumentLastVersion": version,
+        "versionIntent": intent,
+        "finalContentS3Key": s3_key,
+        "finalContent": "",
+        "fileName": file_name,
+    }
+
+
+def prepare_operation_version(
+    subject: str,
+    tenant_slug: str,
+    operation_id: str,
+    kind: str,
+    file_name: str | None,
+    *,
+    registry: TenantRegistry,
+    session_factory: SessionFactory,
+    s3: S3Reader,
+    presign_expiry: int = 600,
+) -> dict[str, Any]:
+    """Issue a presigned PUT URL for the next document version on an operation.
+
+    Two-step write (step 1 of 2): the caller uploads the file bytes directly to
+    tenant S3 at the returned ``upload_url``, then calls
+    ``commit_operation_version`` with the returned ``s3_key`` to insert the DB
+    row. Authorization is gated at MEMBER on the operation's brand (resolved
+    from the row). No version row is created here; the version number is
+    recomputed at commit under an operation-row lock.
+    """
+    try:
+        with tenant_session(tenant_slug, session_factory) as session:
+            op = session.scalar(
+                select(CgOperation).where(
+                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
+                )
+            )
+            if op is None:
+                raise ToolError("not_authorized: unknown operation")
+            brand_id = op.brand_id
+        require_brand_role(
+            subject, tenant_slug, brand_id,
+            min_role=UserRole.MEMBER,
+            registry=registry, session_factory=session_factory,
+        )
+        tenant_config = registry.get(tenant_slug)
+        bucket = tenant_config.s3_bucket if tenant_config is not None else ""
+        if not bucket:
+            raise ToolError("not_configured: tenant has no s3_bucket")
+        with tenant_session(tenant_slug, session_factory) as session:
+            max_v = session.scalar(
+                select(func.max(CgOperationMessage.version_number)).where(
+                    CgOperationMessage.operation_id == operation_id,
+                    CgOperationMessage.deleted_at.is_(None),
+                )
+            )
+        next_v = (max_v or 0) + 1
+        message_id = str(uuid4())
+        key = _version_s3_key(kind, operation_id, next_v, message_id, file_name)
+        content_type = "text/html" if kind == "html" else "application/pdf"
+        upload_url = s3.presign_put(bucket, key, presign_expiry, content_type)
+        return {
+            "operation_id": operation_id,
+            "type": kind,
+            "version_number": next_v,
+            "message_id": message_id,
+            "s3_key": key,
+            "upload_url": upload_url,
+            "expires_in": presign_expiry,
+        }
+    finally:
+        reset_brand_role()
+
+
+def commit_operation_version(
+    subject: str,
+    tenant_slug: str,
+    operation_id: str,
+    kind: str,
+    s3_key: str,
+    file_name: str | None,
+    *,
+    registry: TenantRegistry,
+    session_factory: SessionFactory,
+    s3: S3Reader,
+) -> dict[str, Any]:
+    """Insert a new document version row after the client has uploaded to S3.
+
+    Two-step write (step 2 of 2). Append-only: only INSERTs a new row, never
+    updates an existing one. The version number is recomputed under an
+    operation-row lock and the client-supplied ``s3_key`` is strictly
+    validated against the prepared version, so a caller cannot target another
+    operation, an arbitrary key, or a stale version segment.
+
+    Intent is derived server-side from the subject's brand role:
+    SOLSTICE_STAFF -> ``draft``; MEMBER / ADMIN -> ``final``. There is no
+    ``intent`` argument — the filter is derived from the token, mirroring the
+    read-side rule.
+    """
+    try:
+        with tenant_session(tenant_slug, session_factory) as session:
+            op = session.scalar(
+                select(CgOperation).where(
+                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
+                )
+            )
+            if op is None:
+                raise ToolError("not_authorized: unknown operation")
+            brand_id = op.brand_id
+        identity = require_brand_role(
+            subject, tenant_slug, brand_id,
+            min_role=UserRole.MEMBER,
+            registry=registry, session_factory=session_factory,
+        )
+        intent = "draft" if identity.role == UserRole.SOLSTICE_STAFF else "final"
+        tenant_config = registry.get(tenant_slug)
+        bucket = tenant_config.s3_bucket if tenant_config is not None else ""
+        if not bucket:
+            raise ToolError("not_configured: tenant has no s3_bucket")
+        with tenant_session(tenant_slug, session_factory) as session:
+            locked = session.scalar(
+                select(CgOperation).where(
+                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
+                ).with_for_update()
+            )
+            if locked is None:
+                raise ToolError("not_authorized: unknown operation")
+            max_v = session.scalar(
+                select(func.max(CgOperationMessage.version_number)).where(
+                    CgOperationMessage.operation_id == operation_id,
+                    CgOperationMessage.deleted_at.is_(None),
+                )
+            )
+            next_v = (max_v or 0) + 1
+            message_id = _validate_version_key(kind, s3_key, operation_id, next_v)
+            # Confirm the client uploaded. Done under the operation-row lock so a
+            # concurrent committer cannot land between validation and insert.
+            size = s3.head(bucket, s3_key)
+            if size is None:
+                raise ToolError("not_found: object not uploaded - PUT to the upload_url first")
+            max_pos = session.scalar(
+                select(func.max(CgOperationMessage.position)).where(
+                    CgOperationMessage.operation_id == operation_id,
+                    CgOperationMessage.deleted_at.is_(None),
+                )
+            )
+            base_pos = (max_pos or -1) + 1
+            now = datetime.now(UTC)
+            pill = CgOperationMessage(
+                id=str(uuid4()),
+                operation_id=operation_id,
+                message_id=str(uuid4()),
+                author_id=identity.user_id,
+                type="text",
+                content="Save new version",
+                version_number=None,
+                intent=None,
+                position=base_pos,
+                message_metadata={"id": str(uuid4()), "timestamp": now.isoformat(), "kind": "user_feedback"},
+                created_at=now,
+                deleted_at=None,
+            )
+            doc = CgOperationMessage(
+                id=str(uuid4()),
+                operation_id=operation_id,
+                message_id=message_id,
+                author_id=None,
+                type=kind,
+                content=s3_key,
+                version_number=next_v,
+                intent=intent,
+                position=base_pos + 1,
+                message_metadata=_doc_message_metadata(
+                    version=next_v, intent=intent, s3_key=s3_key,
+                    message_id=message_id, now=now, file_name=file_name,
+                ),
+                created_at=now,
+                deleted_at=None,
+            )
+            session.add(pill)
+            session.add(doc)
+            session.commit()
+        return {
+            "operation_id": operation_id,
+            "type": kind,
+            "version_number": next_v,
+            "intent": intent,
+            "message_id": message_id,
+            "s3_key": s3_key,
+            "size": size,
+        }
+    finally:
+        reset_brand_role()
+
+
 __all__ = [
     "CgOperation",
     "CgOperationMessage",
     "Project",
+    "commit_operation_version",
     "get_operation_html",
     "get_operation_info",
     "get_project_info",
     "list_operation_messages",
     "list_operations_for_brand",
     "list_projects_for_brand",
+    "prepare_operation_version",
 ]
