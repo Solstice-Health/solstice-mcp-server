@@ -12,10 +12,11 @@ import logging
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
-from functools import wraps
+from functools import partial, wraps
 from typing import Any, ParamSpec, TypeVar
 from uuid import uuid4
 
+import anyio.to_thread
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
@@ -61,7 +62,7 @@ def audited_tool(
         signature = inspect.signature(function)
 
         @wraps(function)
-        def audited(*args: P.args, **kwargs: P.kwargs) -> R:
+        async def audited(*args: P.args, **kwargs: P.kwargs) -> R:
             started_at = time.monotonic()
             token = require_access_token()
             bound = signature.bind_partial(*args, **kwargs)
@@ -81,7 +82,11 @@ def audited_tool(
             }
 
             try:
-                result = function(*args, **kwargs)
+                # Tool bodies do blocking I/O (SQLAlchemy, boto3). The MCP SDK
+                # calls sync tools inline on the event loop, so offload to a
+                # worker thread to keep one slow DB/S3 call from stalling every
+                # concurrent request on this worker.
+                result = await anyio.to_thread.run_sync(partial(function, *args, **kwargs))
             except Exception as exc:
                 # Re-raise after recording the outcome; tool error behavior is unchanged.
                 error_code = str(exc).partition(":")[0]

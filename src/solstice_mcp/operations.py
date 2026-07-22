@@ -43,7 +43,6 @@ from solstice_mcp.brands import (
     BrandTeamMember,
     UserRole,
     require_brand_role,
-    reset_brand_role,
     role_satisfies,
 )
 from solstice_mcp.storage import S3Error, S3ObjectMissing, S3ObjectTooLarge, S3Reader
@@ -217,21 +216,18 @@ def list_projects_for_brand(
     session_factory: SessionFactory,
 ) -> list[dict[str, Any]]:
     """List non-deleted projects for a brand. Gated at MEMBER."""
-    try:
-        require_brand_role(
-            subject, tenant_slug, brand_id,
-            min_role=UserRole.MEMBER,
-            registry=registry, session_factory=session_factory,
-        )
-        with tenant_session(tenant_slug, session_factory) as session:
-            rows = session.scalars(
-                select(Project).where(
-                    Project.brand_id == brand_id, Project.deleted_at.is_(None)
-                ).order_by(Project.name)
-            ).all()
-        return [_project_summary(p) for p in rows]
-    finally:
-        reset_brand_role()
+    require_brand_role(
+        subject, tenant_slug, brand_id,
+        min_role=UserRole.MEMBER,
+        registry=registry, session_factory=session_factory,
+    )
+    with tenant_session(tenant_slug, session_factory) as session:
+        rows = session.scalars(
+            select(Project).where(
+                Project.brand_id == brand_id, Project.deleted_at.is_(None)
+            ).order_by(Project.name)
+        ).all()
+    return [_project_summary(p) for p in rows]
 
 
 def get_project_info(
@@ -243,31 +239,28 @@ def get_project_info(
     session_factory: SessionFactory,
 ) -> dict[str, Any] | None:
     """Return one project's dir_map tree. Gated at MEMBER on the project's brand."""
-    try:
-        with tenant_session(tenant_slug, session_factory) as session:
-            project = session.scalar(
-                select(Project).where(
-                    Project.id == project_id, Project.deleted_at.is_(None)
-                )
+    with tenant_session(tenant_slug, session_factory) as session:
+        project = session.scalar(
+            select(Project).where(
+                Project.id == project_id, Project.deleted_at.is_(None)
             )
-            if project is None:
-                return None
-            brand_id = project.brand_id
-        # Re-validate membership on the brand that owns the project. brand_id is
-        # derived from the row, never from a caller argument.
-        require_brand_role(
-            subject, tenant_slug, brand_id,
-            min_role=UserRole.MEMBER,
-            registry=registry, session_factory=session_factory,
         )
-        return {
-            "id": project.id,
-            "name": project.name,
-            "brand_id": brand_id,
-            "dir_map": project.dir_map,
-        }
-    finally:
-        reset_brand_role()
+        if project is None:
+            return None
+        brand_id = project.brand_id
+    # Re-validate membership on the brand that owns the project. brand_id is
+    # derived from the row, never from a caller argument.
+    require_brand_role(
+        subject, tenant_slug, brand_id,
+        min_role=UserRole.MEMBER,
+        registry=registry, session_factory=session_factory,
+    )
+    return {
+        "id": project.id,
+        "name": project.name,
+        "brand_id": brand_id,
+        "dir_map": project.dir_map,
+    }
 
 
 def _items_at_path(dir_map: dict[str, Any], folder_path: str) -> list[dict[str, Any]]:
@@ -320,76 +313,77 @@ def create_operation(
     content afterwards via ``prepare_operation_version`` +
     ``commit_operation_version``.
     """
-    try:
-        with tenant_session(tenant_slug, session_factory) as session:
-            project = session.scalar(
-                select(Project).where(
-                    Project.id == project_id, Project.deleted_at.is_(None)
-                )
+    with tenant_session(tenant_slug, session_factory) as session:
+        project = session.scalar(
+            select(Project).where(
+                Project.id == project_id, Project.deleted_at.is_(None)
             )
-            if project is None:
-                raise ToolError("not_found: unknown project")
-            brand_id = project.brand_id
-        # brand_id is derived from the project row, never a caller argument.
-        identity = require_brand_role(
-            subject, tenant_slug, brand_id,
-            min_role=UserRole.MEMBER,
-            registry=registry, session_factory=session_factory,
         )
-        operation_id = str(uuid4())
-        now = datetime.now(UTC)
-        with tenant_session(tenant_slug, session_factory) as session:
-            locked = session.scalar(
-                select(Project).where(
-                    Project.id == project_id, Project.deleted_at.is_(None)
-                ).with_for_update()
-            )
-            if locked is None:
-                raise ToolError("not_found: unknown project")
-            new_map = deepcopy(locked.dir_map) or {"items": []}
-            items = _items_at_path(new_map, folder_path)
-            op = CgOperation(
-                id=operation_id,
-                brand_id=brand_id,
-                project_id=project_id,
-                user_id=identity.user_id,
-                prompt="",
-                filtered_clinical_claims_picker=[],
-                page=1,
-                status="EDITING",
-                chat_title=chat_title or name,
-                file_name=file_name or name,
-                content_type=content_type,
-                operation_metadata={},
-                version_number=1,
-                created_at=now,
-                updated_at=now,
-                deleted_at=None,
-            )
-            session.add(op)
-            items.append(
-                {
-                    "name": name,
-                    "operation_id": operation_id,
-                    "content_type": content_type,
-                    "veeva_document_number": None,
-                }
-            )
-            # Reassign so SQLAlchemy tracks the JSON/JSONB change (in-place
-            # mutation of the nested list is not tracked). Mirrors the backend.
-            locked.dir_map = new_map
-            session.commit()
-        return {
-            "operation_id": operation_id,
-            "project_id": project_id,
-            "brand_id": brand_id,
-            "folder_path": folder_path,
-            "name": name,
-            "status": "EDITING",
-            "version_number": 1,
-        }
-    finally:
-        reset_brand_role()
+        if project is None:
+            # Uniform deny (existence oracle): same message as the membership
+            # gate so a caller cannot probe which project ids exist.
+            raise ToolError("not_authorized: unknown project")
+        brand_id = project.brand_id
+    # brand_id is derived from the project row, never a caller argument.
+    identity = require_brand_role(
+        subject, tenant_slug, brand_id,
+        min_role=UserRole.MEMBER,
+        registry=registry, session_factory=session_factory,
+    )
+    operation_id = str(uuid4())
+    now = datetime.now(UTC)
+    with tenant_session(tenant_slug, session_factory) as session:
+        locked = session.scalar(
+            select(Project).where(
+                Project.id == project_id, Project.deleted_at.is_(None)
+            ).with_for_update()
+        )
+        if locked is None:
+            # Project vanished between the auth read and the locked re-read;
+            # same uniform-deny message as the first lookup.
+            raise ToolError("not_authorized: unknown project")
+        new_map = deepcopy(locked.dir_map) or {"items": []}
+        items = _items_at_path(new_map, folder_path)
+        op = CgOperation(
+            id=operation_id,
+            brand_id=brand_id,
+            project_id=project_id,
+            user_id=identity.user_id,
+            prompt="",
+            filtered_clinical_claims_picker=[],
+            page=1,
+            status="EDITING",
+            chat_title=chat_title or name,
+            file_name=file_name or name,
+            content_type=content_type,
+            operation_metadata={},
+            version_number=1,
+            created_at=now,
+            updated_at=now,
+            deleted_at=None,
+        )
+        session.add(op)
+        items.append(
+            {
+                "name": name,
+                "operation_id": operation_id,
+                "content_type": content_type,
+                "veeva_document_number": None,
+            }
+        )
+        # Reassign so SQLAlchemy tracks the JSON/JSONB change (in-place
+        # mutation of the nested list is not tracked). Mirrors the backend.
+        locked.dir_map = new_map
+        session.commit()
+    return {
+        "operation_id": operation_id,
+        "project_id": project_id,
+        "brand_id": brand_id,
+        "folder_path": folder_path,
+        "name": name,
+        "status": "EDITING",
+        "version_number": 1,
+    }
 
 
 def list_operations_for_brand(
@@ -401,21 +395,18 @@ def list_operations_for_brand(
     session_factory: SessionFactory,
 ) -> list[dict[str, Any]]:
     """List non-deleted operations for a brand. Gated at MEMBER."""
-    try:
-        require_brand_role(
-            subject, tenant_slug, brand_id,
-            min_role=UserRole.MEMBER,
-            registry=registry, session_factory=session_factory,
-        )
-        with tenant_session(tenant_slug, session_factory) as session:
-            rows = session.scalars(
-                select(CgOperation).where(
-                    CgOperation.brand_id == brand_id, CgOperation.deleted_at.is_(None)
-                ).order_by(CgOperation.created_at)
-            ).all()
-        return [_operation_summary(op) for op in rows]
-    finally:
-        reset_brand_role()
+    require_brand_role(
+        subject, tenant_slug, brand_id,
+        min_role=UserRole.MEMBER,
+        registry=registry, session_factory=session_factory,
+    )
+    with tenant_session(tenant_slug, session_factory) as session:
+        rows = session.scalars(
+            select(CgOperation).where(
+                CgOperation.brand_id == brand_id, CgOperation.deleted_at.is_(None)
+            ).order_by(CgOperation.created_at)
+        ).all()
+    return [_operation_summary(op) for op in rows]
 
 
 def get_operation_info(
@@ -427,24 +418,21 @@ def get_operation_info(
     session_factory: SessionFactory,
 ) -> dict[str, Any] | None:
     """Return one operation's metadata (no messages). Gated at MEMBER on the op's brand."""
-    try:
-        with tenant_session(tenant_slug, session_factory) as session:
-            op = session.scalar(
-                select(CgOperation).where(
-                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-                )
+    with tenant_session(tenant_slug, session_factory) as session:
+        op = session.scalar(
+            select(CgOperation).where(
+                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
             )
-            if op is None:
-                return None
-            brand_id = op.brand_id
-        require_brand_role(
-            subject, tenant_slug, brand_id,
-            min_role=UserRole.MEMBER,
-            registry=registry, session_factory=session_factory,
         )
-        return _operation_summary(op)
-    finally:
-        reset_brand_role()
+        if op is None:
+            return None
+        brand_id = op.brand_id
+    require_brand_role(
+        subject, tenant_slug, brand_id,
+        min_role=UserRole.MEMBER,
+        registry=registry, session_factory=session_factory,
+    )
+    return _operation_summary(op)
 
 
 def list_operation_messages(
@@ -462,45 +450,42 @@ def list_operation_messages(
     excluded). The role is derived from the JWT subject — there is no
     ``intent`` or ``role`` argument the caller can use to bypass this.
     """
-    try:
-        with tenant_session(tenant_slug, session_factory) as session:
-            op = session.scalar(
-                select(CgOperation).where(
-                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-                )
+    with tenant_session(tenant_slug, session_factory) as session:
+        op = session.scalar(
+            select(CgOperation).where(
+                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
             )
-            if op is None:
-                raise ToolError("not_authorized: unknown operation")
-            brand_id = op.brand_id
-        identity = require_brand_role(
-            subject, tenant_slug, brand_id,
-            min_role=UserRole.MEMBER,
-            registry=registry, session_factory=session_factory,
         )
-        staff = role_satisfies(identity.role, UserRole.SOLSTICE_STAFF)
-        with tenant_session(tenant_slug, session_factory) as session:
-            stmt = select(CgOperationMessage).where(
-                CgOperationMessage.operation_id == operation_id,
-                CgOperationMessage.deleted_at.is_(None),
-            )
-            if not staff:
-                # Exclude draft document rows. NULL intent (text/blueprint/legacy)
-                # stays visible to everyone.
-                stmt = stmt.where(
-                    or_(
-                        CgOperationMessage.intent.is_(None),
-                        CgOperationMessage.intent != "draft",
-                    )
+        if op is None:
+            raise ToolError("not_authorized: unknown operation")
+        brand_id = op.brand_id
+    identity = require_brand_role(
+        subject, tenant_slug, brand_id,
+        min_role=UserRole.MEMBER,
+        registry=registry, session_factory=session_factory,
+    )
+    staff = role_satisfies(identity.role, UserRole.SOLSTICE_STAFF)
+    with tenant_session(tenant_slug, session_factory) as session:
+        stmt = select(CgOperationMessage).where(
+            CgOperationMessage.operation_id == operation_id,
+            CgOperationMessage.deleted_at.is_(None),
+        )
+        if not staff:
+            # Exclude draft document rows. NULL intent (text/blueprint/legacy)
+            # stays visible to everyone.
+            stmt = stmt.where(
+                or_(
+                    CgOperationMessage.intent.is_(None),
+                    CgOperationMessage.intent != "draft",
                 )
-            stmt = stmt.order_by(
-                CgOperationMessage.created_at.is_(None),
-                CgOperationMessage.created_at,
-                CgOperationMessage.position,
             )
-            rows = session.scalars(stmt).all()
-        return [_message_summary(m) for m in rows]
-    finally:
-        reset_brand_role()
+        stmt = stmt.order_by(
+            CgOperationMessage.created_at.is_(None),
+            CgOperationMessage.created_at,
+            CgOperationMessage.position,
+        )
+        rows = session.scalars(stmt).all()
+    return [_message_summary(m) for m in rows]
 
 
 def get_operation_html(
@@ -528,80 +513,77 @@ def get_operation_html(
       presigned URL is itself a read capability. Only SOLSTICE_STAFF sees
       drafts; MEMBER/ADMIN see final only.
     """
-    try:
-        with tenant_session(tenant_slug, session_factory) as session:
-            op = session.scalar(
-                select(CgOperation).where(
-                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-                )
+    with tenant_session(tenant_slug, session_factory) as session:
+        op = session.scalar(
+            select(CgOperation).where(
+                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
             )
-            if op is None:
-                raise ToolError("not_authorized: unknown operation")
-            brand_id = op.brand_id
-        # Authorize BEFORE the message lookup so an unauthorized caller cannot
-        # learn whether a message exists on an operation they can't access.
-        identity = require_brand_role(
-            subject, tenant_slug, brand_id,
-            min_role=UserRole.MEMBER,
-            registry=registry, session_factory=session_factory,
         )
-        staff = role_satisfies(identity.role, UserRole.SOLSTICE_STAFF)
-        with tenant_session(tenant_slug, session_factory) as session:
-            msg = session.scalar(
-                select(CgOperationMessage).where(
-                    CgOperationMessage.operation_id == operation_id,
-                    CgOperationMessage.message_id == message_id,
-                    CgOperationMessage.deleted_at.is_(None),
-                )
+        if op is None:
+            raise ToolError("not_authorized: unknown operation")
+        brand_id = op.brand_id
+    # Authorize BEFORE the message lookup so an unauthorized caller cannot
+    # learn whether a message exists on an operation they can't access.
+    identity = require_brand_role(
+        subject, tenant_slug, brand_id,
+        min_role=UserRole.MEMBER,
+        registry=registry, session_factory=session_factory,
+    )
+    staff = role_satisfies(identity.role, UserRole.SOLSTICE_STAFF)
+    with tenant_session(tenant_slug, session_factory) as session:
+        msg = session.scalar(
+            select(CgOperationMessage).where(
+                CgOperationMessage.operation_id == operation_id,
+                CgOperationMessage.message_id == message_id,
+                CgOperationMessage.deleted_at.is_(None),
             )
-            if msg is None:
-                raise ToolError("not_found: unknown message")
-        if msg.intent == "draft" and not staff:
-            # Draft visibility is enforced for both the URL and the body: a
-            # presigned URL is a read capability, so it must not be handed to a
-            # non-staff caller any more than the inline body would be.
-            raise ToolError("not_authorized: draft messages require SOLSTICE_STAFF")
+        )
+        if msg is None:
+            raise ToolError("not_found: unknown message")
+    if msg.intent == "draft" and not staff:
+        # Draft visibility is enforced for both the URL and the body: a
+        # presigned URL is a read capability, so it must not be handed to a
+        # non-staff caller any more than the inline body would be.
+        raise ToolError("not_authorized: draft messages require SOLSTICE_STAFF")
+    if msg.type != "html":
+        raise ToolError("not_found: message is not an html document")
 
-        result: dict[str, Any] = {
-            "operation_id": operation_id,
-            "message_id": message_id,
-            "type": msg.type,
-            "intent": msg.intent,
-            "version_number": msg.version_number,
-            "url": None,
-            "s3_key": None,
-            "html": None,
-        }
+    result: dict[str, Any] = {
+        "operation_id": operation_id,
+        "message_id": message_id,
+        "type": msg.type,
+        "intent": msg.intent,
+        "version_number": msg.version_number,
+        "url": None,
+        "s3_key": None,
+        "html": None,
+    }
 
-        if msg.type != "html":
-            raise ToolError("not_found: message is not an html document")
-        if _looks_like_s3_key(msg.content):
-            s3_key = msg.content
-            tenant_config = registry.get(tenant_slug)
-            bucket = tenant_config.s3_bucket if tenant_config is not None else ""
-            if not bucket:
-                raise ToolError("not_configured: tenant has no s3_bucket")
-            result["s3_key"] = s3_key
-            result["url"] = s3.presign(bucket, s3_key, presign_expiry)
-            if fetch:
-                try:
-                    body = s3.download(bucket, s3_key, max_inline_bytes)
-                except S3ObjectTooLarge:
-                    result["too_large"] = True
-                except S3ObjectMissing:
-                    raise ToolError("not_found: html object missing in s3") from None
-                except S3Error as exc:
-                    raise ToolError(f"not_available: s3 read failed: {exc}") from exc
-                else:
-                    result["html"] = body.decode("utf-8", errors="replace")
-        else:
-            # Inline HTML stored in the row (not yet offloaded to S3).
-            result["inline"] = True
-            if fetch:
-                result["html"] = msg.content or ""
-        return result
-    finally:
-        reset_brand_role()
+    if _looks_like_s3_key(msg.content):
+        s3_key = msg.content
+        tenant_config = registry.get(tenant_slug)
+        bucket = tenant_config.s3_bucket if tenant_config is not None else ""
+        if not bucket:
+            raise ToolError("not_configured: tenant has no s3_bucket")
+        result["s3_key"] = s3_key
+        result["url"] = s3.presign(bucket, s3_key, presign_expiry)
+        if fetch:
+            try:
+                body = s3.download(bucket, s3_key, max_inline_bytes)
+            except S3ObjectTooLarge:
+                result["too_large"] = True
+            except S3ObjectMissing:
+                raise ToolError("not_found: html object missing in s3") from None
+            except S3Error as exc:
+                raise ToolError(f"not_available: s3 read failed: {exc}") from exc
+            else:
+                result["html"] = body.decode("utf-8", errors="replace")
+    else:
+        # Inline HTML stored in the row (not yet offloaded to S3).
+        result["inline"] = True
+        if fetch:
+            result["html"] = msg.content or ""
+    return result
 
 
 def _find_leaf(items: list[dict[str, Any]], operation_id: str) -> dict[str, Any] | None:
@@ -644,91 +626,88 @@ def update_operation(
     """
     if name is None and content_type is None and new_owner_user_id is None:
         raise ToolError("invalid_arguments: provide at least one of name, content_type, new_owner_user_id")
-    try:
-        with tenant_session(tenant_slug, session_factory) as session:
-            op = session.scalar(
-                select(CgOperation).where(
-                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
+    with tenant_session(tenant_slug, session_factory) as session:
+        op = session.scalar(
+            select(CgOperation).where(
+                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
+            )
+        )
+        if op is None:
+            raise ToolError("not_authorized: unknown operation")
+        brand_id = op.brand_id
+    require_brand_role(
+        subject, tenant_slug, brand_id,
+        min_role=UserRole.SOLSTICE_STAFF,
+        registry=registry, session_factory=session_factory,
+    )
+    normalized_type = content_type.strip().upper() if content_type else None
+    if content_type is not None and not normalized_type:
+        raise ToolError("invalid_arguments: content_type must be non-empty")
+    if name is not None and not name.strip():
+        raise ToolError("invalid_arguments: name must be non-empty")
+    changed: list[str] = []
+    with tenant_session(tenant_slug, session_factory) as session:
+        locked = session.scalar(
+            select(CgOperation).where(
+                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
+            ).with_for_update()
+        )
+        if locked is None:
+            raise ToolError("not_authorized: unknown operation")
+        if new_owner_user_id is not None:
+            member = session.scalar(
+                select(BrandTeamMember).where(
+                    BrandTeamMember.brand_id == brand_id,
+                    BrandTeamMember.user_id == new_owner_user_id,
+                    BrandTeamMember.deleted_at.is_(None),
                 )
             )
-            if op is None:
-                raise ToolError("not_authorized: unknown operation")
-            brand_id = op.brand_id
-        require_brand_role(
-            subject, tenant_slug, brand_id,
-            min_role=UserRole.SOLSTICE_STAFF,
-            registry=registry, session_factory=session_factory,
-        )
-        normalized_type = content_type.strip().upper() if content_type else None
-        if content_type is not None and not normalized_type:
-            raise ToolError("invalid_arguments: content_type must be non-empty")
-        if name is not None and not name.strip():
-            raise ToolError("invalid_arguments: name must be non-empty")
-        changed: list[str] = []
-        with tenant_session(tenant_slug, session_factory) as session:
-            locked = session.scalar(
-                select(CgOperation).where(
-                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
+            if member is None:
+                raise ToolError(
+                    "invalid_arguments: new_owner_user_id is not a live team member of this brand"
+                )
+            locked.user_id = new_owner_user_id
+            changed.append("user_id")
+        if name is not None:
+            locked.file_name = name
+            changed.append("file_name")
+        if normalized_type is not None:
+            locked.content_type = normalized_type
+            # content_type_for_fe in operation_metadata is the FE source of
+            # truth; reassign the dict so the JSON change is tracked.
+            metadata = dict(locked.operation_metadata) if isinstance(
+                locked.operation_metadata, dict
+            ) else {}
+            metadata["content_type_for_fe"] = normalized_type
+            locked.operation_metadata = metadata
+            changed.append("content_type")
+        # Mirror name/content_type into the project's dir_map leaf so the
+        # project view reflects the change.
+        if locked.project_id and (name is not None or normalized_type is not None):
+            project = session.scalar(
+                select(Project).where(
+                    Project.id == locked.project_id, Project.deleted_at.is_(None)
                 ).with_for_update()
             )
-            if locked is None:
-                raise ToolError("not_authorized: unknown operation")
-            if new_owner_user_id is not None:
-                member = session.scalar(
-                    select(BrandTeamMember).where(
-                        BrandTeamMember.brand_id == brand_id,
-                        BrandTeamMember.user_id == new_owner_user_id,
-                        BrandTeamMember.deleted_at.is_(None),
-                    )
-                )
-                if member is None:
-                    raise ToolError(
-                        "invalid_arguments: new_owner_user_id is not a live team member of this brand"
-                    )
-                locked.user_id = new_owner_user_id
-                changed.append("user_id")
-            if name is not None:
-                locked.file_name = name
-                changed.append("file_name")
-            if normalized_type is not None:
-                locked.content_type = normalized_type
-                # content_type_for_fe in operation_metadata is the FE source of
-                # truth; reassign the dict so the JSON change is tracked.
-                metadata = dict(locked.operation_metadata) if isinstance(
-                    locked.operation_metadata, dict
-                ) else {}
-                metadata["content_type_for_fe"] = normalized_type
-                locked.operation_metadata = metadata
-                changed.append("content_type")
-            # Mirror name/content_type into the project's dir_map leaf so the
-            # project view reflects the change.
-            if locked.project_id and (name is not None or normalized_type is not None):
-                project = session.scalar(
-                    select(Project).where(
-                        Project.id == locked.project_id, Project.deleted_at.is_(None)
-                    ).with_for_update()
-                )
-                if project is not None:
-                    new_map = deepcopy(project.dir_map) or {"items": []}
-                    leaf = _find_leaf(new_map.get("items", []), operation_id)
-                    if leaf is not None:
-                        if name is not None:
-                            leaf["name"] = name
-                        if normalized_type is not None:
-                            leaf["content_type"] = normalized_type
-                        project.dir_map = new_map
-            locked.updated_at = datetime.now(UTC)
-            session.commit()
-        return {
-            "operation_id": operation_id,
-            "brand_id": brand_id,
-            "changed": changed,
-            "file_name": name,
-            "content_type": normalized_type,
-            "user_id": new_owner_user_id,
-        }
-    finally:
-        reset_brand_role()
+            if project is not None:
+                new_map = deepcopy(project.dir_map) or {"items": []}
+                leaf = _find_leaf(new_map.get("items", []), operation_id)
+                if leaf is not None:
+                    if name is not None:
+                        leaf["name"] = name
+                    if normalized_type is not None:
+                        leaf["content_type"] = normalized_type
+                    project.dir_map = new_map
+        locked.updated_at = datetime.now(UTC)
+        session.commit()
+    return {
+        "operation_id": operation_id,
+        "brand_id": brand_id,
+        "changed": changed,
+        "file_name": name,
+        "content_type": normalized_type,
+        "user_id": new_owner_user_id,
+    }
 
 
 def approve_operation_version(
@@ -750,63 +729,60 @@ def approve_operation_version(
 
     Gated at SOLSTICE_STAFF on the operation's brand (resolved from the row).
     """
-    try:
-        with tenant_session(tenant_slug, session_factory) as session:
-            op = session.scalar(
-                select(CgOperation).where(
-                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-                )
+    with tenant_session(tenant_slug, session_factory) as session:
+        op = session.scalar(
+            select(CgOperation).where(
+                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
             )
-            if op is None:
-                raise ToolError("not_authorized: unknown operation")
-            brand_id = op.brand_id
-        require_brand_role(
-            subject, tenant_slug, brand_id,
-            min_role=UserRole.SOLSTICE_STAFF,
-            registry=registry, session_factory=session_factory,
         )
-        with tenant_session(tenant_slug, session_factory) as session:
-            msg = session.scalar(
-                select(CgOperationMessage).where(
-                    CgOperationMessage.operation_id == operation_id,
-                    CgOperationMessage.message_id == message_id,
-                    CgOperationMessage.deleted_at.is_(None),
-                ).with_for_update()
+        if op is None:
+            raise ToolError("not_authorized: unknown operation")
+        brand_id = op.brand_id
+    require_brand_role(
+        subject, tenant_slug, brand_id,
+        min_role=UserRole.SOLSTICE_STAFF,
+        registry=registry, session_factory=session_factory,
+    )
+    with tenant_session(tenant_slug, session_factory) as session:
+        msg = session.scalar(
+            select(CgOperationMessage).where(
+                CgOperationMessage.operation_id == operation_id,
+                CgOperationMessage.message_id == message_id,
+                CgOperationMessage.deleted_at.is_(None),
+            ).with_for_update()
+        )
+        if msg is None:
+            raise ToolError("not_found: unknown message")
+        if msg.type not in ("html", "pdf"):
+            raise ToolError(
+                f"invalid_message: type {msg.type!r} is not a document (html/pdf) version"
             )
-            if msg is None:
-                raise ToolError("not_found: unknown message")
-            if msg.type not in ("html", "pdf"):
-                raise ToolError(
-                    f"invalid_message: type {msg.type!r} is not a document (html/pdf) version"
-                )
-            if msg.intent == "final":
-                return {
-                    "operation_id": operation_id,
-                    "message_id": message_id,
-                    "version_number": msg.version_number,
-                    "intent": "final",
-                    "already_final": True,
-                }
-            if msg.intent != "draft":
-                raise ToolError(
-                    f"invalid_message: intent {msg.intent!r} is not a draft version"
-                )
-            msg.intent = "final"
-            if isinstance(msg.message_metadata, dict):
-                metadata = dict(msg.message_metadata)
-                metadata["versionIntent"] = "final"
-                msg.message_metadata = metadata
-            session.commit()
-            version_number = msg.version_number
-        return {
-            "operation_id": operation_id,
-            "message_id": message_id,
-            "version_number": version_number,
-            "intent": "final",
-            "already_final": False,
-        }
-    finally:
-        reset_brand_role()
+        if msg.intent == "final":
+            return {
+                "operation_id": operation_id,
+                "message_id": message_id,
+                "version_number": msg.version_number,
+                "intent": "final",
+                "already_final": True,
+            }
+        if msg.intent != "draft":
+            raise ToolError(
+                f"invalid_message: intent {msg.intent!r} is not a draft version"
+            )
+        msg.intent = "final"
+        if isinstance(msg.message_metadata, dict):
+            metadata = dict(msg.message_metadata)
+            metadata["versionIntent"] = "final"
+            msg.message_metadata = metadata
+        session.commit()
+        version_number = msg.version_number
+    return {
+        "operation_id": operation_id,
+        "message_id": message_id,
+        "version_number": version_number,
+        "intent": "final",
+        "already_final": False,
+    }
 
 
 def _sanitize_file_name(file_name: str | None) -> str:
@@ -815,6 +791,14 @@ def _sanitize_file_name(file_name: str | None) -> str:
         return ""
     base = file_name.replace("\\", "/").rsplit("/", 1)[-1].strip()
     return base.replace(" ", "_")
+
+
+_VERSION_KINDS = ("html", "pdf")
+
+
+def _require_version_kind(kind: str) -> None:
+    if kind not in _VERSION_KINDS:
+        raise ToolError(f"invalid_arguments: type must be one of {', '.join(_VERSION_KINDS)}")
 
 
 def _version_s3_key(
@@ -902,48 +886,46 @@ def prepare_operation_version(
     from the row). No version row is created here; the version number is
     recomputed at commit under an operation-row lock.
     """
-    try:
-        with tenant_session(tenant_slug, session_factory) as session:
-            op = session.scalar(
-                select(CgOperation).where(
-                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-                )
+    _require_version_kind(kind)
+    with tenant_session(tenant_slug, session_factory) as session:
+        op = session.scalar(
+            select(CgOperation).where(
+                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
             )
-            if op is None:
-                raise ToolError("not_authorized: unknown operation")
-            brand_id = op.brand_id
-        require_brand_role(
-            subject, tenant_slug, brand_id,
-            min_role=UserRole.MEMBER,
-            registry=registry, session_factory=session_factory,
         )
-        tenant_config = registry.get(tenant_slug)
-        bucket = tenant_config.s3_bucket if tenant_config is not None else ""
-        if not bucket:
-            raise ToolError("not_configured: tenant has no s3_bucket")
-        with tenant_session(tenant_slug, session_factory) as session:
-            max_v = session.scalar(
-                select(func.max(CgOperationMessage.version_number)).where(
-                    CgOperationMessage.operation_id == operation_id,
-                    CgOperationMessage.deleted_at.is_(None),
-                )
+        if op is None:
+            raise ToolError("not_authorized: unknown operation")
+        brand_id = op.brand_id
+    require_brand_role(
+        subject, tenant_slug, brand_id,
+        min_role=UserRole.MEMBER,
+        registry=registry, session_factory=session_factory,
+    )
+    tenant_config = registry.get(tenant_slug)
+    bucket = tenant_config.s3_bucket if tenant_config is not None else ""
+    if not bucket:
+        raise ToolError("not_configured: tenant has no s3_bucket")
+    with tenant_session(tenant_slug, session_factory) as session:
+        max_v = session.scalar(
+            select(func.max(CgOperationMessage.version_number)).where(
+                CgOperationMessage.operation_id == operation_id,
+                CgOperationMessage.deleted_at.is_(None),
             )
-        next_v = (max_v or 0) + 1
-        message_id = str(uuid4())
-        key = _version_s3_key(kind, operation_id, next_v, message_id, file_name)
-        content_type = "text/html" if kind == "html" else "application/pdf"
-        upload_url = s3.presign_put(bucket, key, presign_expiry, content_type)
-        return {
-            "operation_id": operation_id,
-            "type": kind,
-            "version_number": next_v,
-            "message_id": message_id,
-            "s3_key": key,
-            "upload_url": upload_url,
-            "expires_in": presign_expiry,
-        }
-    finally:
-        reset_brand_role()
+        )
+    next_v = (max_v or 0) + 1
+    message_id = str(uuid4())
+    key = _version_s3_key(kind, operation_id, next_v, message_id, file_name)
+    content_type = "text/html" if kind == "html" else "application/pdf"
+    upload_url = s3.presign_put(bucket, key, presign_expiry, content_type)
+    return {
+        "operation_id": operation_id,
+        "type": kind,
+        "version_number": next_v,
+        "message_id": message_id,
+        "s3_key": key,
+        "upload_url": upload_url,
+        "expires_in": presign_expiry,
+    }
 
 
 def commit_operation_version(
@@ -971,106 +953,104 @@ def commit_operation_version(
     ``intent`` argument — the filter is derived from the token, mirroring the
     read-side rule.
     """
-    try:
-        with tenant_session(tenant_slug, session_factory) as session:
-            op = session.scalar(
-                select(CgOperation).where(
-                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-                )
+    _require_version_kind(kind)
+    with tenant_session(tenant_slug, session_factory) as session:
+        op = session.scalar(
+            select(CgOperation).where(
+                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
             )
-            if op is None:
-                raise ToolError("not_authorized: unknown operation")
-            brand_id = op.brand_id
-        identity = require_brand_role(
-            subject, tenant_slug, brand_id,
-            min_role=UserRole.MEMBER,
-            registry=registry, session_factory=session_factory,
         )
-        intent = "draft" if identity.role == UserRole.SOLSTICE_STAFF else "final"
-        tenant_config = registry.get(tenant_slug)
-        bucket = tenant_config.s3_bucket if tenant_config is not None else ""
-        if not bucket:
-            raise ToolError("not_configured: tenant has no s3_bucket")
-        with tenant_session(tenant_slug, session_factory) as session:
-            locked = session.scalar(
-                select(CgOperation).where(
-                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-                ).with_for_update()
+        if op is None:
+            raise ToolError("not_authorized: unknown operation")
+        brand_id = op.brand_id
+    identity = require_brand_role(
+        subject, tenant_slug, brand_id,
+        min_role=UserRole.MEMBER,
+        registry=registry, session_factory=session_factory,
+    )
+    intent = "draft" if identity.role == UserRole.SOLSTICE_STAFF else "final"
+    tenant_config = registry.get(tenant_slug)
+    bucket = tenant_config.s3_bucket if tenant_config is not None else ""
+    if not bucket:
+        raise ToolError("not_configured: tenant has no s3_bucket")
+    with tenant_session(tenant_slug, session_factory) as session:
+        locked = session.scalar(
+            select(CgOperation).where(
+                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
+            ).with_for_update()
+        )
+        if locked is None:
+            raise ToolError("not_authorized: unknown operation")
+        max_v = session.scalar(
+            select(func.max(CgOperationMessage.version_number)).where(
+                CgOperationMessage.operation_id == operation_id,
+                CgOperationMessage.deleted_at.is_(None),
             )
-            if locked is None:
-                raise ToolError("not_authorized: unknown operation")
-            max_v = session.scalar(
-                select(func.max(CgOperationMessage.version_number)).where(
-                    CgOperationMessage.operation_id == operation_id,
-                    CgOperationMessage.deleted_at.is_(None),
-                )
+        )
+        next_v = (max_v or 0) + 1
+        message_id = _validate_version_key(kind, s3_key, operation_id, next_v)
+        # Confirm the client uploaded. Done under the operation-row lock so a
+        # concurrent committer cannot land between validation and insert.
+        size = s3.head(bucket, s3_key)
+        if size is None:
+            raise ToolError("not_found: object not uploaded - PUT to the upload_url first")
+        max_pos = session.scalar(
+            select(func.max(CgOperationMessage.position)).where(
+                CgOperationMessage.operation_id == operation_id,
+                CgOperationMessage.deleted_at.is_(None),
             )
-            next_v = (max_v or 0) + 1
-            message_id = _validate_version_key(kind, s3_key, operation_id, next_v)
-            # Confirm the client uploaded. Done under the operation-row lock so a
-            # concurrent committer cannot land between validation and insert.
-            size = s3.head(bucket, s3_key)
-            if size is None:
-                raise ToolError("not_found: object not uploaded - PUT to the upload_url first")
-            max_pos = session.scalar(
-                select(func.max(CgOperationMessage.position)).where(
-                    CgOperationMessage.operation_id == operation_id,
-                    CgOperationMessage.deleted_at.is_(None),
-                )
-            )
-            base_pos = (max_pos or -1) + 1
-            now = datetime.now(UTC)
-            pill = CgOperationMessage(
-                id=str(uuid4()),
-                operation_id=operation_id,
-                message_id=str(uuid4()),
-                author_id=identity.user_id,
-                type="text",
-                content="Save new version",
-                version_number=None,
-                intent=None,
-                position=base_pos,
-                message_metadata={
-                    "id": str(uuid4()),
-                    "timestamp": now.isoformat(),
-                    "type": "user",
-                    "finalContent": "Save new version",
-                    "kind": "user_feedback",
-                },
-                created_at=now,
-                deleted_at=None,
-            )
-            doc = CgOperationMessage(
-                id=str(uuid4()),
-                operation_id=operation_id,
-                message_id=message_id,
-                author_id=None,
-                type=kind,
-                content=s3_key,
-                version_number=next_v,
-                intent=intent,
-                position=base_pos + 1,
-                message_metadata=_doc_message_metadata(
-                    version=next_v, intent=intent, s3_key=s3_key,
-                    message_id=message_id, now=now, file_name=file_name,
-                ),
-                created_at=now,
-                deleted_at=None,
-            )
-            session.add(pill)
-            session.add(doc)
-            session.commit()
-        return {
-            "operation_id": operation_id,
-            "type": kind,
-            "version_number": next_v,
-            "intent": intent,
-            "message_id": message_id,
-            "s3_key": s3_key,
-            "size": size,
-        }
-    finally:
-        reset_brand_role()
+        )
+        base_pos = (max_pos or -1) + 1
+        now = datetime.now(UTC)
+        pill = CgOperationMessage(
+            id=str(uuid4()),
+            operation_id=operation_id,
+            message_id=str(uuid4()),
+            author_id=identity.user_id,
+            type="text",
+            content="Save new version",
+            version_number=None,
+            intent=None,
+            position=base_pos,
+            message_metadata={
+                "id": str(uuid4()),
+                "timestamp": now.isoformat(),
+                "type": "user",
+                "finalContent": "Save new version",
+                "kind": "user_feedback",
+            },
+            created_at=now,
+            deleted_at=None,
+        )
+        doc = CgOperationMessage(
+            id=str(uuid4()),
+            operation_id=operation_id,
+            message_id=message_id,
+            author_id=None,
+            type=kind,
+            content=s3_key,
+            version_number=next_v,
+            intent=intent,
+            position=base_pos + 1,
+            message_metadata=_doc_message_metadata(
+                version=next_v, intent=intent, s3_key=s3_key,
+                message_id=message_id, now=now, file_name=file_name,
+            ),
+            created_at=now,
+            deleted_at=None,
+        )
+        session.add(pill)
+        session.add(doc)
+        session.commit()
+    return {
+        "operation_id": operation_id,
+        "type": kind,
+        "version_number": next_v,
+        "intent": intent,
+        "message_id": message_id,
+        "s3_key": s3_key,
+        "size": size,
+    }
 
 
 __all__ = [

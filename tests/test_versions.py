@@ -120,6 +120,28 @@ def test_prepare_denied_for_non_member(app_harness: AppHarness, mint_token):
     assert "not_authorized" in _tool_error_text(response)
 
 
+def test_prepare_rejects_unknown_type(app_harness: AppHarness, mint_token):
+    # Anything outside html/pdf must be rejected up front — previously an
+    # unknown type fell through to the pdf key shape and was presigned.
+    response = _call(
+        app_harness, mint_token(sub=SHARED_SUB),
+        "solstice_prepare_operation_version",
+        {"tenant_slug": TENANT, "operation_id": OP_A1, "type": "docx", "file_name": "doc.docx"},
+    )
+    assert "invalid_arguments" in _tool_error_text(response)
+    assert app_harness.s3.presign_put_calls == []
+
+
+def test_commit_rejects_unknown_type(app_harness: AppHarness, mint_token):
+    response = _call(
+        app_harness, mint_token(sub=SHARED_SUB),
+        "solstice_commit_operation_version",
+        {"tenant_slug": TENANT, "operation_id": OP_A1, "type": "docx",
+         "s3_key": f"approved_pdfs/{OP_A1}/v3_doc.docx"},
+    )
+    assert "invalid_arguments" in _tool_error_text(response)
+
+
 # ---------------------------------------------------------------------------
 # commit
 # ---------------------------------------------------------------------------

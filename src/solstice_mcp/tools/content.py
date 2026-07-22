@@ -97,7 +97,10 @@ def register_content_tools(
             session_factory=session_factory,
         )
         if info is None:
-            raise ToolError("not_found: unknown project")
+            # Same message as the brand-membership deny: a caller must not be
+            # able to distinguish "project does not exist" from "project exists
+            # on a brand I am not on" (existence oracle).
+            raise ToolError("not_authorized: unknown project")
         return {"status": "ok", **info}
 
     @read_only_tool
@@ -128,7 +131,10 @@ def register_content_tools(
             session_factory=session_factory,
         )
         if info is None:
-            raise ToolError("not_found: unknown operation")
+            # Uniform with solstice_operation_messages / solstice_operation_html:
+            # never reveal whether an operation exists on a brand the caller
+            # cannot access (existence oracle).
+            raise ToolError("not_authorized: unknown operation")
         return {"status": "ok", **info}
 
     @read_only_tool

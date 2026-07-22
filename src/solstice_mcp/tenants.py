@@ -7,17 +7,20 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import DateTime, String, Uuid, create_engine, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 logger = logging.getLogger(__name__)
-current_tenant: ContextVar[str | None] = ContextVar("current_tenant", default=None)
+
+# Tenant-discovery probes run concurrently (bounded); see discover_tenants_for_sub.
+_DISCOVERY_MAX_WORKERS = 8
 
 
 class Base(DeclarativeBase):
@@ -119,7 +122,25 @@ class TenantDatabaseFactory:
         with self._lock:
             factory = self._sessions.get(slug)
             if factory is None:
-                engine = create_engine(template.format(db_name=config.db_name), pool_pre_ping=True)
+                url = template.format(db_name=config.db_name)
+                # Small explicit pools: engines are per tenant per worker, so
+                # SQLAlchemy's defaults (5 + 10 overflow) multiply into far more
+                # RDS connections than this service needs.
+                engine_kwargs: dict[str, Any] = {
+                    "pool_pre_ping": True,
+                    "pool_size": 2,
+                    "max_overflow": 3,
+                    "pool_recycle": 300,
+                }
+                if url.startswith("postgresql"):
+                    # Bounded connect + statement time so one unreachable or
+                    # slow tenant DB cannot hang a request (or the discovery
+                    # scan) for minutes.
+                    engine_kwargs["connect_args"] = {
+                        "connect_timeout": 5,
+                        "options": "-c statement_timeout=15000",
+                    }
+                engine = create_engine(url, **engine_kwargs)
                 factory = sessionmaker(engine, expire_on_commit=False)
                 self._sessions[slug] = factory
         return factory()
@@ -180,17 +201,11 @@ SessionFactory = Callable[[str], Session]
 
 @contextmanager
 def tenant_session(slug: str, session_factory: SessionFactory) -> Iterator[Session]:
-    current_tenant.set(slug)
-    session: Session | None = None
+    session = session_factory(slug)
     try:
-        session = session_factory(slug)
         yield session
     finally:
-        try:
-            if session is not None:
-                session.close()
-        finally:
-            current_tenant.set(None)
+        session.close()
 
 
 def _live_user(session: Session, subject: str) -> User | None:
@@ -209,28 +224,39 @@ def discover_tenants_for_sub(
 
     Cross-environment discovery: every configured tenant is probed regardless of
     the MCP task's own environment. Access is gated entirely by the presence of a
-    live row in that tenant's ``users`` table.
+    live row in that tenant's ``users`` table. Probes run concurrently (bounded
+    by ``_DISCOVERY_MAX_WORKERS``) so a cache miss costs roughly one round-trip,
+    not one per configured tenant.
 
-    ponytail: each cache miss scans one database per configured tenant, across
-    dev and prod RDS. Replace with a central membership directory if tenant count
-    makes that costly.
+    ponytail: each cache miss still scans one database per configured tenant,
+    across dev and prod RDS. Replace with a central membership directory if
+    tenant count makes that costly.
     """
     cached = cache.get(subject)
     if cached is not None:
         return cached
 
-    memberships: list[TenantMembership] = []
-    for slug in slugs if slugs is not None else registry.slugs:
+    def probe(slug: str) -> TenantMembership | None:
         config = registry.get(slug)
         if config is None:
-            continue
+            return None
         try:
             with tenant_session(slug, session_factory) as session:
                 if _live_user(session, subject) is not None:
-                    memberships.append(TenantMembership(slug, config.env))
+                    return TenantMembership(slug, config.env)
         except Exception as exc:
-            # An unreachable tenant is omitted; other tenant memberships remain usable.
-            logger.warning("Skipping unreachable tenant database", extra={"tenant_slug": slug, "error": str(exc)})
+            # An unreachable tenant is omitted so the caller's other tenant
+            # memberships remain usable; the tenant and error must appear in
+            # the message itself (``extra`` fields are invisible in the
+            # default log format).
+            logger.warning("Skipping unreachable tenant database %r: %s", slug, exc)
+        return None
+
+    slug_list = list(slugs if slugs is not None else registry.slugs)
+    memberships: list[TenantMembership] = []
+    if slug_list:
+        with ThreadPoolExecutor(max_workers=min(_DISCOVERY_MAX_WORKERS, len(slug_list))) as pool:
+            memberships = [m for m in pool.map(probe, slug_list) if m is not None]
 
     cache.set(subject, memberships)
     return memberships

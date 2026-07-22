@@ -86,24 +86,19 @@ def test_project_info_returns_dir_map(app_harness: AppHarness, mint_token):
     assert items[1]["items"][0]["operation_id"] == OP_A2
 
 
-def test_project_info_denied_for_brand_user_is_not_on(app_harness: AppHarness, mint_token):
-    # A project whose brand the subject is not a member of must be denied even
-    # though the project_id is valid. (No project seeded for BRAND_A3, so use a
-    # fabricated project_id — resolves to None -> not_found, which is also a
-    # deny; the important case is a real project on a brand SHARED lacks.)
-    # SHARED is on BRAND_A1 only in tenant_a, so a project on BRAND_A3 would be
-    # denied. We have no such project seeded, so this test asserts not_found for
-    # an unknown project_id instead — see operation_info test for the real
-    # cross-brand deny via a real resource.
+def test_project_info_unknown_id_is_uniform_not_authorized(app_harness: AppHarness, mint_token):
+    # Unknown project ids return the same not_authorized deny as projects on
+    # brands the caller is not a member of, so a tenant member cannot use this
+    # tool as an existence oracle to enumerate other brands' project ids.
     response = rpc(
         app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
         params={"name": "solstice_project_info",
                 "arguments": {"tenant_slug": "tenant_a", "project_id": "00000000-0000-0000-0000-000000009999"}},
     )
-    assert "not_found" in _tool_error_text(response)
+    assert "not_authorized" in _tool_error_text(response)
 
 
-def test_project_info_unknown_returns_not_found(app_harness: AppHarness, mint_token):
+def test_project_info_empty_project_returns_empty_dir_map(app_harness: AppHarness, mint_token):
     response = rpc(
         app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
         params={"name": "solstice_project_info",
@@ -170,13 +165,15 @@ def test_operation_info_denied_for_brand_user_is_not_on(app_harness: AppHarness,
     assert "not_authorized" in _tool_error_text(response)
 
 
-def test_operation_info_unknown_returns_not_found(app_harness: AppHarness, mint_token):
+def test_operation_info_unknown_id_is_uniform_not_authorized(app_harness: AppHarness, mint_token):
+    # Uniform with the cross-brand deny above: unknown ids and inaccessible
+    # ids are indistinguishable (no existence oracle).
     response = rpc(
         app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
         params={"name": "solstice_operation_info",
                 "arguments": {"tenant_slug": "tenant_a", "operation_id": "00000000-0000-0000-0000-000000009999"}},
     )
-    assert "not_found" in _tool_error_text(response)
+    assert "not_authorized" in _tool_error_text(response)
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 import pytest
-from conftest import BRAND_A3, DELETED_SUB, OTHER_SUB, SHARED_SUB, TEST_ISSUER, TEST_RESOURCE, AppHarness
+from conftest import BRAND_A3, DELETED_SUB, OP_A1, OTHER_SUB, SHARED_SUB, TEST_ISSUER, TEST_RESOURCE, AppHarness
 
 from solstice_mcp.audit import AUDIT_EVENT_NAME, AUDIT_LOGGER_NAME
 from solstice_mcp.auth import fetch_jwks
@@ -16,7 +16,6 @@ from solstice_mcp.tenants import (
     TenantDatabaseFactory,
     TenantMembershipCache,
     TenantRegistry,
-    current_tenant,
     discover_tenants_for_sub,
     resolve_tenant_identity,
 )
@@ -232,25 +231,33 @@ def test_tool_audit_classifies_tool_errors(
     caplog: pytest.LogCaptureFixture,
 ):
     caplog.set_level(logging.INFO, logger=AUDIT_LOGGER_NAME)
-    unknown_project_id = "00000000-0000-0000-0000-000000000999"
 
+    # An unknown message on an operation the caller CAN access is a plain
+    # not_found (unknown project/operation ids are uniform not_authorized
+    # denies, so they cannot be used to exercise the "error" outcome).
     rpc(
         app_harness,
         "tools/call",
         token=mint_token(),
         params={
-            "name": "solstice_project_info",
-            "arguments": {"tenant_slug": "tenant_a", "project_id": unknown_project_id},
+            "name": "solstice_operation_html",
+            "arguments": {
+                "tenant_slug": "tenant_a",
+                "operation_id": OP_A1,
+                "message_id": "no-such-message",
+            },
         },
     )
 
     event = audit_events(caplog)[-1]
-    assert event["tool"] == "solstice_project_info"
+    assert event["tool"] == "solstice_operation_html"
     assert event["outcome"] == "error"
     assert event["error_code"] == "not_found"
     assert event["resources"] == {
         "tenant_slug": "tenant_a",
-        "project_id": unknown_project_id,
+        "operation_id": OP_A1,
+        "message_id": "no-such-message",
+        "fetch": False,
     }
 
 
@@ -300,11 +307,10 @@ def test_membership_cache_avoids_second_scan(app_harness: AppHarness, mint_token
     assert app_harness.calls == calls_after_first
 
 
-def test_context_is_cleared_when_database_factory_fails(app_harness: AppHarness):
+def test_unreachable_database_is_skipped_in_discovery(app_harness: AppHarness):
     def fail(_slug: str):
         raise RuntimeError("database unavailable")
 
-    current_tenant.set("stale")
     memberships = discover_tenants_for_sub(
         SHARED_SUB,
         registry=app_harness.registry,
@@ -313,7 +319,6 @@ def test_context_is_cleared_when_database_factory_fails(app_harness: AppHarness)
         slugs=["tenant_a"],
     )
     assert memberships == []
-    assert current_tenant.get() is None
 
     with pytest.raises(RuntimeError, match="database unavailable"):
         resolve_tenant_identity(
@@ -322,7 +327,6 @@ def test_context_is_cleared_when_database_factory_fails(app_harness: AppHarness)
             registry=app_harness.registry,
             session_factory=fail,
         )
-    assert current_tenant.get() is None
 
 
 def test_tenant_database_factory_routes_by_env(tmp_path):

@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import enum
 import logging
-from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
@@ -42,12 +41,6 @@ from solstice_mcp.tenants import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Per-request brand context. Downstream code reads role from here, never from a
-# handler argument. Mirrors ``tenants.current_tenant``.
-current_brand_role: ContextVar[BrandIdentity | None] = ContextVar(
-    "current_brand_role", default=None
-)
 
 
 class UserRole(enum.StrEnum):
@@ -194,29 +187,26 @@ def list_brand_users(
     flow (pick a new operation owner), so it exposes teammate names/emails only
     to staff on that brand. Soft-deleted users and memberships are excluded.
     """
-    try:
-        require_brand_role(
-            subject, tenant_slug, brand_id,
-            min_role=UserRole.SOLSTICE_STAFF,
-            registry=registry, session_factory=session_factory,
-        )
-        with tenant_session(tenant_slug, session_factory) as session:
-            rows = session.execute(
-                select(User.id, User.name, User.email, BrandTeamMember.user_role)
-                .join(BrandTeamMember, BrandTeamMember.user_id == User.id)
-                .where(
-                    BrandTeamMember.brand_id == brand_id,
-                    BrandTeamMember.deleted_at.is_(None),
-                    User.deleted_at.is_(None),
-                )
-                .order_by(User.name)
-            ).all()
-        return [
-            {"user_id": str(user_id), "name": name or "", "email": email or "", "role": role}
-            for user_id, name, email, role in rows
-        ]
-    finally:
-        reset_brand_role()
+    require_brand_role(
+        subject, tenant_slug, brand_id,
+        min_role=UserRole.SOLSTICE_STAFF,
+        registry=registry, session_factory=session_factory,
+    )
+    with tenant_session(tenant_slug, session_factory) as session:
+        rows = session.execute(
+            select(User.id, User.name, User.email, BrandTeamMember.user_role)
+            .join(BrandTeamMember, BrandTeamMember.user_id == User.id)
+            .where(
+                BrandTeamMember.brand_id == brand_id,
+                BrandTeamMember.deleted_at.is_(None),
+                User.deleted_at.is_(None),
+            )
+            .order_by(User.name)
+        ).all()
+    return [
+        {"user_id": str(user_id), "name": name or "", "email": email or "", "role": role}
+        for user_id, name, email, role in rows
+    ]
 
 
 def resolve_brand_role(
@@ -281,9 +271,9 @@ def require_brand_role(
 
     Raises ``ToolError`` (a protocol-level tool error, not a dict the agent can
     misread or retry around) when the subject is not a tenant member, not on the
-    brand, or holds a role below ``min_role``. On success, sets
-    ``current_brand_role`` so downstream logic reads role from context rather
-    than from handler arguments.
+    brand, or holds a role below ``min_role``. On success, returns the resolved
+    ``BrandIdentity`` — downstream logic reads the role from that return value,
+    never from handler arguments.
 
     This is the only function brand-bound tools should call for authorization.
     Keeping it centralized is what makes role determination bypass-proof
@@ -304,13 +294,7 @@ def require_brand_role(
         raise ToolError(
             f"not_authorized: role {identity.role.value} does not satisfy required role {min_role.value}"
         )
-    current_brand_role.set(identity)
     return identity
-
-
-def reset_brand_role() -> None:
-    """Clear ``current_brand_role``. Call in a ``finally`` after the handler returns."""
-    current_brand_role.set(None)
 
 
 __all__ = [
@@ -319,11 +303,9 @@ __all__ = [
     "BrandMembership",
     "BrandTeamMember",
     "UserRole",
-    "current_brand_role",
     "list_brand_users",
     "list_brands_for_user",
     "require_brand_role",
-    "reset_brand_role",
     "resolve_brand_role",
     "role_satisfies",
 ]

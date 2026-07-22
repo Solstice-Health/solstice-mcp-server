@@ -41,7 +41,6 @@ from solstice_mcp.brands import (
     BrandTeamMember,
     UserRole,
     require_brand_role,
-    reset_brand_role,
 )
 from solstice_mcp.tenants import (
     Base,
@@ -250,63 +249,60 @@ def dismiss_request(
         raise ToolError(
             f"invalid_arguments: reason_text exceeds {DISMISS_REASON_TEXT_MAX} characters"
         )
-    try:
-        with tenant_session(tenant_slug, session_factory) as session:
-            row = session.scalar(
-                select(AdminRequest).where(
-                    AdminRequest.id == request_id, AdminRequest.deleted_at.is_(None)
-                )
+    with tenant_session(tenant_slug, session_factory) as session:
+        row = session.scalar(
+            select(AdminRequest).where(
+                AdminRequest.id == request_id, AdminRequest.deleted_at.is_(None)
             )
-            if row is None:
-                raise ToolError("not_authorized: unknown request")
-            brand_id = row.brand_id
-        # Brand-scoped gate, matching the BE route: staff-in-tenant is NOT
-        # enough — the caller must be SOLSTICE_STAFF on this row's own brand.
-        identity = require_brand_role(
-            subject, tenant_slug, brand_id,
-            min_role=UserRole.SOLSTICE_STAFF,
-            registry=registry, session_factory=session_factory,
         )
-        with tenant_session(tenant_slug, session_factory) as session:
-            locked = session.scalar(
-                select(AdminRequest).where(
-                    AdminRequest.id == request_id, AdminRequest.deleted_at.is_(None)
-                ).with_for_update()
+        if row is None:
+            raise ToolError("not_authorized: unknown request")
+        brand_id = row.brand_id
+    # Brand-scoped gate, matching the BE route: staff-in-tenant is NOT
+    # enough — the caller must be SOLSTICE_STAFF on this row's own brand.
+    identity = require_brand_role(
+        subject, tenant_slug, brand_id,
+        min_role=UserRole.SOLSTICE_STAFF,
+        registry=registry, session_factory=session_factory,
+    )
+    with tenant_session(tenant_slug, session_factory) as session:
+        locked = session.scalar(
+            select(AdminRequest).where(
+                AdminRequest.id == request_id, AdminRequest.deleted_at.is_(None)
+            ).with_for_update()
+        )
+        if locked is None:
+            raise ToolError("not_authorized: unknown request")
+        if locked.status != "pending":
+            raise ToolError(
+                f"invalid_request: only pending requests can be dismissed (current status: {locked.status!r})"
             )
-            if locked is None:
-                raise ToolError("not_authorized: unknown request")
-            if locked.status != "pending":
-                raise ToolError(
-                    f"invalid_request: only pending requests can be dismissed (current status: {locked.status!r})"
-                )
-            dismissed_at = datetime.now(UTC)
-            # Merge, don't replace: preserve existing metadata keys (comments,
-            # resubmit context, operation_deleted). Reassign the dict so the
-            # JSON/JSONB change is tracked.
-            metadata = dict(locked.request_metadata) if isinstance(
-                locked.request_metadata, dict
-            ) else {}
-            metadata["dismissal"] = {
-                "category": reason_category,
-                "text": reason_text,
-                "dismissed_at": dismissed_at.isoformat(),
-                "dismissed_by_user_id": identity.user_id,
-            }
-            locked.request_metadata = metadata
-            locked.status = "dismissed"
-            locked.resolved_at = dismissed_at
-            locked.resolved_by_user_id = identity.user_id
-            locked.updated_at = dismissed_at
-            session.commit()
-        return {
-            "request_id": request_id,
-            "brand_id": brand_id,
-            "status": "dismissed",
-            "reason_category": reason_category,
+        dismissed_at = datetime.now(UTC)
+        # Merge, don't replace: preserve existing metadata keys (comments,
+        # resubmit context, operation_deleted). Reassign the dict so the
+        # JSON/JSONB change is tracked.
+        metadata = dict(locked.request_metadata) if isinstance(
+            locked.request_metadata, dict
+        ) else {}
+        metadata["dismissal"] = {
+            "category": reason_category,
+            "text": reason_text,
             "dismissed_at": dismissed_at.isoformat(),
+            "dismissed_by_user_id": identity.user_id,
         }
-    finally:
-        reset_brand_role()
+        locked.request_metadata = metadata
+        locked.status = "dismissed"
+        locked.resolved_at = dismissed_at
+        locked.resolved_by_user_id = identity.user_id
+        locked.updated_at = dismissed_at
+        session.commit()
+    return {
+        "request_id": request_id,
+        "brand_id": brand_id,
+        "status": "dismissed",
+        "reason_category": reason_category,
+        "dismissed_at": dismissed_at.isoformat(),
+    }
 
 
 __all__ = [

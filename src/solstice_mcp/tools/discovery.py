@@ -9,7 +9,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from solstice_mcp.audit import audited_tool
-from solstice_mcp.brands import UserRole, list_brands_for_user, require_brand_role, reset_brand_role
+from solstice_mcp.brands import UserRole, list_brands_for_user, require_brand_role
 from solstice_mcp.gate import SolsticeAccessGate
 from solstice_mcp.sibling_mcps import SiblingMCPRegistry
 from solstice_mcp.tenants import (
@@ -178,18 +178,15 @@ def register_discovery_tools(
         brand_id selects the resource; it does not grant access — the subject's
         own brand_team_members row is checked by require_brand_role.
         """
-        try:
-            identity = require_brand_role(
-                require_subject(),
-                tenant_slug,
-                brand_id,
-                min_role=UserRole.MEMBER,
-                registry=registry,
-                session_factory=session_factory,
-            )
-            return {"status": "ok", **identity.as_dict()}
-        finally:
-            reset_brand_role()
+        identity = require_brand_role(
+            require_subject(),
+            tenant_slug,
+            brand_id,
+            min_role=UserRole.MEMBER,
+            registry=registry,
+            session_factory=session_factory,
+        )
+        return {"status": "ok", **identity.as_dict()}
 
 
 __all__ = ["register_discovery_tools"]

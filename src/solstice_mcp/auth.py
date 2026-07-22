@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 import urllib.request
 from typing import Any
 
+import anyio.to_thread
 import jwt
 from mcp.server.auth.provider import AccessToken, TokenVerifier
+
+logger = logging.getLogger(__name__)
 
 
 def fetch_jwks(url: str, *, timeout: float = 5.0) -> dict[str, Any]:
@@ -82,7 +86,9 @@ class MCPAccessTokenVerifier(TokenVerifier):
 
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
-            payload = self._decode(token)
+            # Offloaded to a thread: a JWKS cache miss does a blocking HTTP
+            # fetch that must not stall the event loop.
+            payload = await anyio.to_thread.run_sync(self._decode, token)
             raw_scope = payload.get("scope") or ""
             scopes = raw_scope.split() if isinstance(raw_scope, str) else list(raw_scope)
             return AccessToken(
@@ -94,6 +100,10 @@ class MCPAccessTokenVerifier(TokenVerifier):
                 subject=payload["sub"],
                 claims=payload,
             )
-        except Exception:
-            # Any fetch or validation failure safely denies access through FastMCP's 401 response.
+        except Exception as exc:
+            # Any fetch or validation failure safely denies access through
+            # FastMCP's 401 response — but never silently: a JWKS outage or an
+            # issuer/audience misconfig must be distinguishable from a bad
+            # token in the logs. The token itself is never logged.
+            logger.info("Token verification failed: %s: %s", type(exc).__name__, exc)
             return None

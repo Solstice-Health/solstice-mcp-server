@@ -42,7 +42,7 @@ pytest
 Run the service after setting the required environment:
 
 ```bash
-PYTHONPATH=src gunicorn -w 2 -k uvicorn.workers.UvicornWorker \
+PYTHONPATH=src gunicorn -w 2 -k uvicorn_worker.UvicornWorker \
   --bind 0.0.0.0:8000 mcp_main:app
 ```
 

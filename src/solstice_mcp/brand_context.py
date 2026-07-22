@@ -18,7 +18,7 @@ from typing import Any
 from sqlalchemy import Boolean, DateTime, String, Text, Uuid, select
 from sqlalchemy.orm import Mapped, mapped_column
 
-from solstice_mcp.brands import Brand, UserRole, require_brand_role, reset_brand_role
+from solstice_mcp.brands import Brand, UserRole, require_brand_role
 from solstice_mcp.storage import S3Reader
 from solstice_mcp.tenants import Base, SessionFactory, TenantRegistry, tenant_session
 
@@ -90,47 +90,44 @@ def get_brand_rules(
     session_factory: SessionFactory,
 ) -> dict[str, Any]:
     """Return guidelines_and_rules plus brand admin fields. Gated at MEMBER."""
-    try:
-        require_brand_role(
-            subject,
-            tenant_slug,
-            brand_id,
-            min_role=UserRole.MEMBER,
-            registry=registry,
-            session_factory=session_factory,
+    require_brand_role(
+        subject,
+        tenant_slug,
+        brand_id,
+        min_role=UserRole.MEMBER,
+        registry=registry,
+        session_factory=session_factory,
+    )
+    with tenant_session(tenant_slug, session_factory) as session:
+        brand = session.scalar(
+            select(Brand).where(Brand.id == brand_id, Brand.deleted_at.is_(None))
         )
-        with tenant_session(tenant_slug, session_factory) as session:
-            brand = session.scalar(
-                select(Brand).where(Brand.id == brand_id, Brand.deleted_at.is_(None))
+        rules = session.scalars(
+            select(GuidelineAndRule)
+            .where(
+                GuidelineAndRule.brand_id == brand_id,
+                GuidelineAndRule.deleted_at.is_(None),
             )
-            rules = session.scalars(
-                select(GuidelineAndRule)
-                .where(
-                    GuidelineAndRule.brand_id == brand_id,
-                    GuidelineAndRule.deleted_at.is_(None),
-                )
-                .order_by(GuidelineAndRule.name)
-            ).all()
-        return {
-            "tenant_slug": tenant_slug,
-            "brand_id": brand_id,
-            "design_bible": brand.design_bible if brand is not None else None,
-            "isi": brand.isi if brand is not None else None,
-            "drug_info": brand.drug_info if brand is not None else None,
-            "rules": [
-                {
-                    "id": rule.id,
-                    "name": rule.name,
-                    "description": rule.description,
-                    "implementation_steps": rule.implementation_steps,
-                    "created_at": _iso(rule.created_at),
-                }
-                for rule in rules
-            ],
-            "count": len(rules),
-        }
-    finally:
-        reset_brand_role()
+            .order_by(GuidelineAndRule.name)
+        ).all()
+    return {
+        "tenant_slug": tenant_slug,
+        "brand_id": brand_id,
+        "design_bible": brand.design_bible if brand is not None else None,
+        "isi": brand.isi if brand is not None else None,
+        "drug_info": brand.drug_info if brand is not None else None,
+        "rules": [
+            {
+                "id": rule.id,
+                "name": rule.name,
+                "description": rule.description,
+                "implementation_steps": rule.implementation_steps,
+                "created_at": _iso(rule.created_at),
+            }
+            for rule in rules
+        ],
+        "count": len(rules),
+    }
 
 
 def get_brand_design_assets(
@@ -144,52 +141,49 @@ def get_brand_design_assets(
     presign_expiry: int = 600,
 ) -> dict[str, Any]:
     """Return design_library rows with presigned GET URLs. Gated at MEMBER."""
-    try:
-        require_brand_role(
-            subject,
-            tenant_slug,
-            brand_id,
-            min_role=UserRole.MEMBER,
-            registry=registry,
-            session_factory=session_factory,
+    require_brand_role(
+        subject,
+        tenant_slug,
+        brand_id,
+        min_role=UserRole.MEMBER,
+        registry=registry,
+        session_factory=session_factory,
+    )
+    tenant_config = registry.get(tenant_slug)
+    bucket = tenant_config.s3_bucket if tenant_config is not None else ""
+    with tenant_session(tenant_slug, session_factory) as session:
+        rows = session.scalars(
+            select(DesignLibrary)
+            .where(DesignLibrary.brand_id == brand_id)
+            .order_by(DesignLibrary.image_file_name)
+        ).all()
+    assets: list[dict[str, Any]] = []
+    for row in rows:
+        url = None
+        if row.s3_key and bucket:
+            url = s3.presign(bucket, row.s3_key, presign_expiry)
+        elif row.public_url:
+            url = row.public_url
+        assets.append(
+            {
+                "id": row.id,
+                "image_type": row.image_type,
+                "image_file_name": row.image_file_name,
+                "image_description": row.image_description,
+                "s3_key": row.s3_key,
+                "url": url,
+                "source_url": row.source_url,
+                "public_url": row.public_url,
+                "is_placeholder": bool(row.is_placeholder) if row.is_placeholder is not None else False,
+                "created_at": _iso(row.created_at),
+            }
         )
-        tenant_config = registry.get(tenant_slug)
-        bucket = tenant_config.s3_bucket if tenant_config is not None else ""
-        with tenant_session(tenant_slug, session_factory) as session:
-            rows = session.scalars(
-                select(DesignLibrary)
-                .where(DesignLibrary.brand_id == brand_id)
-                .order_by(DesignLibrary.image_file_name)
-            ).all()
-        assets: list[dict[str, Any]] = []
-        for row in rows:
-            url = None
-            if row.s3_key and bucket:
-                url = s3.presign(bucket, row.s3_key, presign_expiry)
-            elif row.public_url:
-                url = row.public_url
-            assets.append(
-                {
-                    "id": row.id,
-                    "image_type": row.image_type,
-                    "image_file_name": row.image_file_name,
-                    "image_description": row.image_description,
-                    "s3_key": row.s3_key,
-                    "url": url,
-                    "source_url": row.source_url,
-                    "public_url": row.public_url,
-                    "is_placeholder": bool(row.is_placeholder) if row.is_placeholder is not None else False,
-                    "created_at": _iso(row.created_at),
-                }
-            )
-        return {
-            "tenant_slug": tenant_slug,
-            "brand_id": brand_id,
-            "assets": assets,
-            "count": len(assets),
-        }
-    finally:
-        reset_brand_role()
+    return {
+        "tenant_slug": tenant_slug,
+        "brand_id": brand_id,
+        "assets": assets,
+        "count": len(assets),
+    }
 
 
 def get_brand_claims(
@@ -208,49 +202,46 @@ def get_brand_claims(
     hard cap so a brand with tens of thousands of rows cannot blow the tool
     response.
     """
-    try:
-        require_brand_role(
-            subject,
-            tenant_slug,
-            brand_id,
-            min_role=UserRole.MEMBER,
-            registry=registry,
-            session_factory=session_factory,
+    require_brand_role(
+        subject,
+        tenant_slug,
+        brand_id,
+        min_role=UserRole.MEMBER,
+        registry=registry,
+        session_factory=session_factory,
+    )
+    capped = max(1, min(limit, _MAX_CLAIMS_LIMIT))
+    with tenant_session(tenant_slug, session_factory) as session:
+        stmt = select(ClinicalClaim).where(
+            ClinicalClaim.brand_id == brand_id,
+            ClinicalClaim.deleted_at.is_(None),
+            ClinicalClaim.claim_text.is_not(None),
         )
-        capped = max(1, min(limit, _MAX_CLAIMS_LIMIT))
-        with tenant_session(tenant_slug, session_factory) as session:
-            stmt = select(ClinicalClaim).where(
-                ClinicalClaim.brand_id == brand_id,
-                ClinicalClaim.deleted_at.is_(None),
-                ClinicalClaim.claim_text.is_not(None),
-            )
-            if extracted_only:
-                stmt = stmt.where(ClinicalClaim.is_extracted.is_(True))
-            rows = session.scalars(stmt.limit(capped)).all()
-        claims = [
-            {
-                "id": claim.id,
-                "claim_text": claim.claim_text,
-                "claim_type": claim.claim_type,
-                "is_extracted": bool(claim.is_extracted) if claim.is_extracted is not None else False,
-                "first_author": claim.first_author,
-                "publication_name": claim.publication_name,
-                "publication_year": claim.publication_year,
-                "counted_page_number": claim.counted_page_number,
-                "group_id": claim.group_id,
-            }
-            for claim in rows
-        ]
-        return {
-            "tenant_slug": tenant_slug,
-            "brand_id": brand_id,
-            "extracted_only": extracted_only,
-            "limit": capped,
-            "claims": claims,
-            "count": len(claims),
+        if extracted_only:
+            stmt = stmt.where(ClinicalClaim.is_extracted.is_(True))
+        rows = session.scalars(stmt.limit(capped)).all()
+    claims = [
+        {
+            "id": claim.id,
+            "claim_text": claim.claim_text,
+            "claim_type": claim.claim_type,
+            "is_extracted": bool(claim.is_extracted) if claim.is_extracted is not None else False,
+            "first_author": claim.first_author,
+            "publication_name": claim.publication_name,
+            "publication_year": claim.publication_year,
+            "counted_page_number": claim.counted_page_number,
+            "group_id": claim.group_id,
         }
-    finally:
-        reset_brand_role()
+        for claim in rows
+    ]
+    return {
+        "tenant_slug": tenant_slug,
+        "brand_id": brand_id,
+        "extracted_only": extracted_only,
+        "limit": capped,
+        "claims": claims,
+        "count": len(claims),
+    }
 
 
 __all__ = [

@@ -66,6 +66,7 @@ jobs:
             --services "$ECS_SERVICE" \
             --query 'services[0].taskDefinition' \
             --output text)
+          echo "previous_arn=$TASK_DEFINITION" >> "$GITHUB_OUTPUT"
           aws ecs describe-task-definition \
             --task-definition "$TASK_DEFINITION" \
             --query taskDefinition > task-definition.json
@@ -113,3 +114,16 @@ jobs:
               '.resource == $resource and (.scopes_supported | index("mcp:connect"))'
           STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" "$RESOURCE_URL")
           test "$STATUS" = "401"
+
+      - name: Roll back on smoke failure
+        if: failure() && steps.task.outputs.previous_arn != ''
+        env:
+          PREVIOUS_ARN: ${{ steps.task.outputs.previous_arn }}
+        run: |
+          echo "Smoke test failed; rolling back to $PREVIOUS_ARN"
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "$PREVIOUS_ARN" \
+            --force-new-deployment
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"

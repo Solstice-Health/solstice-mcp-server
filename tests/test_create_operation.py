@@ -152,12 +152,14 @@ def test_create_unknown_folder_path_rejected(app_harness: AppHarness, mint_token
 
 
 def test_create_unknown_project_rejected(app_harness: AppHarness, mint_token):
+    # Uniform not_authorized deny: create must not act as an existence oracle
+    # for project ids any more than the read tools do.
     token = mint_token(sub=SHARED_SUB)
     response = _call(
         app_harness, token, "solstice_create_operation",
         {"tenant_slug": TENANT, "project_id": str(uuid4()), "name": "x.html"},
     )
-    assert "not_found" in _tool_error_text(response)
+    assert "not_authorized" in _tool_error_text(response)
 
 
 def test_create_denied_for_non_member(app_harness: AppHarness, mint_token):
