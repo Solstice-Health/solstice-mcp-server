@@ -21,6 +21,7 @@ from starlette.testclient import TestClient
 
 from solstice_mcp.app import build_mcp_app
 from solstice_mcp.auth import JWKSCache
+from solstice_mcp.brand_context import ClinicalClaim, DesignLibrary, GuidelineAndRule
 from solstice_mcp.brands import Brand, BrandTeamMember
 from solstice_mcp.operations import CgOperation, CgOperationMessage, Project
 from solstice_mcp.settings import Settings
@@ -274,11 +275,62 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
     now = datetime.now(UTC)
     brand_rows = {
         "tenant_a": [
-            Brand(id=BRAND_A1, name="Brand A1", deleted_at=None),
+            Brand(
+                id=BRAND_A1, name="Brand A1", deleted_at=None,
+                design_bible={"palette": "blue"}, isi={"text": "See ISI"},
+                drug_info={"name": "Drug A"},
+            ),
             Brand(id=BRAND_A2, name="Brand A2", deleted_at=None),
             Brand(id=BRAND_A3, name="Brand A3", deleted_at=None),
             Brand(id=BRAND_A4, name="Brand A4", deleted_at=None),
             Brand(id=BRAND_A5, name="Brand A5", deleted_at=now),
+            GuidelineAndRule(
+                id="00000000-0000-0000-0000-000000000601",
+                name="No unapproved claims",
+                description="Only use approved claim language",
+                implementation_steps="Check claim library first",
+                brand_id=BRAND_A1,
+                created_at=now,
+                deleted_at=None,
+            ),
+            DesignLibrary(
+                id="00000000-0000-0000-0000-000000000701",
+                image_type="LOGO",
+                image_file_name="logo.png",
+                image_description="Primary logo",
+                brand_id=BRAND_A1,
+                s3_key="design_library/logo.png",
+                public_url=None,
+                is_placeholder=False,
+                created_at=now,
+                updated_at=now,
+            ),
+            ClinicalClaim(
+                id="00000000-0000-0000-0000-000000000801",
+                brand_id=BRAND_A1,
+                claim_text="Drug A reduced symptoms by 40%",
+                claim_type="GENERAL_EFFICACY",
+                is_extracted=True,
+                first_author="Smith",
+                publication_name="Journal",
+                publication_year=2024,
+                counted_page_number=3,
+                group_id=None,
+                deleted_at=None,
+            ),
+            ClinicalClaim(
+                id="00000000-0000-0000-0000-000000000802",
+                brand_id=BRAND_A1,
+                claim_text="Draft unextracted claim",
+                claim_type="OTHER",
+                is_extracted=False,
+                first_author=None,
+                publication_name=None,
+                publication_year=None,
+                counted_page_number=None,
+                group_id=None,
+                deleted_at=None,
+            ),
             BrandTeamMember(brand_id=BRAND_A1, user_id=USER_A_SHARED, user_role="ADMIN", deleted_at=None),
             BrandTeamMember(brand_id=BRAND_A2, user_id=USER_A_SHARED, user_role="MEMBER", deleted_at=None),
             BrandTeamMember(brand_id=BRAND_A4, user_id=USER_A_SHARED, user_role="ADMIN", deleted_at=now),

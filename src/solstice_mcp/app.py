@@ -21,6 +21,7 @@ from solstice_mcp.settings import Settings, settings
 from solstice_mcp.sibling_mcps import SiblingMCPRegistry
 from solstice_mcp.storage import S3Reader, TenantS3
 from solstice_mcp.tenants import TenantDatabaseFactory, TenantMembershipCache, TenantRegistry
+from solstice_mcp.tools.brand_context import register_brand_context_tools
 from solstice_mcp.tools.content import register_content_tools
 from solstice_mcp.tools.discovery import register_discovery_tools
 
@@ -162,6 +163,15 @@ def build_mcp_app(
         s3=s3_reader,
         presign_expiry=runtime_settings.S3_PRESIGN_EXPIRY_SECONDS,
         max_inline_bytes=runtime_settings.S3_MAX_INLINE_BYTES,
+    )
+    register_brand_context_tools(
+        mcp,
+        require_subject=require_subject,
+        require_access_token=require_access_token,
+        registry=tenant_registry,
+        session_factory=open_session,
+        s3=s3_reader,
+        presign_expiry=runtime_settings.S3_PRESIGN_EXPIRY_SECONDS,
     )
 
     @mcp.custom_route("/health", methods=["GET"])

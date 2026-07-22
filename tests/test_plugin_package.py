@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 PLUGIN = ROOT / "plugins" / "solstice-platform"
 PLUGIN_NAME = "solstice-platform"
-PLUGIN_VERSION = "0.3.2"
+PLUGIN_VERSION = "0.3.3"
 PRODUCTION_URL = "https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
 PRODUCTION_AUDIENCE = PRODUCTION_URL
 CURSOR_CLIENT_ID = "uoOiEXHZxyDBkkBEfnOQEp6IhqcnAgTP"
@@ -87,6 +87,7 @@ def test_shared_skill_is_portable_and_action_focused() -> None:
     for action in (
         "my workspaces",
         "my brands",
+        "brand context",
         "projects",
         "content reviews",
         "review activity",
@@ -101,6 +102,38 @@ def test_shared_skill_is_portable_and_action_focused() -> None:
     assert {path.name for path in (skill_dir / "references").glob("*.md")} == references
     for reference in references:
         assert f"(references/{reference})" in body
+
+
+def test_figma_to_solstice_skill_is_portable_and_human_in_loop() -> None:
+    skill_name = "figma-to-solstice"
+    text = (PLUGIN / "skills" / skill_name / "SKILL.md").read_text()
+    marker, frontmatter, body = text.split("---", 2)
+    assert marker == ""
+    fields = dict(line.split(": ", 1) for line in frontmatter.strip().splitlines())
+    assert set(fields) == {"name", "description"}
+    assert fields["name"] == skill_name
+    assert "figma" in fields["description"].lower()
+
+    body_lower = body.lower()
+    for phrase in (
+        "no write until approval",
+        "human-in-loop",
+        "solstice_brand_rules",
+        "solstice_brand_design_assets",
+        "solstice_brand_claims",
+        "solstice_create_operation",
+        "untrusted content",
+    ):
+        assert phrase in body_lower
+
+    references = {"conversion-workflow.md"}
+    skill_dir = PLUGIN / "skills" / skill_name
+    assert {path.name for path in (skill_dir / "references").glob("*.md")} == references
+    assert "(references/conversion-workflow.md)" in body
+    workflow = (skill_dir / "references" / "conversion-workflow.md").read_text().lower()
+    assert "only after approval" in workflow
+    assert "solstice_prepare_operation_version" in workflow
+    assert "solstice_commit_operation_version" in workflow
 
 
 def test_codex_callback_contract_stays_aligned() -> None:

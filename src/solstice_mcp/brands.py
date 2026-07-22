@@ -26,9 +26,10 @@ import logging
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from typing import Any
 
 from mcp.server.fastmcp.exceptions import ToolError
-from sqlalchemy import DateTime, String, Uuid, select
+from sqlalchemy import JSON, DateTime, String, Uuid, select
 from sqlalchemy.orm import Mapped, mapped_column
 
 from solstice_mcp.tenants import (
@@ -70,12 +71,19 @@ def role_satisfies(held: UserRole, min_role: UserRole) -> bool:
 
 
 class Brand(Base):
-    """Read-only mapping of the tenant ``brands`` table."""
+    """Mapping of the tenant ``brands`` table.
+
+    Read paths use identity columns; brand-context tools also read the admin
+    JSON fields (``design_bible``, ``isi``, ``drug_info``).
+    """
 
     __tablename__ = "brands"
 
     id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)
     name: Mapped[str] = mapped_column(String)
+    design_bible: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    isi: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    drug_info: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 

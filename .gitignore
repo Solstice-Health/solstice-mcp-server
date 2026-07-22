@@ -6,3 +6,7 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# Local lab / playbook HTML (not part of the plugin package)
+docs/solstice-mcp-ui-lab.html
+docs/solstice-cel-playbooks.html
