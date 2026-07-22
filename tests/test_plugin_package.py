@@ -7,12 +7,12 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 PLUGIN = ROOT / "plugins" / "solstice-platform"
 PLUGIN_NAME = "solstice-platform"
-PLUGIN_VERSION = "0.3.1"
-PRODUCTION_URL = "https://api.solsticehealth.co/mcp"
+PLUGIN_VERSION = "0.3.2"
+PRODUCTION_URL = "https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
 PRODUCTION_AUDIENCE = PRODUCTION_URL
 CURSOR_CLIENT_ID = "uoOiEXHZxyDBkkBEfnOQEp6IhqcnAgTP"
 SCOPES = {"mcp:connect", "openid", "email"}
-CODEX_CALLBACK_ID = "rNbuDm0IFnc1"
+CODEX_CALLBACK_ID = "TL-8G9qfe5UK"
 
 
 def load_json(path: Path) -> dict:

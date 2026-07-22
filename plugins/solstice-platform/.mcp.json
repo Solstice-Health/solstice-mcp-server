@@ -2,7 +2,7 @@
   "mcpServers": {
     "solstice-platform": {
       "type": "http",
-      "url": "https://api.solsticehealth.co/mcp",
+      "url": "https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
       "auth": {
         "CLIENT_ID": "uoOiEXHZxyDBkkBEfnOQEp6IhqcnAgTP",
         "scopes": ["mcp:connect", "openid", "email"]
