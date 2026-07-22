@@ -142,11 +142,13 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
         "solstice_operation_info",
         "solstice_operation_messages",
         "solstice_operation_html",
+        "solstice_create_operation",
         "solstice_prepare_operation_version",
         "solstice_commit_operation_version",
     }
     for tool in listed_tools:
         is_write = tool["name"] in {
+            "solstice_create_operation",
             "solstice_prepare_operation_version",
             "solstice_commit_operation_version",
         }

@@ -39,6 +39,17 @@ Use `solstice_operation_messages` for the chosen review. Summarize the returned 
 
 State when a link is time-limited. Never fetch a body merely to preview what the link contains.
 
+## Create an asset in a folder
+
+An asset is an operation that appears as a file (a leaf) in a project's folder tree. Only start this workflow when the user explicitly asks to create a new asset/file and names the target project (and folder).
+
+1. Resolve the workspace, brand, and project from returned results or a Solstice deep link. Ask when the target is ambiguous.
+2. Confirm the target project, the destination folder path (root when omitted), and the file name before creating. The folder must already exist — the server does not create folders.
+3. Call `solstice_create_operation` with `tenant_slug`, `project_id`, `name`, and optional `folder_path`, `content_type`. Retain the returned `operation_id`.
+4. To give the new asset a first document, run the add-a-document-version workflow below with the returned `operation_id`; the prepared version will be v1.
+
+The owner is derived from your token; never pass a user ID or role. This write is append-only: it adds a new asset and one folder-tree entry and never overwrites anything.
+
 ## Add a document version
 
 Only start this workflow when the user explicitly asks to add an HTML or PDF version and supplies the file or exact bytes.
@@ -54,4 +65,4 @@ The workflow is append-only. Never substitute another key, retry commit automati
 
 ## Unsupported changes
 
-Apart from adding a document version, do not attempt writes through another tool or imply success. Say: "That change is not supported by this Solstice connection, so I did not make it."
+Apart from creating an asset in a folder and adding a document version, do not attempt writes through another tool or imply success. Say: "That change is not supported by this Solstice connection, so I did not make it."

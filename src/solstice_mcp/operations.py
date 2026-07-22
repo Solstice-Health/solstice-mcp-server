@@ -30,6 +30,7 @@ Backend-Server does NOT enforce on its own GET /messages route):
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -73,16 +74,31 @@ class Project(Base):
 
 
 class CgOperation(Base):
-    """Read-only mapping of the tenant ``n_cg_operations`` table."""
+    """Mapping of the tenant ``n_cg_operations`` table.
+
+    Reads use a subset of columns; the write path (``create_operation``) also
+    populates the prod NOT NULL columns (``prompt``, ``user_id``,
+    ``filtered_clinical_claims_picker``, ``page``) so an INSERT succeeds against
+    real Postgres, not just SQLite in tests. ``content_type`` and
+    ``operation_metadata`` are mapped so the dir_map leaf can mirror the
+    Backend-Server shape.
+    """
 
     __tablename__ = "n_cg_operations"
 
     id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)
     brand_id: Mapped[str] = mapped_column(Uuid(as_uuid=False))
     project_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), nullable=True)
+    # NOT NULL in prod; populated on insert by the write path.
+    user_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), nullable=True)
+    prompt: Mapped[str | None] = mapped_column(String, nullable=True)
+    filtered_clinical_claims_picker: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    page: Mapped[int | None] = mapped_column(nullable=True)
     status: Mapped[str | None] = mapped_column(String, nullable=True)
     chat_title: Mapped[str | None] = mapped_column(String, nullable=True)
     file_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    operation_metadata: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     version_number: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -248,6 +264,128 @@ def get_project_info(
             "name": project.name,
             "brand_id": brand_id,
             "dir_map": project.dir_map,
+        }
+    finally:
+        reset_brand_role()
+
+
+def _items_at_path(dir_map: dict[str, Any], folder_path: str) -> list[dict[str, Any]]:
+    """Resolve the ``items`` list at ``folder_path`` in a dir_map.
+
+    Mirrors the Backend-Server ``ProjectService._get_items_at_path``: root
+    (``""``) returns ``dir_map["items"]``; otherwise walk slash-separated folder
+    names matched by ``name`` + ``items``. A missing folder raises ToolError —
+    we never auto-create folders, matching the backend's 404.
+    """
+    items = dir_map.get("items", [])
+    if not folder_path:
+        return items
+    for part in [p for p in folder_path.split("/") if p]:
+        found = None
+        for item in items:
+            if item.get("name") == part and "items" in item:
+                found = item
+                break
+        if found is None:
+            raise ToolError(f"not_found: path not found: {folder_path}")
+        items = found.get("items", [])
+    return items
+
+
+def create_operation(
+    subject: str,
+    tenant_slug: str,
+    project_id: str,
+    name: str,
+    folder_path: str = "",
+    content_type: str | None = None,
+    chat_title: str | None = None,
+    file_name: str | None = None,
+    *,
+    registry: TenantRegistry,
+    session_factory: SessionFactory,
+) -> dict[str, Any]:
+    """Create a new operation and append it to a project's dir_map folder.
+
+    Transactional: inserts one ``n_cg_operations`` row (status ``EDITING``,
+    ``version_number`` 1) and appends a leaf into ``projects.dir_map`` at
+    ``folder_path`` (root by default). Mirrors the Backend-Server
+    ``ProjectService.add_operation_to_project`` leaf shape so the operation
+    appears in the UI file tree.
+
+    Authorization is gated at MEMBER on the project's brand (resolved from the
+    project row, never a caller argument). ``user_id`` on the new row is the
+    authenticated subject's user_id — it is not accepted as an argument. Add v1
+    content afterwards via ``prepare_operation_version`` +
+    ``commit_operation_version``.
+    """
+    try:
+        with tenant_session(tenant_slug, session_factory) as session:
+            project = session.scalar(
+                select(Project).where(
+                    Project.id == project_id, Project.deleted_at.is_(None)
+                )
+            )
+            if project is None:
+                raise ToolError("not_found: unknown project")
+            brand_id = project.brand_id
+        # brand_id is derived from the project row, never a caller argument.
+        identity = require_brand_role(
+            subject, tenant_slug, brand_id,
+            min_role=UserRole.MEMBER,
+            registry=registry, session_factory=session_factory,
+        )
+        operation_id = str(uuid4())
+        now = datetime.now(UTC)
+        with tenant_session(tenant_slug, session_factory) as session:
+            locked = session.scalar(
+                select(Project).where(
+                    Project.id == project_id, Project.deleted_at.is_(None)
+                ).with_for_update()
+            )
+            if locked is None:
+                raise ToolError("not_found: unknown project")
+            new_map = deepcopy(locked.dir_map) or {"items": []}
+            items = _items_at_path(new_map, folder_path)
+            op = CgOperation(
+                id=operation_id,
+                brand_id=brand_id,
+                project_id=project_id,
+                user_id=identity.user_id,
+                prompt="",
+                filtered_clinical_claims_picker=[],
+                page=1,
+                status="EDITING",
+                chat_title=chat_title or name,
+                file_name=file_name or name,
+                content_type=content_type,
+                operation_metadata={},
+                version_number=1,
+                created_at=now,
+                updated_at=now,
+                deleted_at=None,
+            )
+            session.add(op)
+            items.append(
+                {
+                    "name": name,
+                    "operation_id": operation_id,
+                    "content_type": content_type,
+                    "veeva_document_number": None,
+                }
+            )
+            # Reassign so SQLAlchemy tracks the JSON/JSONB change (in-place
+            # mutation of the nested list is not tracked). Mirrors the backend.
+            locked.dir_map = new_map
+            session.commit()
+        return {
+            "operation_id": operation_id,
+            "project_id": project_id,
+            "brand_id": brand_id,
+            "folder_path": folder_path,
+            "name": name,
+            "status": "EDITING",
+            "version_number": 1,
         }
     finally:
         reset_brand_role()
@@ -734,6 +872,7 @@ __all__ = [
     "CgOperationMessage",
     "Project",
     "commit_operation_version",
+    "create_operation",
     "get_operation_html",
     "get_operation_info",
     "get_project_info",

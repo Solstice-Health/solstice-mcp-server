@@ -12,6 +12,7 @@ from mcp.types import ToolAnnotations
 from solstice_mcp.audit import audited_tool
 from solstice_mcp.operations import (
     commit_operation_version,
+    create_operation,
     get_operation_html,
     get_operation_info,
     get_project_info,
@@ -168,6 +169,39 @@ def register_content_tools(
             s3=s3,
             presign_expiry=presign_expiry,
             max_inline_bytes=max_inline_bytes,
+        )
+
+    @append_only_tool
+    def solstice_create_operation(
+        tenant_slug: str,
+        project_id: str,
+        name: str,
+        folder_path: str = "",
+        content_type: str | None = None,
+        chat_title: str | None = None,
+        file_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a new operation inside a project's folder.
+
+        Append-only: inserts one operation (status ``EDITING``, version 1) and
+        adds a leaf to the project's directory map at ``folder_path`` (root when
+        omitted). The folder must already exist — it is not auto-created. Gated
+        at MEMBER on the project's brand; the operation owner is your own user,
+        never an argument. To add the v1 document, follow with
+        solstice_prepare_operation_version -> upload -> solstice_commit_operation_version
+        using the returned operation_id.
+        """
+        return create_operation(
+            require_subject(),
+            tenant_slug,
+            project_id,
+            name,
+            folder_path,
+            content_type,
+            chat_title,
+            file_name,
+            registry=registry,
+            session_factory=session_factory,
         )
 
     @append_only_tool
