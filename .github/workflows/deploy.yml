@@ -23,6 +23,11 @@ jobs:
       ECS_SERVICE: solstice-prod-mcp-server
       ECR_REPOSITORY: solstice-prod-mcp
       RESOURCE_URL: https://api.solsticehealth.co/mcp
+      # Bedrock AgentCore gateway that fronts this server for MCP clients.
+      # It snapshots the tool schema at sync time, so every deploy must re-sync
+      # or clients keep seeing the previous deploy's tool list.
+      GATEWAY_ID: solstice-mcp-l6apghhxpf
+      GATEWAY_TARGET_ID: JB1A75WG68
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -103,6 +108,7 @@ jobs:
           aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
 
       - name: Smoke test
+        id: smoke
         env:
           RESOURCE_URL: ${{ env.RESOURCE_URL }}
         run: |
@@ -115,8 +121,35 @@ jobs:
           STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" "$RESOURCE_URL")
           test "$STATUS" = "401"
 
+      - name: Sync AgentCore gateway tool schema
+        run: |
+          aws bedrock-agentcore-control synchronize-gateway-targets \
+            --gateway-identifier "$GATEWAY_ID" \
+            --target-id-list "$GATEWAY_TARGET_ID"
+          for i in $(seq 1 30); do
+            STATUS=$(aws bedrock-agentcore-control get-gateway-target \
+              --gateway-identifier "$GATEWAY_ID" \
+              --target-id "$GATEWAY_TARGET_ID" \
+              --query status --output text)
+            echo "Gateway target status: $STATUS"
+            case "$STATUS" in
+              READY) exit 0 ;;
+              SYNCHRONIZING|UPDATING) sleep 10 ;;
+              *)
+                aws bedrock-agentcore-control get-gateway-target \
+                  --gateway-identifier "$GATEWAY_ID" \
+                  --target-id "$GATEWAY_TARGET_ID" \
+                  --query statusReasons
+                exit 1 ;;
+            esac
+          done
+          echo "Timed out waiting for gateway target sync"
+          exit 1
+
+      # Only a smoke-test failure rolls back the service; a gateway sync failure
+      # leaves the (healthy) deploy in place and just fails the workflow.
       - name: Roll back on smoke failure
-        if: failure() && steps.task.outputs.previous_arn != ''
+        if: failure() && steps.smoke.outcome == 'failure' && steps.task.outputs.previous_arn != ''
         env:
           PREVIOUS_ARN: ${{ steps.task.outputs.previous_arn }}
         run: |
