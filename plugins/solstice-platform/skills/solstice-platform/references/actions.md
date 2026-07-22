@@ -18,6 +18,16 @@ Use `solstice_list_tenants`. Present the workspace names and ask the user to cho
 
 Use `solstice_list_brands` after workspace selection. The returned list is the full set the user may see in that workspace.
 
+## Brand context (rules, design assets, claims)
+
+After brand selection, use these read-only tools when converting designs or drafting brand-faithful HTML:
+
+1. `solstice_brand_rules` — guidelines plus `design_bible`, `isi`, and `drug_info`.
+2. `solstice_brand_design_assets` — design-library rows with time-limited asset URLs.
+3. `solstice_brand_claims` — clinical claim text (use verbatim; do not invent claims).
+
+For the full Figma → Solstice conversion flow (pull design, human-in-loop preview, then land), use the `figma-to-solstice` skill.
+
 ## Projects
 
 Use `solstice_list_projects` for the selected brand. Use `solstice_project_info` only when the user asks for one project's details or folder structure.

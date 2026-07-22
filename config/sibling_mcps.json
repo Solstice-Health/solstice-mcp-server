@@ -12,6 +12,12 @@
     "scopes": ["mcp:jam"],
     "setup_instructions": "OAuth via Jam in Cursor MCP settings."
   },
+  "figma": {
+    "url": "https://mcp.figma.com/mcp",
+    "auth_type": "oauth",
+    "scopes": ["mcp:connect"],
+    "setup_instructions": "OAuth via Figma in Cursor MCP settings (remote MCP). Paste a Figma file or frame URL to scope design context. Desktop MCP (http://127.0.0.1:3845/mcp) is an alternative when the Figma desktop app is running."
+  },
   "slack": {
     "url": "",
     "auth_type": "bot_token",

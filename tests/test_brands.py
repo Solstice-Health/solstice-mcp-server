@@ -333,6 +333,10 @@ def test_server_info_advertises_rbac_model(app_harness: AppHarness, mint_token):
     assert payload["rbac"]["super_user"] == "SOLSTICE_STAFF (brand-scoped, not tenant-wide)"
     assert "solstice_list_brands" in payload["tools"]
     assert "solstice_brand_info" in payload["tools"]
+    assert "solstice_brand_rules" in payload["tools"]
+    assert "solstice_brand_design_assets" in payload["tools"]
+    assert "solstice_brand_claims" in payload["tools"]
+    assert "solstice_create_operation" in payload["tools"]
 
 
 def test_json_dump_of_rbac_payload_is_stable(app_harness: AppHarness, mint_token):

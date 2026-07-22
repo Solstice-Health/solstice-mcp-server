@@ -9,6 +9,7 @@ Use the Solstice MCP for these user actions:
 
 - **My workspaces:** discover the workspaces the signed-in user can access. Select the only result. If there are several, ask which one to use. If there are none, stop and explain that access is required.
 - **My brands:** show only brands returned for the selected workspace. Resolve a brand name to its internal ID without exposing the ID unless it helps the user.
+- **Brand context:** on request, load brand rules (`solstice_brand_rules`), design assets (`solstice_brand_design_assets`), and clinical claims (`solstice_brand_claims`). For Figma → HTML conversion with human-in-loop landing, use the `figma-to-solstice` skill.
 - **Projects:** list or inspect projects for a selected brand. Ask the user to choose when names match more than one result.
 - **Content reviews:** find or inspect review operations for a brand or project. Do not guess which operation the user meant.
 - **Review activity:** show a bounded summary of the selected review's conversation and document versions.
