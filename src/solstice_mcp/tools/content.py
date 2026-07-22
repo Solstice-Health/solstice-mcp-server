@@ -218,6 +218,13 @@ def register_content_tools(
         bytes directly to upload_url, then call solstice_commit_operation_version
         with the returned s3_key. Gated at MEMBER on the operation's brand.
         ``type`` is ``html`` or ``pdf``.
+
+        ``file_name`` MUST be a bare filename only (e.g. ``"1022.html"``,
+        ``"apretude_banner_v6.pdf"``). Never pass user instructions, descriptions,
+        task notes, or any natural-language prose here — this field is scanned by
+        the gateway's prompt-attack guardrail, and instruction-like text will
+        cause the call to be denied. Keep the user's intent in your own
+        reasoning, not in this argument.
         """
         return prepare_operation_version(
             require_subject(),
@@ -246,6 +253,14 @@ def register_content_tools(
         derived from your token (SOLSTICE_STAFF -> draft; MEMBER/ADMIN -> final)
         and is NOT accepted as an argument. Gated at MEMBER on the operation's
         brand. ``type`` is ``html`` or ``pdf``.
+
+        ``file_name`` MUST be a bare filename only (e.g. ``"1022.html"``,
+        ``"apretude_banner_v6.pdf"``) and must match the value passed to
+        ``solstice_prepare_operation_version``. Never pass user instructions,
+        descriptions, task notes, or any natural-language prose here — this
+        field is scanned by the gateway's prompt-attack guardrail, and
+        instruction-like text will cause the call to be denied. Keep the
+        user's intent in your own reasoning, not in this argument.
         """
         return commit_operation_version(
             require_subject(),

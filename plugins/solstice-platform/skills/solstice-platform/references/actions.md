@@ -73,6 +73,10 @@ Only start this workflow when the user explicitly asks to add an HTML or PDF ver
 
 The workflow is append-only. Never substitute another key, retry commit automatically, overwrite an existing version, or accept a requested role or intent.
 
+### `file_name` is a filename only
+
+`file_name` must be a bare file name such as `1022.html` or `apretude_banner_v6.pdf` — never the user's instruction, a task description, or any natural-language prose. The gateway runs a prompt-attack guardrail over this field, so instruction-like text (e.g. `"1022.html get current version and fix image then add it as next version v6"`) will be denied. Keep the user's intent in your own reasoning and pass only the clean filename as `file_name`. Use the same `file_name` for both prepare and commit.
+
 ## Unsupported changes
 
 Apart from creating an asset in a folder and adding a document version, do not attempt writes through another tool or imply success. Say: "That change is not supported by this Solstice connection, so I did not make it."

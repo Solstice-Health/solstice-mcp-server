@@ -75,9 +75,9 @@ Confirm before writing:
 Sequence:
 
 1. `solstice_create_operation(tenant_slug, project_id, name, folder_path?, content_type?)` → retain `operation_id`.
-2. `solstice_prepare_operation_version(tenant_slug, operation_id, type="html", file_name?)` → retain `upload_url`, `s3_key`, `type`, `file_name`.
+2. `solstice_prepare_operation_version(tenant_slug, operation_id, type="html", file_name?)` → retain `upload_url`, `s3_key`, `type`, `file_name`. `file_name` is a bare filename only (e.g. `apretude_hero.html`); never pass instructions or prose — the gateway's prompt-attack guardrail scans this field and will deny instruction-like text.
 3. HTTP PUT the HTML bytes to `upload_url` with `Content-Type: text/html`. If the upload fails, stop without committing.
-4. `solstice_commit_operation_version(tenant_slug, operation_id, type, s3_key, file_name?)` with the unchanged prepare values.
+4. `solstice_commit_operation_version(tenant_slug, operation_id, type, s3_key, file_name?)` with the unchanged prepare values (same `file_name`).
 5. Report:
    - committed `version_number` and server-derived `intent`
    - asset deep link from `solstice_server_info` deep_links.asset_url (tenant subdomain + `/home/assets/` + operation_id; hyphens/underscores interchangeable; strip leading `www.` when parsing inbound links)
