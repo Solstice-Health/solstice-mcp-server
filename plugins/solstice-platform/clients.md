@@ -38,7 +38,7 @@ The portable pieces are the production Streamable HTTP endpoint and `skills/sols
 
 For another MCP-capable client:
 
-1. Configure `https://api.solsticehealth.co/mcp` as a remote Streamable HTTP server.
+1. Configure `https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp` as a remote Streamable HTTP server.
 2. Use a registered public Auth0 client with PKCE, the same URL as the audience, and scopes `mcp:connect openid email`.
 3. Register the client's exact OAuth callback URL in Auth0.
 4. Complete OAuth as the individual user.

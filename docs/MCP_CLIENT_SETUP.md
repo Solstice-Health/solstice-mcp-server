@@ -4,14 +4,14 @@ The Solstice server uses Streamable HTTP, OAuth 2.1 Authorization Code with PKCE
 
 ## Endpoints and token contract
 
-- Production: `https://api.solsticehealth.co/mcp`
+- Production: `https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp`
 - Staging: `https://api-staging.solsticehealth.co/mcp`
 - Platform testing: `https://api-platform-testing.solsticehealth.co/mcp`
 - Dev: `https://api-dev.solsticehealth.co/mcp`
 
 Each MCP URL is also its Auth0 audience. The issuer is `https://login-solstice.us.auth0.com/`. Clients request `mcp:connect openid email`.
 
-Auth0 mints RS256 access tokens. The server verifies the signature against Auth0 JWKS, issuer, audience, expiry, subject, and the required `mcp:connect` scope. Tenant membership, brand membership, roles, and draft visibility are then checked from server-side data. The `email` claim supports the internal sibling-MCP access gate; see [AUTH0_EMAIL_CLAIM.md](AUTH0_EMAIL_CLAIM.md).
+For production, AgentCore validates the RS256 token against Auth0 JWKS, issuer, the AgentCore endpoint audience, and expiry. It then exchanges that token through Auth0 for a user token scoped to `https://api.solsticehealth.co/mcp`. The MCP server validates the exchanged token and enforces tenant membership, brand membership, roles, and draft visibility from server-side data. The `email` claim supports the internal sibling-MCP access gate; see [AUTH0_EMAIL_CLAIM.md](AUTH0_EMAIL_CLAIM.md).
 
 Clients discover authorization metadata from the RFC 9728 URL advertised in a 401 response. Direct Auth0 endpoints are `/authorize`, `/oauth/token`, and `/.well-known/jwks.json` under the issuer.
 
@@ -27,8 +27,9 @@ The round trip is:
 1. Cursor connects to the production MCP URL and receives protected-resource metadata.
 2. Cursor starts Authorization Code with PKCE for the configured public client, production audience, and scopes `mcp:connect openid email`.
 3. Auth0 redirects to an allowed Cursor callback and Cursor exchanges the code plus PKCE verifier for an RS256 access token.
-4. Cursor sends the access token as a Bearer credential to the MCP endpoint.
-5. The MCP server validates the token contract, then applies tenant and brand authorization to each tool call.
+4. Cursor sends the access token as a Bearer credential to AgentCore.
+5. AgentCore applies Cedar and semantic guardrails, exchanges the token for the private MCP audience, and forwards the tool call.
+6. The MCP server validates the exchanged token, then applies tenant and brand authorization.
 
 If validation fails, the server returns 401 for a missing, malformed, expired, wrong-issuer, or wrong-audience token. A valid token without `mcp:connect` receives 403. Reconnect OAuth rather than editing credentials.
 
@@ -52,7 +53,7 @@ Authenticate from `/mcp`, or use `claude mcp login solstice-platform` when avail
 
 The Codex adapter is `plugins/solstice-platform/codex.mcp.json`. It uses Streamable HTTP, a pre-registered public client ID, the production audience, and scopes `mcp:connect openid email`. Codex 0.142.0 or newer is required for static MCP OAuth client IDs.
 
-Set `mcp_oauth_callback_port = 8788` at the top level of `~/.codex/config.toml`. For the production MCP URL, Codex derives the callback `http://127.0.0.1:8788/callback/rNbuDm0IFnc1`; Auth0 must contain that exact value.
+Set `mcp_oauth_callback_port = 8788` at the top level of `~/.codex/config.toml`. For the production MCP URL, Codex derives the callback `http://127.0.0.1:8788/callback/TL-8G9qfe5UK`; Auth0 must contain that exact value.
 
 For the local pilot, the adapter temporarily uses the existing public Cursor client ID after Terraform adds the Codex callback to its allowlist. Terraform also provisions a dedicated Codex client. After apply, retrieve `codex_client_id` and update `codex.mcp.json` through a reviewed pull request.
 

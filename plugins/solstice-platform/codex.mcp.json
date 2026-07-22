@@ -1,13 +1,13 @@
 {
   "mcp_servers": {
     "solstice-platform": {
-      "url": "https://api.solsticehealth.co/mcp",
+      "url": "https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
       "auth": "oauth",
       "scopes": ["mcp:connect", "openid", "email"],
       "oauth": {
         "client_id": "uoOiEXHZxyDBkkBEfnOQEp6IhqcnAgTP"
       },
-      "oauth_resource": "https://api.solsticehealth.co/mcp",
+      "oauth_resource": "https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
       "default_tools_approval_mode": "writes"
     }
   }

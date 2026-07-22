@@ -102,8 +102,8 @@ Restart Codex after an update or uninstall.
 
 The Claude adapter temporarily uses the existing public Cursor Auth0 client ID for the local pilot. It uses callback `http://localhost:8787/callback` and requests `mcp:connect openid email`. This client is public and has no secret.
 
-The Codex adapter also temporarily uses the Cursor public client ID. Backend-Server Terraform registers Codex's fixed `http://127.0.0.1:8788/callback/rNbuDm0IFnc1` callback on that pilot client and provisions a dedicated Codex client.
+The Codex adapter also temporarily uses the Cursor public client ID. Backend-Server Terraform registers Codex's fixed `http://127.0.0.1:8788/callback/TL-8G9qfe5UK` callback on that pilot client and provisions a dedicated Codex client.
 
-After Terraform apply, retrieve `claude_client_id` and `codex_client_id`, then update `.mcp.json` and `codex.mcp.json` through a reviewed pull request. The production MCP URL and audience remain `https://api.solsticehealth.co/mcp`.
+After Terraform apply, retrieve `claude_client_id` and `codex_client_id`, then update `.mcp.json` and `codex.mcp.json` through a reviewed pull request. The production MCP URL and audience are `https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp`.
 
 See [clients.md](clients.md) for other MCP clients and [the repository setup guide](../../docs/MCP_CLIENT_SETUP.md) for the complete authentication contract.
