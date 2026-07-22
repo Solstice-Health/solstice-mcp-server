@@ -32,7 +32,6 @@ from solstice_mcp.brands import (
     BrandIdentity,
     UserRole,
     require_brand_role,
-    reset_brand_role,
     role_satisfies,
 )
 from solstice_mcp.memory_client import (
@@ -174,29 +173,26 @@ def register_memory_tools(
         subject = require_subject()
         if fact_type is not None:
             _require_fact_type(fact_type)
+        identity = require_brand_role(
+            subject,
+            tenant_slug,
+            brand_id,
+            min_role=UserRole.MEMBER,
+            registry=registry,
+            session_factory=session_factory,
+        )
+        actor = _actor_for(identity, subject)
         try:
-            identity = require_brand_role(
-                subject,
-                tenant_slug,
-                brand_id,
-                min_role=UserRole.MEMBER,
-                registry=registry,
-                session_factory=session_factory,
+            result = backend.recall(
+                actor=actor,
+                fact_type=fact_type,
+                entity_id=entity_id,
+                q=q,
+                limit=limit,
             )
-            actor = _actor_for(identity, subject)
-            try:
-                result = backend.recall(
-                    actor=actor,
-                    fact_type=fact_type,
-                    entity_id=entity_id,
-                    q=q,
-                    limit=limit,
-                )
-            except MemoryClientError as exc:
-                raise _map_backend_error(exc, scope="recall") from exc
-            return {"status": "ok", "tenant_slug": tenant_slug, "brand_id": brand_id, **result}
-        finally:
-            reset_brand_role()
+        except MemoryClientError as exc:
+            raise _map_backend_error(exc, scope="recall") from exc
+        return {"status": "ok", "tenant_slug": tenant_slug, "brand_id": brand_id, **result}
 
     @write_tool
     def solstice_memory_remember(
@@ -225,33 +221,30 @@ def register_memory_tools(
         source_refs = _require_ref_list(source_refs, required=_SOURCE_REF_REQUIRED, label="source_refs")
         entity_refs = _require_ref_list(entity_refs, required=_ENTITY_REF_REQUIRED, label="entity_refs")
         subject = require_subject()
+        identity = require_brand_role(
+            subject,
+            tenant_slug,
+            brand_id,
+            min_role=UserRole.MEMBER,
+            registry=registry,
+            session_factory=session_factory,
+        )
+        _authorize_scope(identity, scope)
+        actor = _actor_for(identity, subject)
         try:
-            identity = require_brand_role(
-                subject,
-                tenant_slug,
-                brand_id,
-                min_role=UserRole.MEMBER,
-                registry=registry,
-                session_factory=session_factory,
+            result = backend.remember(
+                actor=actor,
+                scope=scope,
+                fact_type=fact_type,
+                statement=statement,
+                source_refs=source_refs,
+                entity_refs=entity_refs,
+                expires_at=expires_at,
+                reason=reason,
             )
-            _authorize_scope(identity, scope)
-            actor = _actor_for(identity, subject)
-            try:
-                result = backend.remember(
-                    actor=actor,
-                    scope=scope,
-                    fact_type=fact_type,
-                    statement=statement,
-                    source_refs=source_refs,
-                    entity_refs=entity_refs,
-                    expires_at=expires_at,
-                    reason=reason,
-                )
-            except MemoryClientError as exc:
-                raise _map_backend_error(exc, scope=scope) from exc
-            return {**result, "tenant_slug": tenant_slug, "brand_id": brand_id, "scope": scope}
-        finally:
-            reset_brand_role()
+        except MemoryClientError as exc:
+            raise _map_backend_error(exc, scope=scope) from exc
+        return {**result, "tenant_slug": tenant_slug, "brand_id": brand_id, "scope": scope}
 
     @write_tool
     def solstice_memory_replace(
@@ -278,34 +271,31 @@ def register_memory_tools(
         source_refs = _require_ref_list(source_refs, required=_SOURCE_REF_REQUIRED, label="source_refs")
         entity_refs = _require_ref_list(entity_refs, required=_ENTITY_REF_REQUIRED, label="entity_refs")
         subject = require_subject()
+        identity = require_brand_role(
+            subject,
+            tenant_slug,
+            brand_id,
+            min_role=UserRole.MEMBER,
+            registry=registry,
+            session_factory=session_factory,
+        )
+        _authorize_scope(identity, scope)
+        actor = _actor_for(identity, subject)
         try:
-            identity = require_brand_role(
-                subject,
-                tenant_slug,
-                brand_id,
-                min_role=UserRole.MEMBER,
-                registry=registry,
-                session_factory=session_factory,
+            result = backend.replace(
+                actor=actor,
+                memory_id=memory_id,
+                scope=scope,
+                fact_type=fact_type,
+                statement=statement,
+                source_refs=source_refs,
+                entity_refs=entity_refs,
+                expires_at=expires_at,
+                reason=reason,
             )
-            _authorize_scope(identity, scope)
-            actor = _actor_for(identity, subject)
-            try:
-                result = backend.replace(
-                    actor=actor,
-                    memory_id=memory_id,
-                    scope=scope,
-                    fact_type=fact_type,
-                    statement=statement,
-                    source_refs=source_refs,
-                    entity_refs=entity_refs,
-                    expires_at=expires_at,
-                    reason=reason,
-                )
-            except MemoryClientError as exc:
-                raise _map_backend_error(exc, scope=scope) from exc
-            return {**result, "tenant_slug": tenant_slug, "brand_id": brand_id, "scope": scope}
-        finally:
-            reset_brand_role()
+        except MemoryClientError as exc:
+            raise _map_backend_error(exc, scope=scope) from exc
+        return {**result, "tenant_slug": tenant_slug, "brand_id": brand_id, "scope": scope}
 
     @write_tool
     def solstice_memory_forget(
@@ -323,24 +313,21 @@ def register_memory_tools(
         """
         scope = _require_scope(scope)
         subject = require_subject()
+        identity = require_brand_role(
+            subject,
+            tenant_slug,
+            brand_id,
+            min_role=UserRole.MEMBER,
+            registry=registry,
+            session_factory=session_factory,
+        )
+        _authorize_scope(identity, scope)
+        actor = _actor_for(identity, subject)
         try:
-            identity = require_brand_role(
-                subject,
-                tenant_slug,
-                brand_id,
-                min_role=UserRole.MEMBER,
-                registry=registry,
-                session_factory=session_factory,
-            )
-            _authorize_scope(identity, scope)
-            actor = _actor_for(identity, subject)
-            try:
-                result = backend.forget(actor=actor, memory_id=memory_id, scope=scope, reason=reason)
-            except MemoryClientError as exc:
-                raise _map_backend_error(exc, scope=scope) from exc
-            return {**result, "tenant_slug": tenant_slug, "brand_id": brand_id, "scope": scope}
-        finally:
-            reset_brand_role()
+            result = backend.forget(actor=actor, memory_id=memory_id, scope=scope, reason=reason)
+        except MemoryClientError as exc:
+            raise _map_backend_error(exc, scope=scope) from exc
+        return {**result, "tenant_slug": tenant_slug, "brand_id": brand_id, "scope": scope}
 
 
 __all__ = ["register_memory_tools"]

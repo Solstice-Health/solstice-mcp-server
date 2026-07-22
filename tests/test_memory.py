@@ -470,44 +470,6 @@ def test_audit_records_denied_brand_write(app_harness: AppHarness, mint_token,
 
 
 # ---------------------------------------------------------------------------
-# brand context reset in finally paths
-# ---------------------------------------------------------------------------
-
-
-def test_brand_context_reset_after_successful_recall(app_harness: AppHarness, mint_token, monkeypatch):
-    _set_recall_response(app_harness.backend_opener)
-    resets = []
-    monkeypatch.setattr("solstice_mcp.tools.memory.reset_brand_role", lambda: resets.append(True))
-    token = mint_token(sub=SHARED_SUB)
-    response = _call(app_harness, token, "solstice_memory_recall",
-                    {"tenant_slug": TENANT, "brand_id": BRAND_A1})
-    assert _ok(response)["status"] == "ok"
-    assert resets == [True]
-
-
-def test_brand_context_reset_after_denied_write(app_harness: AppHarness, mint_token, monkeypatch):
-    resets = []
-    monkeypatch.setattr("solstice_mcp.tools.memory.reset_brand_role", lambda: resets.append(True))
-    token = mint_token(sub=SHARED_SUB)  # MEMBER on BRAND_A2 -> brand write denied
-    _call(app_harness, token, "solstice_memory_remember",
-          {"tenant_slug": TENANT, "brand_id": BRAND_A2, "scope": "brand",
-           "fact_type": "convention", "statement": "x"})
-    assert resets == [True]
-
-
-def test_brand_context_reset_after_backend_error(app_harness: AppHarness, mint_token, monkeypatch):
-    app_harness.backend_opener.responses[("GET", "/api/internal/agent-memory")] = (
-        500, b'{"detail":"boom"}',
-    )
-    resets = []
-    monkeypatch.setattr("solstice_mcp.tools.memory.reset_brand_role", lambda: resets.append(True))
-    token = mint_token(sub=SHARED_SUB)
-    _call(app_harness, token, "solstice_memory_recall",
-          {"tenant_slug": TENANT, "brand_id": BRAND_A1})
-    assert resets == [True]
-
-
-# ---------------------------------------------------------------------------
 # Auth0 client-credentials caching/validation
 # ---------------------------------------------------------------------------
 
