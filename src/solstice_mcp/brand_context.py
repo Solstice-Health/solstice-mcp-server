@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, String, Text, Uuid, select
+from sqlalchemy import Boolean, DateTime, String, Text, Uuid, func, select
 from sqlalchemy.orm import Mapped, mapped_column
 
 from solstice_mcp.brands import Brand, UserRole, require_brand_role, reset_brand_role
@@ -226,7 +226,12 @@ def get_brand_claims(
             )
             if extracted_only:
                 stmt = stmt.where(ClinicalClaim.is_extracted.is_(True))
-            rows = session.scalars(stmt.limit(capped)).all()
+            total: int = session.scalar(
+                select(func.count()).select_from(stmt.subquery())
+            ) or 0
+            rows = session.scalars(
+                stmt.order_by(ClinicalClaim.id).limit(capped)
+            ).all()
         claims = [
             {
                 "id": claim.id,
@@ -248,6 +253,8 @@ def get_brand_claims(
             "limit": capped,
             "claims": claims,
             "count": len(claims),
+            "total": total,
+            "has_more": total > capped,
         }
     finally:
         reset_brand_role()
