@@ -98,7 +98,7 @@ def test_shared_skill_is_portable_and_action_focused() -> None:
         assert language in body_lower
 
     skill_dir = PLUGIN / "skills" / PLUGIN_NAME
-    references = {"actions.md", "data-model.md", "errors.md"}
+    references = {"actions.md", "data-model.md", "errors.md", "request-triage.md"}
     assert {path.name for path in (skill_dir / "references").glob("*.md")} == references
     for reference in references:
         assert f"(references/{reference})" in body

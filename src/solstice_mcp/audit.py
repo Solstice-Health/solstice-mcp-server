@@ -30,6 +30,9 @@ AUDIT_RESOURCE_FIELDS = {
     "project_id",
     "operation_id",
     "message_id",
+    "request_id",
+    "status",
+    "reason_category",
     "type",
     "fetch",
 }

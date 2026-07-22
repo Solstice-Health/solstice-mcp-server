@@ -24,6 +24,7 @@ from solstice_mcp.tenants import TenantDatabaseFactory, TenantMembershipCache, T
 from solstice_mcp.tools.brand_context import register_brand_context_tools
 from solstice_mcp.tools.content import register_content_tools
 from solstice_mcp.tools.discovery import register_discovery_tools
+from solstice_mcp.tools.requests import register_request_tools
 
 MCP_REQUIRED_SCOPE = "mcp:connect"
 MCP_SERVER_NAME = "solstice-mcp"
@@ -84,7 +85,20 @@ MCP_INSTRUCTIONS = (
     "owner (new_owner_user_id must be a live brand team member - discover "
     "candidates with solstice_list_brand_users). "
     "solstice_approve_operation_version flips one draft html/pdf version to "
-    "final; already-final versions are an idempotent no-op."
+    "final; already-final versions are an idempotent no-op.\n"
+    "Requests (staff triage queue): admin_requests rows track user-initiated "
+    "requests (initial_save, change_request_complex, change_request_review, "
+    "approval_request) with status pending/completed/dismissed. "
+    "solstice_list_requests(tenant_slug, status, brand_id, limit) lists the "
+    "tenant queue - it requires SOLSTICE_STAFF on at least one brand in that "
+    "tenant. For 'what's on my plate today', iterate the user's tenants and "
+    "list pending requests; assigned_to identifies the responsible staff "
+    "member. solstice_dismiss_request(tenant_slug, request_id, "
+    "reason_category, reason_text) dismisses one pending request and requires "
+    "SOLSTICE_STAFF on that request's own brand plus a reason (category: "
+    "duplicate/invalid/out_of_scope/other) - always ask the user why before "
+    "dismissing. Requests outlive their operation (operation_deleted=true "
+    "rows) and are never deleted, only dismissed."
 )
 
 
@@ -180,6 +194,13 @@ def build_mcp_app(
         session_factory=open_session,
         s3=s3_reader,
         presign_expiry=runtime_settings.S3_PRESIGN_EXPIRY_SECONDS,
+    )
+    register_request_tools(
+        mcp,
+        require_subject=require_subject,
+        require_access_token=require_access_token,
+        registry=tenant_registry,
+        session_factory=open_session,
     )
 
     @mcp.custom_route("/health", methods=["GET"])

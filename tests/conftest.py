@@ -24,6 +24,7 @@ from solstice_mcp.auth import JWKSCache
 from solstice_mcp.brand_context import ClinicalClaim, DesignLibrary, GuidelineAndRule
 from solstice_mcp.brands import Brand, BrandTeamMember
 from solstice_mcp.operations import CgOperation, CgOperationMessage, Project
+from solstice_mcp.requests import AdminRequest
 from solstice_mcp.settings import Settings
 from solstice_mcp.tenants import Base, TenantMembershipCache, TenantRegistry, User
 
@@ -53,6 +54,11 @@ PROJECT_P2 = "00000000-0000-0000-0000-000000000302"
 OP_A1 = "00000000-0000-0000-0000-000000000401"
 OP_A2 = "00000000-0000-0000-0000-000000000402"
 OP_A3 = "00000000-0000-0000-0000-000000000403"
+
+REQ_PENDING_A1 = "00000000-0000-0000-0000-000000000901"
+REQ_PENDING_A3 = "00000000-0000-0000-0000-000000000902"
+REQ_COMPLETED_A1 = "00000000-0000-0000-0000-000000000903"
+REQ_ORPHAN_A1 = "00000000-0000-0000-0000-000000000904"
 
 
 def _b64(value: int) -> str:
@@ -401,6 +407,42 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
                 message_id="m10", author_id=USER_A_SHARED, type="text", content="hi from op a2",
                 version_number=None, intent=None, position=0,
                 created_at=datetime(2026, 1, 2, 12, 0, 1, tzinfo=UTC), deleted_at=None,
+            ),
+            # Admin requests. Pending rows on two different brands (A1 + A3)
+            # prove tenant-wide read; the orphan row's operation was GC'd.
+            AdminRequest(
+                id=REQ_PENDING_A1, cg_operation_id=OP_A1, brand_id=BRAND_A1,
+                requester_user_id=USER_A_SHARED, request_type="initial_save",
+                status="pending", priority="high", display_name="op_a1.html",
+                project_id=PROJECT_P1, project_name="Project P1",
+                request_metadata={"project_name": "Project P1"},
+                assigned_to={"user_id": USER_A_STAFF, "name": "Staff", "email": "staff@a.test"},
+                created_at=datetime(2026, 1, 5, 12, 0, 0, tzinfo=UTC), deleted_at=None,
+            ),
+            AdminRequest(
+                id=REQ_PENDING_A3, cg_operation_id=OP_A3, brand_id=BRAND_A3,
+                requester_user_id=USER_A_OTHER, request_type="approval_request",
+                status="pending", display_name="Op A3",
+                request_metadata={"message": "please approve for Veeva", "version_number": 2},
+                created_at=datetime(2026, 1, 6, 12, 0, 0, tzinfo=UTC), deleted_at=None,
+            ),
+            AdminRequest(
+                id=REQ_COMPLETED_A1, cg_operation_id=OP_A1, brand_id=BRAND_A1,
+                requester_user_id=USER_A_SHARED, request_type="change_request_complex",
+                status="completed", batch_id="batch-1",
+                request_metadata={"comments": [{"text": "fix headline"}], "additional_comment": "asap"},
+                resolved_by_user_id=USER_A_STAFF,
+                resolved_at=datetime(2026, 1, 4, 15, 0, 0, tzinfo=UTC),
+                resolved_version_number=2,
+                created_at=datetime(2026, 1, 4, 12, 0, 0, tzinfo=UTC), deleted_at=None,
+            ),
+            AdminRequest(
+                id=REQ_ORPHAN_A1, cg_operation_id="00000000-0000-0000-0000-000000000499",
+                brand_id=BRAND_A1, requester_user_id=USER_A_OTHER,
+                request_type="initial_save", status="pending",
+                display_name="deleted-op.html",
+                request_metadata={"operation_deleted": True},
+                created_at=datetime(2026, 1, 7, 12, 0, 0, tzinfo=UTC), deleted_at=None,
             ),
         ],
         "tenant_b": [

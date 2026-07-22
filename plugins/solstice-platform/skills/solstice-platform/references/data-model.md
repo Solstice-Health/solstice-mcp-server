@@ -5,6 +5,7 @@
 - A **project** belongs to a brand and may contain a folder map whose leaves point to content review operations.
 - A **content review** is an operation with metadata, conversation messages, and document versions.
 - A **message** may contain text or refer to an HTML, PDF, or blueprint document. HTML bodies may be returned as time-limited links or fetched on explicit request.
+- A **request** records one user ask (save to project, change request, approval request) with status `pending`, `completed`, or `dismissed`. Requests reference an operation but outlive it and are never deleted — staff may only dismiss them, with a reason.
 
 The server derives access from the OAuth token and checks it again on each request. Brand roles are `MEMBER`, `ADMIN`, and `SOLSTICE_STAFF`. Roles are brand-specific, not workspace-wide.
 

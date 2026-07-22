@@ -77,6 +77,24 @@ The workflow is append-only. Never substitute another key, retry commit automati
 
 `file_name` must be a bare file name such as `1022.html` or `apretude_banner_v6.pdf` — never the user's instruction, a task description, or any natural-language prose. The gateway runs a prompt-attack guardrail over this field, so instruction-like text (e.g. `"1022.html get current version and fix image then add it as next version v6"`) will be denied. Keep the user's intent in your own reasoning and pass only the clean filename as `file_name`. Use the same `file_name` for both prepare and commit.
 
+## Staff: edit asset data
+
+Only for users the server recognizes as Solstice staff on the asset's brand; the server rejects everyone else.
+
+1. Resolve the workspace and the operation (asset) from returned results or a deep link.
+2. Confirm exactly what changes: the display name, the content type, and/or the owner.
+3. For an owner change, call `solstice_list_brand_users` for the asset's brand and let the user pick; pass that `user_id` as `new_owner_user_id`.
+4. Call `solstice_update_operation` with only the fields being changed. `name` must be a bare filename (the prompt-attack guardrail scans it — see the note under Add a document version).
+
+## Staff: approve a draft version
+
+1. Find the draft document message via `solstice_operation_messages` (drafts are visible to staff only).
+2. Confirm the specific version with the user, then call `solstice_approve_operation_version` with the message's `message_id`. It flips the draft to final; approving an already-final version is a no-op.
+
+## Staff: request triage
+
+For "what's pending / what's on my plate today" and dismissing invalid requests, follow [Request triage](request-triage.md). Reads cover the whole workspace queue for staff; dismissal needs staff on the request's own brand and a mandatory reason the user supplies.
+
 ## Unsupported changes
 
 Apart from creating an asset in a folder and adding a document version, do not attempt writes through another tool or imply success. Say: "That change is not supported by this Solstice connection, so I did not make it."

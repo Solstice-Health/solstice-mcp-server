@@ -151,6 +151,8 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
         "solstice_list_brand_users",
         "solstice_update_operation",
         "solstice_approve_operation_version",
+        "solstice_list_requests",
+        "solstice_dismiss_request",
     }
     append_only = {
         "solstice_create_operation",
@@ -160,14 +162,18 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
     updates_in_place = {
         "solstice_update_operation",
         "solstice_approve_operation_version",
+        "solstice_dismiss_request",
     }
+    # Dismiss is a one-way status flip: retrying is rejected, so unlike the
+    # other in-place updates it is not idempotent.
+    non_idempotent_updates = {"solstice_dismiss_request"}
     for tool in listed_tools:
         is_write = tool["name"] in append_only
         is_update = tool["name"] in updates_in_place
         assert tool["annotations"] == {
             "readOnlyHint": not (is_write or is_update),
             "destructiveHint": is_update,
-            "idempotentHint": not is_write,
+            "idempotentHint": not (is_write or tool["name"] in non_idempotent_updates),
             "openWorldHint": False,
         }
 
