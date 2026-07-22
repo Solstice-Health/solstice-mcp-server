@@ -10,7 +10,9 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from solstice_mcp.audit import audited_tool
+from solstice_mcp.brands import list_brand_users
 from solstice_mcp.operations import (
+    approve_operation_version,
     commit_operation_version,
     create_operation,
     get_operation_html,
@@ -20,6 +22,7 @@ from solstice_mcp.operations import (
     list_operations_for_brand,
     list_projects_for_brand,
     prepare_operation_version,
+    update_operation,
 )
 from solstice_mcp.storage import S3Reader
 from solstice_mcp.tenants import SessionFactory, TenantRegistry
@@ -38,6 +41,15 @@ APPEND_ONLY_WRITE = ToolAnnotations(
     openWorldHint=False,
 )
 
+# In-place field updates (no row creation/deletion). destructiveHint=True
+# because existing values are overwritten, unlike the append-only writes.
+UPDATE_IN_PLACE = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=True,
+    openWorldHint=False,
+)
+
 
 def register_content_tools(
     mcp: FastMCP,
@@ -52,6 +64,7 @@ def register_content_tools(
 ) -> None:
     read_only_tool = audited_tool(mcp, require_access_token, annotations=READ_ONLY)
     append_only_tool = audited_tool(mcp, require_access_token, annotations=APPEND_ONLY_WRITE)
+    update_tool = audited_tool(mcp, require_access_token, annotations=UPDATE_IN_PLACE)
 
     @read_only_tool
     def solstice_list_projects(tenant_slug: str, brand_id: str) -> dict[str, Any]:
@@ -272,6 +285,85 @@ def register_content_tools(
             registry=registry,
             session_factory=session_factory,
             s3=s3,
+        )
+
+    @read_only_tool
+    def solstice_list_brand_users(tenant_slug: str, brand_id: str) -> dict[str, Any]:
+        """List a brand's team members (user_id, name, email, role).
+
+        Requires SOLSTICE_STAFF on the brand. Use this to find the user_id for
+        solstice_update_operation's new_owner_user_id argument.
+        """
+        users = list_brand_users(
+            require_subject(),
+            tenant_slug,
+            brand_id,
+            registry=registry,
+            session_factory=session_factory,
+        )
+        return {
+            "tenant_slug": tenant_slug,
+            "brand_id": brand_id,
+            "users": users,
+            "count": len(users),
+        }
+
+    @update_tool
+    def solstice_update_operation(
+        tenant_slug: str,
+        operation_id: str,
+        name: str | None = None,
+        content_type: str | None = None,
+        new_owner_user_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Edit an operation's display data. Requires SOLSTICE_STAFF on the operation's brand.
+
+        Updates any subset of:
+        - ``name``: the file name shown in the project view (operation
+          file_name + the project dir_map leaf).
+        - ``content_type``: uppercased; sets the content_type column,
+          operation_metadata.content_type_for_fe (the FE source of truth), and
+          the dir_map leaf.
+        - ``new_owner_user_id``: reassigns the operation's owner. Must be a
+          live team member of the operation's brand — discover candidates with
+          solstice_list_brand_users. This argument selects the new owner only;
+          it never grants the caller any privilege.
+
+        ``name`` MUST be a bare filename only (e.g. ``"apretude_banner.html"``)
+        — never instructions or prose; the gateway's prompt-attack guardrail
+        scans this field.
+        """
+        return update_operation(
+            require_subject(),
+            tenant_slug,
+            operation_id,
+            name,
+            content_type,
+            new_owner_user_id,
+            registry=registry,
+            session_factory=session_factory,
+        )
+
+    @update_tool
+    def solstice_approve_operation_version(
+        tenant_slug: str,
+        operation_id: str,
+        message_id: str,
+    ) -> dict[str, Any]:
+        """Approve a draft document version: flip its intent from draft to final.
+
+        Requires SOLSTICE_STAFF on the operation's brand. The target message
+        must be an html or pdf document version (find message_ids via
+        solstice_operation_messages). Approving an already-final version is an
+        idempotent no-op; text/blueprint messages are rejected.
+        """
+        return approve_operation_version(
+            require_subject(),
+            tenant_slug,
+            operation_id,
+            message_id,
+            registry=registry,
+            session_factory=session_factory,
         )
 
 

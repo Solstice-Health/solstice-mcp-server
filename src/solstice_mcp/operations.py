@@ -40,6 +40,7 @@ from sqlalchemy import JSON, DateTime, String, Uuid, func, or_, select
 from sqlalchemy.orm import Mapped, mapped_column
 
 from solstice_mcp.brands import (
+    BrandTeamMember,
     UserRole,
     require_brand_role,
     reset_brand_role,
@@ -603,6 +604,211 @@ def get_operation_html(
         reset_brand_role()
 
 
+def _find_leaf(items: list[dict[str, Any]], operation_id: str) -> dict[str, Any] | None:
+    """Depth-first search of a dir_map ``items`` tree for the leaf of one operation."""
+    for item in items:
+        if item.get("operation_id") == operation_id:
+            return item
+        found = _find_leaf(item.get("items", []), operation_id)
+        if found is not None:
+            return found
+    return None
+
+
+def update_operation(
+    subject: str,
+    tenant_slug: str,
+    operation_id: str,
+    name: str | None = None,
+    content_type: str | None = None,
+    new_owner_user_id: str | None = None,
+    *,
+    registry: TenantRegistry,
+    session_factory: SessionFactory,
+) -> dict[str, Any]:
+    """Staff-only edit of an operation's display data.
+
+    Updates any subset of:
+    - ``name`` — the file name shown in the project view: sets
+      ``n_cg_operations.file_name`` and the project's dir_map leaf ``name``.
+    - ``content_type`` — uppercased, mirroring the Backend-Server admin route:
+      sets the ``content_type`` column, ``operation_metadata.content_type_for_fe``
+      (the FE source of truth), and the dir_map leaf ``content_type``.
+    - ``new_owner_user_id`` — reassigns ``user_id``; must be a live team member
+      of the operation's brand (validated server-side, use
+      ``solstice_list_brand_users`` to discover candidates).
+
+    Gated at SOLSTICE_STAFF on the operation's brand (resolved from the row,
+    never a caller argument). This selector does NOT grant authority — the
+    caller's own role still comes from the JWT subject.
+    """
+    if name is None and content_type is None and new_owner_user_id is None:
+        raise ToolError("invalid_arguments: provide at least one of name, content_type, new_owner_user_id")
+    try:
+        with tenant_session(tenant_slug, session_factory) as session:
+            op = session.scalar(
+                select(CgOperation).where(
+                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
+                )
+            )
+            if op is None:
+                raise ToolError("not_authorized: unknown operation")
+            brand_id = op.brand_id
+        require_brand_role(
+            subject, tenant_slug, brand_id,
+            min_role=UserRole.SOLSTICE_STAFF,
+            registry=registry, session_factory=session_factory,
+        )
+        normalized_type = content_type.strip().upper() if content_type else None
+        if content_type is not None and not normalized_type:
+            raise ToolError("invalid_arguments: content_type must be non-empty")
+        if name is not None and not name.strip():
+            raise ToolError("invalid_arguments: name must be non-empty")
+        changed: list[str] = []
+        with tenant_session(tenant_slug, session_factory) as session:
+            locked = session.scalar(
+                select(CgOperation).where(
+                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
+                ).with_for_update()
+            )
+            if locked is None:
+                raise ToolError("not_authorized: unknown operation")
+            if new_owner_user_id is not None:
+                member = session.scalar(
+                    select(BrandTeamMember).where(
+                        BrandTeamMember.brand_id == brand_id,
+                        BrandTeamMember.user_id == new_owner_user_id,
+                        BrandTeamMember.deleted_at.is_(None),
+                    )
+                )
+                if member is None:
+                    raise ToolError(
+                        "invalid_arguments: new_owner_user_id is not a live team member of this brand"
+                    )
+                locked.user_id = new_owner_user_id
+                changed.append("user_id")
+            if name is not None:
+                locked.file_name = name
+                changed.append("file_name")
+            if normalized_type is not None:
+                locked.content_type = normalized_type
+                # content_type_for_fe in operation_metadata is the FE source of
+                # truth; reassign the dict so the JSON change is tracked.
+                metadata = dict(locked.operation_metadata) if isinstance(
+                    locked.operation_metadata, dict
+                ) else {}
+                metadata["content_type_for_fe"] = normalized_type
+                locked.operation_metadata = metadata
+                changed.append("content_type")
+            # Mirror name/content_type into the project's dir_map leaf so the
+            # project view reflects the change.
+            if locked.project_id and (name is not None or normalized_type is not None):
+                project = session.scalar(
+                    select(Project).where(
+                        Project.id == locked.project_id, Project.deleted_at.is_(None)
+                    ).with_for_update()
+                )
+                if project is not None:
+                    new_map = deepcopy(project.dir_map) or {"items": []}
+                    leaf = _find_leaf(new_map.get("items", []), operation_id)
+                    if leaf is not None:
+                        if name is not None:
+                            leaf["name"] = name
+                        if normalized_type is not None:
+                            leaf["content_type"] = normalized_type
+                        project.dir_map = new_map
+            locked.updated_at = datetime.now(UTC)
+            session.commit()
+        return {
+            "operation_id": operation_id,
+            "brand_id": brand_id,
+            "changed": changed,
+            "file_name": name,
+            "content_type": normalized_type,
+            "user_id": new_owner_user_id,
+        }
+    finally:
+        reset_brand_role()
+
+
+def approve_operation_version(
+    subject: str,
+    tenant_slug: str,
+    operation_id: str,
+    message_id: str,
+    *,
+    registry: TenantRegistry,
+    session_factory: SessionFactory,
+) -> dict[str, Any]:
+    """Staff-only approval: flip one draft document version to final.
+
+    The target message must be a document row (type ``html`` or ``pdf``) with
+    intent ``draft``. The flip updates the ``intent`` column and the
+    ``versionIntent`` key in the message metadata (the FE reads both). Approving
+    an already-final version is an idempotent no-op. Text/blueprint messages
+    are rejected.
+
+    Gated at SOLSTICE_STAFF on the operation's brand (resolved from the row).
+    """
+    try:
+        with tenant_session(tenant_slug, session_factory) as session:
+            op = session.scalar(
+                select(CgOperation).where(
+                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
+                )
+            )
+            if op is None:
+                raise ToolError("not_authorized: unknown operation")
+            brand_id = op.brand_id
+        require_brand_role(
+            subject, tenant_slug, brand_id,
+            min_role=UserRole.SOLSTICE_STAFF,
+            registry=registry, session_factory=session_factory,
+        )
+        with tenant_session(tenant_slug, session_factory) as session:
+            msg = session.scalar(
+                select(CgOperationMessage).where(
+                    CgOperationMessage.operation_id == operation_id,
+                    CgOperationMessage.message_id == message_id,
+                    CgOperationMessage.deleted_at.is_(None),
+                ).with_for_update()
+            )
+            if msg is None:
+                raise ToolError("not_found: unknown message")
+            if msg.type not in ("html", "pdf"):
+                raise ToolError(
+                    f"invalid_message: type {msg.type!r} is not a document (html/pdf) version"
+                )
+            if msg.intent == "final":
+                return {
+                    "operation_id": operation_id,
+                    "message_id": message_id,
+                    "version_number": msg.version_number,
+                    "intent": "final",
+                    "already_final": True,
+                }
+            if msg.intent != "draft":
+                raise ToolError(
+                    f"invalid_message: intent {msg.intent!r} is not a draft version"
+                )
+            msg.intent = "final"
+            if isinstance(msg.message_metadata, dict):
+                metadata = dict(msg.message_metadata)
+                metadata["versionIntent"] = "final"
+                msg.message_metadata = metadata
+            session.commit()
+            version_number = msg.version_number
+        return {
+            "operation_id": operation_id,
+            "message_id": message_id,
+            "version_number": version_number,
+            "intent": "final",
+            "already_final": False,
+        }
+    finally:
+        reset_brand_role()
+
+
 def _sanitize_file_name(file_name: str | None) -> str:
     """Reduce a user-supplied file name to a safe S3 path segment."""
     if not file_name:
@@ -871,6 +1077,7 @@ __all__ = [
     "CgOperation",
     "CgOperationMessage",
     "Project",
+    "approve_operation_version",
     "commit_operation_version",
     "create_operation",
     "get_operation_html",
@@ -880,4 +1087,5 @@ __all__ = [
     "list_operations_for_brand",
     "list_projects_for_brand",
     "prepare_operation_version",
+    "update_operation",
 ]

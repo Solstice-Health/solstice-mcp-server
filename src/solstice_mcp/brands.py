@@ -36,6 +36,7 @@ from solstice_mcp.tenants import (
     Base,
     SessionFactory,
     TenantRegistry,
+    User,
     resolve_tenant_identity,
     tenant_session,
 )
@@ -179,6 +180,45 @@ def list_brands_for_user(
     return memberships
 
 
+def list_brand_users(
+    subject: str,
+    tenant_slug: str,
+    brand_id: str,
+    *,
+    registry: TenantRegistry,
+    session_factory: SessionFactory,
+) -> list[dict[str, str]]:
+    """List the live team members of one brand, with their per-brand role.
+
+    Gated at SOLSTICE_STAFF: this exists to support the staff operation-edit
+    flow (pick a new operation owner), so it exposes teammate names/emails only
+    to staff on that brand. Soft-deleted users and memberships are excluded.
+    """
+    try:
+        require_brand_role(
+            subject, tenant_slug, brand_id,
+            min_role=UserRole.SOLSTICE_STAFF,
+            registry=registry, session_factory=session_factory,
+        )
+        with tenant_session(tenant_slug, session_factory) as session:
+            rows = session.execute(
+                select(User.id, User.name, User.email, BrandTeamMember.user_role)
+                .join(BrandTeamMember, BrandTeamMember.user_id == User.id)
+                .where(
+                    BrandTeamMember.brand_id == brand_id,
+                    BrandTeamMember.deleted_at.is_(None),
+                    User.deleted_at.is_(None),
+                )
+                .order_by(User.name)
+            ).all()
+        return [
+            {"user_id": str(user_id), "name": name or "", "email": email or "", "role": role}
+            for user_id, name, email, role in rows
+        ]
+    finally:
+        reset_brand_role()
+
+
 def resolve_brand_role(
     subject: str,
     tenant_slug: str,
@@ -280,6 +320,7 @@ __all__ = [
     "BrandTeamMember",
     "UserRole",
     "current_brand_role",
+    "list_brand_users",
     "list_brands_for_user",
     "require_brand_role",
     "reset_brand_role",

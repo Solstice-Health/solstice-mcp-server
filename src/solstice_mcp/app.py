@@ -76,7 +76,15 @@ MCP_INSTRUCTIONS = (
     "solstice_commit_operation_version(tenant_slug, operation_id, type, s3_key, "
     "file_name) to insert the version row. Versions are append-only - existing "
     "versions are never overwritten. Intent is derived from your token, never an "
-    "argument: SOLSTICE_STAFF -> draft; MEMBER/ADMIN -> final."
+    "argument: SOLSTICE_STAFF -> draft; MEMBER/ADMIN -> final.\n"
+    "Staff edit tools (require SOLSTICE_STAFF on the brand): "
+    "solstice_update_operation edits an operation's project-view name, content "
+    "type (stored uppercased in the content_type column, "
+    "operation_metadata.content_type_for_fe, and the project dir_map leaf), and "
+    "owner (new_owner_user_id must be a live brand team member - discover "
+    "candidates with solstice_list_brand_users). "
+    "solstice_approve_operation_version flips one draft html/pdf version to "
+    "final; already-final versions are an idempotent no-op."
 )
 
 

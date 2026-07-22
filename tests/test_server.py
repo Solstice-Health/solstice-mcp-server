@@ -148,16 +148,25 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
         "solstice_create_operation",
         "solstice_prepare_operation_version",
         "solstice_commit_operation_version",
+        "solstice_list_brand_users",
+        "solstice_update_operation",
+        "solstice_approve_operation_version",
+    }
+    append_only = {
+        "solstice_create_operation",
+        "solstice_prepare_operation_version",
+        "solstice_commit_operation_version",
+    }
+    updates_in_place = {
+        "solstice_update_operation",
+        "solstice_approve_operation_version",
     }
     for tool in listed_tools:
-        is_write = tool["name"] in {
-            "solstice_create_operation",
-            "solstice_prepare_operation_version",
-            "solstice_commit_operation_version",
-        }
+        is_write = tool["name"] in append_only
+        is_update = tool["name"] in updates_in_place
         assert tool["annotations"] == {
-            "readOnlyHint": not is_write,
-            "destructiveHint": False,
+            "readOnlyHint": not (is_write or is_update),
+            "destructiveHint": is_update,
             "idempotentHint": not is_write,
             "openWorldHint": False,
         }
