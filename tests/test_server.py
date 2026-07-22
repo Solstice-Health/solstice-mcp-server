@@ -152,11 +152,18 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
         "solstice_approve_operation_version",
         "solstice_list_requests",
         "solstice_dismiss_request",
+        "solstice_memory_recall",
+        "solstice_memory_remember",
+        "solstice_memory_replace",
+        "solstice_memory_forget",
     }
-    append_only = {
+    non_destructive_writes = {
         "solstice_create_operation",
         "solstice_prepare_operation_version",
         "solstice_commit_operation_version",
+        "solstice_memory_remember",
+        "solstice_memory_replace",
+        "solstice_memory_forget",
     }
     updates_in_place = {
         "solstice_update_operation",
@@ -167,7 +174,7 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
     # other in-place updates it is not idempotent.
     non_idempotent_updates = {"solstice_dismiss_request"}
     for tool in listed_tools:
-        is_write = tool["name"] in append_only
+        is_write = tool["name"] in non_destructive_writes
         is_update = tool["name"] in updates_in_place
         assert tool["annotations"] == {
             "readOnlyHint": not (is_write or is_update),

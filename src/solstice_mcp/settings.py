@@ -20,12 +20,23 @@ class Settings:
     AWS_REGION: str = "us-east-1"
     S3_PRESIGN_EXPIRY_SECONDS: int = 600
     S3_MAX_INLINE_BYTES: int = 2_000_000
+    # Backend-Server internal memory routes. Empty base URL disables memory tools.
+    SOLSTICE_BACKEND_BASE_URL: str = ""
+    SOLSTICE_BACKEND_TIMEOUT_SECONDS: int = 10
+    SOLSTICE_BACKEND_AUTH0_CLIENT_ID: str = ""
+    SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET: str = ""
+    SOLSTICE_BACKEND_AUTH0_AUDIENCE: str = ""
+    SOLSTICE_BACKEND_AUTH0_SCOPE: str = "memory:invoke"
+    SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS: int = 5
 
     @classmethod
     def from_env(cls) -> Settings:
         values = {name: os.getenv(name, field.default) for name, field in cls.__dataclass_fields__.items()}
         values["S3_PRESIGN_EXPIRY_SECONDS"] = int(values["S3_PRESIGN_EXPIRY_SECONDS"])
         values["S3_MAX_INLINE_BYTES"] = int(values["S3_MAX_INLINE_BYTES"])
+        values["SOLSTICE_BACKEND_TIMEOUT_SECONDS"] = int(values["SOLSTICE_BACKEND_TIMEOUT_SECONDS"])
+        token_timeout_key = "SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS"
+        values[token_timeout_key] = int(values[token_timeout_key])
         return cls(**values)
 
     @property

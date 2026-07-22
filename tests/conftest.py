@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import time
+import urllib.error
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -23,6 +25,7 @@ from solstice_mcp.app import build_mcp_app
 from solstice_mcp.auth import JWKSCache
 from solstice_mcp.brand_context import ClinicalClaim, DesignLibrary, GuidelineAndRule
 from solstice_mcp.brands import Brand, BrandTeamMember
+from solstice_mcp.memory_client import BackendMemoryClient
 from solstice_mcp.operations import CgOperation, CgOperationMessage, Project
 from solstice_mcp.requests import AdminRequest
 from solstice_mcp.settings import Settings
@@ -131,6 +134,74 @@ class AppHarness:
     session_factory: Callable[[str], Session]
     calls: Counter[str]
     s3: FakeS3
+    backend: BackendMemoryClient
+    backend_opener: FakeBackendOpener
+    token_acquirer: FakeM2MTokenAcquirer
+
+
+class FakeM2MTokenAcquirer:
+    """Stand-in for ``Auth0ClientCredentials`` that returns a fixed M2M token."""
+
+    def __init__(self, token: str = "m2m-bearer") -> None:
+        self._token = token
+        self.fetches = 0
+
+    def get_token(self) -> str:
+        self.fetches += 1
+        return self._token
+
+    def invalidate(self) -> None:
+        self._token = ""
+
+
+class FakeHTTPResponse:
+    def __init__(self, body: bytes, status: int = 200) -> None:
+        self._body = body
+        self.status = status
+        self.code = status
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> FakeHTTPResponse:
+        return self
+
+    def __exit__(self, *_args: object) -> bool:
+        return False
+
+
+class FakeBackendOpener:
+    """Records Backend HTTP requests and returns canned responses by (method, path).
+
+    ``responses`` maps ``(method, path_without_query)`` to ``(status, body_bytes)``.
+    Unmatched calls default to a 200 recall-style empty payload. Non-2xx statuses
+    raise ``urllib.error.HTTPError`` to mirror real ``urllib`` behavior.
+    """
+
+    def __init__(self, base_url: str = "https://backend.test") -> None:
+        self.base_url = base_url.rstrip("/")
+        self.calls: list[dict[str, Any]] = []
+        self.responses: dict[tuple[str, str], tuple[int, bytes]] = {}
+
+    def open(self, request: Any, timeout: float | None = None) -> FakeHTTPResponse:
+        method = request.get_method()
+        url = request.full_url
+        path = url[len(self.base_url):].split("?", 1)[0]
+        headers = {key: value for key, value in request.header_items()}
+        data = request.data
+        self.calls.append(
+            {
+                "method": method,
+                "url": url,
+                "path": path,
+                "headers": headers,
+                "body": data,
+            }
+        )
+        status, body = self.responses.get((method, path), (200, b'{"brand": [], "personal": []}'))
+        if status >= 400:
+            raise urllib.error.HTTPError(url, status, "Backend Error", {}, io.BytesIO(body))
+        return FakeHTTPResponse(body, status)
 
 
 class FakeS3:
@@ -484,6 +555,15 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
     fake_s3 = FakeS3()
     fake_s3.put("test-bucket-a", f"cg_operation_msg_html/{OP_A1}/v1/m2/v1.html", b"<html>final v1 body</html>")
     fake_s3.put("test-bucket-a", f"cg_operation_msg_html/{OP_A1}/v2/m3/v2.html", b"<html>draft v2 body</html>")
+    backend_base_url = "https://backend.test"
+    token_acquirer = FakeM2MTokenAcquirer()
+    backend_opener = FakeBackendOpener(backend_base_url)
+    backend_client = BackendMemoryClient(
+        base_url=backend_base_url,
+        token_acquirer=token_acquirer,
+        timeout=5.0,
+        opener=backend_opener,
+    )
     mcp = build_mcp_app(
         runtime_settings=settings,
         registry=registry,
@@ -491,6 +571,7 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
         cache=TenantMembershipCache(ttl_seconds=60, max_entries=8),
         jwks_cache=JWKSCache(f"{TEST_ISSUER}.well-known/jwks.json", initial=jwks),
         s3=fake_s3,
+        backend_memory=backend_client,
     )
     with TestClient(mcp.streamable_http_app(), base_url="https://mcp.test.local") as client:
-        yield AppHarness(client, registry, open_session, calls, fake_s3)
+        yield AppHarness(client, registry, open_session, calls, fake_s3, backend_client, backend_opener, token_acquirer)

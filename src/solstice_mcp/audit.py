@@ -36,6 +36,8 @@ AUDIT_RESOURCE_FIELDS = {
     "reason_category",
     "type",
     "fetch",
+    "memory_id",
+    "scope",
 }
 
 logger = logging.getLogger(AUDIT_LOGGER_NAME)

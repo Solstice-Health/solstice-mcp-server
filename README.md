@@ -29,6 +29,26 @@ The service reads only these variables:
 Database templates must contain `{db_name}`. Other ECS environment variables
 are ignored.
 
+## Memory tools (optional)
+
+The four `solstice_memory_*` tools are registered only when the Backend memory
+contract is configured. When `SOLSTICE_BACKEND_BASE_URL` and
+`SOLSTICE_BACKEND_AUTH0_CLIENT_ID` are unset, the tools are not exposed and the
+MCP remains a pure content-review server. The MCP stays stateless: it validates
+the end-user OAuth subject, rechecks tenant/brand membership, then calls the
+Backend-Server `/api/internal/agent-memory` routes with an RS256 Auth0
+client-credentials bearer and a server-derived actor envelope. The tenant
+Postgres store and the mutation audit log live in Backend-Server; the MCP
+never touches them.
+
+- `SOLSTICE_BACKEND_BASE_URL` — Backend-Server origin (e.g. `https://api.solsticehealth.co`)
+- `SOLSTICE_BACKEND_TIMEOUT_SECONDS` — per-request timeout, default 10
+- `SOLSTICE_BACKEND_AUTH0_CLIENT_ID` / `SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET` —
+  confidential M2M client credentials
+- `SOLSTICE_BACKEND_AUTH0_AUDIENCE` — memory-specific Auth0 audience
+- `SOLSTICE_BACKEND_AUTH0_SCOPE` — default `memory:invoke`
+- `SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS` — Auth0 token endpoint timeout, default 5
+
 ## Local checks
 
 ```bash
