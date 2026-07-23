@@ -98,6 +98,15 @@ class CgOperation(Base):
     chat_title: Mapped[str | None] = mapped_column(String, nullable=True)
     file_name: Mapped[str | None] = mapped_column(String, nullable=True)
     content_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    # SOLSTICE_GENERATED | EDIT_HTML | EDIT_PDF | EDIT_MP4. Backend dashboards
+    # and the FE category router filter on this column; a NULL here makes the
+    # operation invisible to those views, so the write path always sets it.
+    operation_category: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The backend's intake/recents filter requires is_chat_history_deleted ==
+    # False (intake_dashboard_filters.py). The column default is Python-side
+    # only (backend ORM), so an MCP insert that omits it stores NULL and the
+    # row is filtered out (NULL == FALSE is NULL in SQL). Always set it.
+    is_chat_history_deleted: Mapped[bool | None] = mapped_column(nullable=True)
     operation_metadata: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     version_number: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -352,10 +361,17 @@ def create_operation(
             prompt="",
             filtered_clinical_claims_picker=[],
             page=1,
-            status="EDITING",
-            chat_title=chat_title or name,
-            file_name=file_name or name,
-            content_type=content_type,
+                status="EDITING",
+                chat_title=chat_title or name,
+                file_name=file_name or name,
+                content_type=content_type,
+                # Mirrors the Backend-Server generate flow. NULL would hide the
+                # operation from category-filtered dashboards and the FE router
+                # (parse-operation getOperationCategory returns null).
+                operation_category="SOLSTICE_GENERATED",
+                # Visibility filters also require this to be FALSE, not NULL —
+                # the backend default is ORM-side only and does not apply here.
+                is_chat_history_deleted=False,
             operation_metadata={},
             version_number=1,
             created_at=now,

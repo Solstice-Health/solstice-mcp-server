@@ -79,6 +79,11 @@ def test_create_at_root_inserts_row_and_leaf(app_harness: AppHarness, mint_token
     assert op.version_number == 1
     assert op.file_name == "New Review.html"
     assert op.chat_title == "New Review.html"
+    # Category mirrors the Backend-Server generate flow; NULL would hide the
+    # op from category-filtered dashboards and the FE category router.
+    assert op.operation_category == "SOLSTICE_GENERATED"
+    # Intake/recents also require is_chat_history_deleted == FALSE (not NULL).
+    assert op.is_chat_history_deleted is False
 
     # Leaf appended at root of the (previously empty) project dir_map.
     items = _dir_map(app_harness, PROJECT_P2)["items"]
