@@ -58,9 +58,14 @@ def _tool_error_text(response) -> str:
     return result["content"][0]["text"]
 
 
-def _set_recall_response(opener, brand: list[dict] | None = None, personal: list[dict] | None = None) -> None:
+def _set_recall_response(
+    opener,
+    brand: list[dict] | None = None,
+    personal: list[dict] | None = None,
+    tenant_personal: list[dict] | None = None,
+) -> None:
     body = json.dumps(
-        {"brand": brand or [], "personal": personal or []}
+        {"brand": brand or [], "personal": personal or [], "tenant_personal": tenant_personal or []}
     ).encode("utf-8")
     opener.responses[("GET", "/api/internal/agent-memory")] = (200, body)
 
@@ -116,7 +121,12 @@ def test_memory_tools_listed_with_correct_annotations(app_harness: AppHarness, m
 
 
 def test_recall_succeeds_for_member(app_harness: AppHarness, mint_token):
-    _set_recall_response(app_harness.backend_opener, brand=[{"memory_id": "b1"}], personal=[{"memory_id": "p1"}])
+    _set_recall_response(
+        app_harness.backend_opener,
+        brand=[{"memory_id": "b1"}],
+        personal=[{"memory_id": "p1"}],
+        tenant_personal=[{"memory_id": "tp1"}],
+    )
     token = mint_token(sub=SHARED_SUB)  # ADMIN on BRAND_A1
     response = _call(app_harness, token, "solstice_memory_recall",
                     {"tenant_slug": TENANT, "brand_id": BRAND_A1})
@@ -124,6 +134,7 @@ def test_recall_succeeds_for_member(app_harness: AppHarness, mint_token):
     assert payload["status"] == "ok"
     assert payload["brand"] == [{"memory_id": "b1"}]
     assert payload["personal"] == [{"memory_id": "p1"}]
+    assert payload["tenant_personal"] == [{"memory_id": "tp1"}]
 
 
 def test_recall_denied_for_non_member(app_harness: AppHarness, mint_token):
@@ -143,6 +154,28 @@ def test_personal_write_succeeds_for_member(app_harness: AppHarness, mint_token)
     payload = _ok(response)
     assert payload["scope"] == "personal"
     assert payload["memory_id"] == "mem-1"
+
+
+def test_tenant_personal_write_omits_partition_brand(app_harness: AppHarness, mint_token):
+    _set_remember_response(app_harness.backend_opener)
+    token = mint_token(sub=SHARED_SUB)
+    response = _call(
+        app_harness,
+        token,
+        "solstice_memory_remember",
+        {
+            "tenant_slug": TENANT,
+            "brand_id": BRAND_A1,
+            "scope": "tenant_personal",
+            "fact_type": "preference",
+            "statement": "prefer concise responses",
+        },
+    )
+
+    payload = _ok(response)
+    assert payload["scope"] == "tenant_personal"
+    assert payload["brand_id"] is None
+    assert json.loads(app_harness.backend_opener.calls[-1]["body"])["brand_id"] is None
 
 
 def test_brand_write_denied_for_member(app_harness: AppHarness, mint_token):
@@ -327,6 +360,45 @@ def test_forget_request_schema(app_harness: AppHarness, mint_token):
         "tenant_slug": TENANT,
         "reason": "obsolete",
     }
+
+
+def test_tenant_personal_replace_and_forget_omit_partition_brand(
+    app_harness: AppHarness,
+    mint_token,
+):
+    _set_replace_response(app_harness.backend_opener)
+    _set_forget_response(app_harness.backend_opener)
+    token = mint_token(sub=SHARED_SUB)
+
+    replace_response = _call(
+        app_harness,
+        token,
+        "solstice_memory_replace",
+        {
+            "tenant_slug": TENANT,
+            "brand_id": BRAND_A1,
+            "memory_id": "mem-1",
+            "scope": "tenant_personal",
+            "fact_type": "preference",
+            "statement": "prefer short responses",
+        },
+    )
+    assert _ok(replace_response)["brand_id"] is None
+    assert json.loads(app_harness.backend_opener.calls[-1]["body"])["brand_id"] is None
+
+    forget_response = _call(
+        app_harness,
+        token,
+        "solstice_memory_forget",
+        {
+            "tenant_slug": TENANT,
+            "brand_id": BRAND_A1,
+            "memory_id": "mem-1",
+            "scope": "tenant_personal",
+        },
+    )
+    assert _ok(forget_response)["brand_id"] is None
+    assert json.loads(app_harness.backend_opener.calls[-1]["body"])["brand_id"] is None
 
 
 def test_recall_entity_id_filter_is_passed_through(app_harness: AppHarness, mint_token):

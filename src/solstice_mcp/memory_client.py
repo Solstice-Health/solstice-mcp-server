@@ -26,8 +26,13 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 MEMORY_SCOPE_PERSONAL = "personal"
+MEMORY_SCOPE_TENANT_PERSONAL = "tenant_personal"
 MEMORY_SCOPE_BRAND = "brand"
-MEMORY_SCOPES = (MEMORY_SCOPE_PERSONAL, MEMORY_SCOPE_BRAND)
+MEMORY_SCOPES = (
+    MEMORY_SCOPE_TENANT_PERSONAL,
+    MEMORY_SCOPE_PERSONAL,
+    MEMORY_SCOPE_BRAND,
+)
 
 _TOKEN_SKEW_SECONDS = 60.0
 
@@ -256,7 +261,7 @@ class BackendMemoryClient:
         reason: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
-            "brand_id": actor.brand_id,
+            "brand_id": _brand_id_for_scope(actor, scope),
             "scope": scope,
             "actor_sub": actor.actor_sub,
             "tenant_slug": actor.tenant_slug,
@@ -317,7 +322,7 @@ def _mutation_body(
     reason: str | None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
-        "brand_id": actor.brand_id,
+        "brand_id": _brand_id_for_scope(actor, scope),
         "scope": scope,
         "fact_type": fact_type,
         "statement": statement,
@@ -333,6 +338,10 @@ def _mutation_body(
     if reason is not None:
         body["reason"] = reason
     return body
+
+
+def _brand_id_for_scope(actor: ActorEnvelope, scope: str) -> str | None:
+    return None if scope == MEMORY_SCOPE_TENANT_PERSONAL else actor.brand_id
 
 
 def _read_json(response: Any) -> dict[str, Any]:
@@ -373,6 +382,7 @@ __all__ = [
     "MEMORY_SCOPES",
     "MEMORY_SCOPE_BRAND",
     "MEMORY_SCOPE_PERSONAL",
+    "MEMORY_SCOPE_TENANT_PERSONAL",
     "ActorEnvelope",
     "Auth0ClientCredentials",
     "BackendMemoryClient",
