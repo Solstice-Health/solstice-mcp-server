@@ -267,6 +267,9 @@ def register_content_tools(
           (InDesign, ZIP, PPTX, HTML). If the user did not supply one, ask
           ONCE whether they have it; "I don't have it" is acceptable —
           proceed without. Attach it via prepare/commit with type="source".
+          If the source is HTML, also ask ONCE whether they want it viewable
+          next to the PDF in Solstice (PDF↔Source toggle); on yes, pass
+          show_source_on_ui=true on the source commit (after the pdf commit).
         - kind="html": ask NOTHING beyond the file, name, and content type.
 
         The response includes ``asset_url`` — the operation's Solstice page.
@@ -331,6 +334,7 @@ def register_content_tools(
         type: str,
         s3_key: str,
         file_name: str | None = None,
+        show_source_on_ui: bool = False,
     ) -> dict[str, Any]:
         """Commit a new version row after uploading to S3. Step 2 of 2.
 
@@ -343,6 +347,16 @@ def register_content_tools(
         instead of inserting a version). For edit operations, html/pdf commits
         also complete the upload contract (is_html_saved, approved_pdf_s3_key,
         status) automatically.
+
+        ``show_source_on_ui`` — source commits only, and only when the source
+        file is HTML. When True, the source is bound to the operation's
+        published (else latest) document version so the Solstice asset page
+        shows a PDF↔Source toggle: the user can flip between the PDF and the
+        rendered HTML. Commit the pdf version BEFORE the source commit. For a
+        PDF edit operation whose user supplied an HTML source, ASK the user
+        ONCE whether they want the HTML viewable next to the PDF in Solstice;
+        pass True only on an explicit yes. Never pass True for non-HTML
+        sources (InDesign, ZIP, PPTX) — the call will be rejected.
 
         ``file_name`` MUST be a bare filename only (e.g. ``"1022.html"``,
         ``"apretude_banner_v6.pdf"``) and must match the value passed to
@@ -363,6 +377,7 @@ def register_content_tools(
             type,
             s3_key,
             file_name,
+            show_source_on_ui,
             registry=registry,
             session_factory=session_factory,
             s3=s3,

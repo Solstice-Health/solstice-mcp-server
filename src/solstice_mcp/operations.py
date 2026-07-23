@@ -954,6 +954,16 @@ def _validate_source_key(s3_key: str, operation_id: str) -> None:
         raise ToolError("invalid_key: malformed source file name segment")
 
 
+def _is_html_source_name(name: str) -> bool:
+    """True when ``name`` looks like an HTML document (``.html`` / ``.htm``).
+
+    Mirrors Backend-Server ``is_html_source_filename`` (source_html_version.py):
+    only HTML sources are renderable in the FE's PDF↔Source toggle, so the
+    ``show_source_on_ui`` opt-in is gated on the extension.
+    """
+    return name.lower().rstrip().endswith((".html", ".htm"))
+
+
 def _doc_message_metadata(
     *,
     kind: str,
@@ -1093,6 +1103,7 @@ def commit_operation_version(
     kind: str,
     s3_key: str,
     file_name: str | None,
+    show_source_on_ui: bool = False,
     *,
     registry: TenantRegistry,
     session_factory: SessionFactory,
@@ -1115,6 +1126,14 @@ def commit_operation_version(
     ``operation_metadata.sourcefile_s3_key`` on the operation row and inserts
     no message rows. Restricted to edit operations (EDIT_HTML / EDIT_PDF).
 
+    ``show_source_on_ui`` (source commits only, SOL-1255 parity): when True
+    and the source file is HTML, the bound document version's message
+    metadata is stamped with ``source_html_s3_key`` + ``show_source_on_ui``
+    so the editorial asset view offers the PDF↔Source toggle. Binding mirrors
+    Backend-Server ``select_source_html_target_message``: the latest
+    final-intent version wins, else the latest version. False never clears a
+    prior opt-in (turn it off via the platform UI's source re-upload).
+
     Category-aware finishing writes (mirroring the Backend-Server upload
     contract) run for edit operations after the version rows are inserted:
     - EDIT_HTML + html: ``is_html_saved=True``.
@@ -1123,6 +1142,10 @@ def commit_operation_version(
       intent is ``final`` (the backend's as_draft path skips the status flip).
     """
     _require_upload_kind(kind)
+    if show_source_on_ui and kind != "source":
+        raise ToolError(
+            "invalid_argument: show_source_on_ui applies to type='source' commits only"
+        )
     with tenant_session(tenant_slug, session_factory) as session:
         op = session.scalar(
             select(CgOperation).where(
@@ -1144,9 +1167,18 @@ def commit_operation_version(
         raise ToolError("not_configured: tenant has no s3_bucket")
     if kind == "source":
         _validate_source_key(s3_key, operation_id)
+        if show_source_on_ui and not _is_html_source_name(s3_key):
+            # Only HTML sources render in the FE's PDF↔Source toggle; mirror
+            # the Backend's extension gate rather than stamping a flag the
+            # viewer can never honor.
+            raise ToolError(
+                "invalid_argument: show_source_on_ui requires an HTML source "
+                "file (.html/.htm)"
+            )
         size = s3.head(bucket, s3_key)
         if size is None:
             raise ToolError("not_found: object not uploaded - PUT to the upload_url first")
+        bound_version_number: int | None = None
         with tenant_session(tenant_slug, session_factory) as session:
             locked = session.scalar(
                 select(CgOperation).where(
@@ -1167,6 +1199,32 @@ def commit_operation_version(
             # is not tracked). Mirrors update_operation / create_operation.
             locked.operation_metadata = metadata
             locked.updated_at = datetime.now(UTC)
+            if show_source_on_ui:
+                # Bind the HTML source to a document version so the FE offers
+                # the PDF↔Source toggle. Mirrors Backend-Server
+                # select_source_html_target_message: published (final) head
+                # wins, else the latest version of any intent.
+                docs = session.scalars(
+                    select(CgOperationMessage).where(
+                        CgOperationMessage.operation_id == operation_id,
+                        CgOperationMessage.version_number.is_not(None),
+                        CgOperationMessage.deleted_at.is_(None),
+                    )
+                ).all()
+                pool = [d for d in docs if d.intent == "final"] or list(docs)
+                if not pool:
+                    raise ToolError(
+                        "invalid_state: no document version to bind the source to - "
+                        "commit the pdf/html version first"
+                    )
+                target = max(pool, key=lambda d: d.version_number or 0)
+                message_metadata = dict(target.message_metadata) if isinstance(
+                    target.message_metadata, dict
+                ) else {}
+                message_metadata["source_html_s3_key"] = s3_key
+                message_metadata["show_source_on_ui"] = True
+                target.message_metadata = message_metadata
+                bound_version_number = target.version_number
             session.commit()
         return {
             "operation_id": operation_id,
@@ -1174,6 +1232,8 @@ def commit_operation_version(
             "s3_key": s3_key,
             "sourcefile_s3_key": s3_key,
             "size": size,
+            "show_source_on_ui": show_source_on_ui,
+            "bound_version_number": bound_version_number,
             "asset_url": build_asset_url(tenant_slug, operation_id),
         }
     with tenant_session(tenant_slug, session_factory) as session:

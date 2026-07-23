@@ -34,6 +34,12 @@ Solstice" with a file attached), ask one short question.
     pointer and is not a version. If the user did not provide a source file,
     ask ONCE whether they have it; "I don't have it" is acceptable — proceed
     without.
+  - When the source file is HTML, ask ONCE more: "Do you want the HTML source
+    viewable next to the PDF in Solstice (a PDF/Source toggle on the asset
+    page)?" On an explicit yes, pass `show_source_on_ui=true` on the
+    `type="source"` commit — after the PDF version is committed, never
+    before. Skip the question entirely for non-HTML sources; the flag is
+    rejected for them.
 
 The category is fixed at creation and is not editable afterwards; choosing
 wrong means recreating the asset. `content_type` (EMAIL, BANNER, SOCIAL...)
