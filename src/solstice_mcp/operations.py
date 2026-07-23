@@ -1252,6 +1252,14 @@ def commit_operation_version(
         )
         next_v = (max_v or 0) + 1
         message_id = _validate_version_key(kind, s3_key, operation_id, next_v)
+        if not message_id:
+            # PDF keys don't embed a message_id (html keys do), so mint one at
+            # commit. Without it the row lands with message_id "" — the FE
+            # version stepper keys versions by metadata.id, so empty ids
+            # collide across versions (several rows marked "Current",
+            # navigation broken), and solstice_approve_operation_version
+            # cannot address the row.
+            message_id = str(uuid4())
         # Confirm the client uploaded. Done under the operation-row lock so a
         # concurrent committer cannot land between validation and insert.
         size = s3.head(bucket, s3_key)
