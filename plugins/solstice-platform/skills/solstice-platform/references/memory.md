@@ -7,13 +7,15 @@ work backed by the Solstice Backend tenant Postgres store:
   and `tenant_personal` collections for the signed-in user.
 - `solstice_list_recent_work` — read-only; returns recently opened projects and
   operations from active brand memberships.
+- `solstice_memory_observe` — cooperative host finalizer; submits one bounded
+  semantic observation for asynchronous classification.
 - `solstice_memory_remember` — explicit write; creates one new active fact.
 - `solstice_memory_replace` — explicit write; supersedes one existing fact.
 - `solstice_memory_forget` — explicit write; removes one fact from active recall.
 
 The server derives the partition from the signed-in OAuth subject. The
 `tenant_slug` and `brand_id` arguments only select a resource; they never
-grant access. Never pass a `user_id` or `role` argument — it is ignored.
+grant access. `user_id` and `role` are not supported tool arguments.
 
 ## Automatic activity observation
 
@@ -26,17 +28,37 @@ work; it is not semantic memory.
 
 The MCP receives no host conversation and no reliable user-turn boundary.
 Never infer preferences, brand conventions, or decisions from tool activity.
-`remember`, `replace`, and `forget` remain explicit user-directed actions.
 Telemetry failure does not change the underlying platform action.
+
+## Cooperative semantic observation
+
+The host must call `solstice_memory_observe` once when a durable preference,
+convention, or decision is observed. Stateless MCP cannot read the conversation
+or guarantee that this is literally the last tool call, so automatic semantic
+memory is host-cooperative rather than server-triggered.
+
+Send one natural-language observation of at most 1000 characters and 12 lines,
+plus canonical ID-only `entity_refs` and `source_refs`. Scope is caller intent;
+Backend re-resolves the actor, checks scope and reference ownership, classifies
+the observation asynchronously, and decides whether anything activates. A
+brand-scoped observation is only a candidate and always requires approval.
+Do not claim that an observation was saved as active memory.
+
+`tenant_personal` observations omit `brand_id`; `personal` and `brand`
+observations require it. Never pass `user_id`, `role`, or assumed authority.
+Use `host_correlation_id` to link a host turn when available, and preserve an
+`idempotency_key` when retrying the same observation.
 
 ## Scope and roles
 
 - `scope="tenant_personal"` — facts the signed-in user alone sees across all
-  brands in this tenant. Writes require `MEMBER` on the selected brand.
+  brands in this tenant. Explicit writes require `MEMBER` on the selected
+  brand; observations omit `brand_id` and require active tenant membership.
 - `scope="personal"` — facts the signed-in user alone sees on the selected
-  brand. Writes require `MEMBER` on the brand.
-- `scope="brand"` — facts every brand member sees. Writes require `ADMIN` or
-  `SOLSTICE_STAFF` on the brand.
+  brand. Explicit writes and observations require `MEMBER` on the brand.
+- `scope="brand"` — facts every brand member sees. Explicit writes require
+  `ADMIN` or `SOLSTICE_STAFF`; any active brand member may submit an
+  observation candidate, but activation always requires approval.
 - Recall is read-only and gated at `MEMBER`; it searches all three scopes in
   one request and returns the collections separately so precedence stays
   visible.
@@ -61,11 +83,12 @@ be re-derived. State that memory was used and which scope each fact came from.
 Do not present recalled text as current truth; re-check live claims, rules,
 and assets before relying on them.
 
-## Explicit semantic-save requirement
+## Explicit semantic writes
 
-Only save memory on an explicit user request such as "remember that…",
+`remember`, `replace`, and `forget` remain explicit user-directed actions.
+Only use them on an explicit request such as "remember that…",
 "save this convention", "replace that decision with…", or "forget that…".
-Never infer a save from ordinary conversation. Confirm the scope
+Automatic observation does not make these direct writes implicit. Confirm the scope
 (`tenant_personal`, `personal`, or `brand`) and the bounded statement before
 writing. Brand-scope writes require `ADMIN` or `SOLSTICE_STAFF`; if the
 signed-in user lacks that role, say so without revealing whether the fact
@@ -75,8 +98,8 @@ exists.
 
 Never store, and never ask the user to provide through these tools:
 
-- Full HTML or PDF bodies, email bodies, PI documents, or complete claim
-  payloads. Reference them with typed `source_refs` and `entity_refs` instead.
+- Full HTML or PDF bodies, email bodies, PI documents, copied content, claims,
+  prompts, or arbitrary tool results. Reference source and entity IDs instead.
 - Credentials, secrets, tokens, or anything that looks like a private key.
 - Cross-tenant data. Brand and brand-personal facts stay on the selected brand;
   tenant-personal facts may contain only user-level preferences safe to apply

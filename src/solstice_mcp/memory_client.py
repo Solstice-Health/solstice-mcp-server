@@ -324,6 +324,41 @@ class BackendMemoryClient:
             json_body=body,
         )
 
+    def record_observation(
+        self,
+        *,
+        actor_sub: str,
+        tenant_slug: str,
+        scope: str,
+        observation: str,
+        entity_refs: list[dict[str, Any]],
+        source_refs: list[dict[str, Any]],
+        occurred_at: str,
+        idempotency_key: str,
+        brand_id: str | None = None,
+        host_correlation_id: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "actor_sub": actor_sub,
+            "tenant_slug": tenant_slug,
+            "scope": scope,
+            "observation": observation,
+            "entity_refs": entity_refs,
+            "source_refs": source_refs,
+            "occurred_at": occurred_at,
+            "idempotency_key": idempotency_key,
+        }
+        if brand_id is not None:
+            body["brand_id"] = brand_id
+        if host_correlation_id is not None:
+            body["host_correlation_id"] = host_correlation_id
+        return self._request(
+            "POST",
+            "/api/internal/agent-memory/observations",
+            tenant_slug=tenant_slug,
+            json_body=body,
+        )
+
     def list_recent_work(
         self,
         *,

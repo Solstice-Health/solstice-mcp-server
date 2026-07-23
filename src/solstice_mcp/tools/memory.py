@@ -17,18 +17,23 @@ Audit events carry selectors and IDs only (``tenant_slug``, ``brand_id``,
 ``memory_id``, ``scope``). Statements, source/entity refs, query text, and
 returned memory never enter audit logs.
 
-Bounded platform activity is observed automatically for recent work. Semantic
-remember, replace, and forget remain explicit and never infer conversation.
+Bounded platform activity is observed automatically for recent work. A
+cooperative host finalizer may submit one bounded semantic observation for
+Backend classification; remember, replace, and forget remain explicit writes.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
-from typing import Any
+from datetime import UTC, datetime
+from typing import Annotated, Any
+from uuid import uuid4
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from solstice_mcp.audit import audited_tool
 from solstice_mcp.brands import (
@@ -50,7 +55,11 @@ from solstice_mcp.memory_client import (
     MemoryClientUnauthorized,
     MemoryClientUnavailable,
 )
-from solstice_mcp.tenants import SessionFactory, TenantRegistry
+from solstice_mcp.tenants import (
+    SessionFactory,
+    TenantRegistry,
+    resolve_tenant_identity,
+)
 
 READ_ONLY = ToolAnnotations(
     readOnlyHint=True,
@@ -74,6 +83,29 @@ _BRAND_WRITE_MIN_ROLE = UserRole.ADMIN
 _FACT_TYPES = ("preference", "convention", "decision", "finding_disposition")
 _ENTITY_REF_REQUIRED = ("entity_type", "entity_id")
 _SOURCE_REF_REQUIRED = ("source_type", "source_id")
+_ENTITY_REF_FIELDS = {
+    "entity_type": 64,
+    "entity_id": 128,
+    "entity_version": 64,
+}
+_SOURCE_REF_FIELDS = {
+    "source_type": 64,
+    "source_id": 128,
+    "source_version": 64,
+    "fingerprint": 128,
+}
+_OBSERVATION_MAX_LENGTH = 1000
+_OBSERVATION_MAX_LINES = 12
+_SECRET_PATTERNS = (
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE),
+    re.compile(
+        r"\b(?:password|passwd|secret|client[_ -]?secret|api[_ -]?key|token|"
+        r"access[_ -]?token|refresh[_ -]?token)\s*[:=]\s*\S+",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/-]{8,}", re.IGNORECASE),
+    re.compile(r"\b(?:sk-[A-Za-z0-9_-]{12,}|AKIA[0-9A-Z]{16})\b"),
+)
 
 
 def _require_scope(scope: str) -> str:
@@ -84,9 +116,7 @@ def _require_scope(scope: str) -> str:
 
 def _require_fact_type(fact_type: str) -> str:
     if fact_type not in _FACT_TYPES:
-        raise ToolError(
-            f"invalid_argument: fact_type must be one of {', '.join(_FACT_TYPES)}"
-        )
+        raise ToolError(f"invalid_argument: fact_type must be one of {', '.join(_FACT_TYPES)}")
     return fact_type
 
 
@@ -110,11 +140,62 @@ def _require_ref_list(
     return refs
 
 
+def _require_canonical_ref_list(
+    refs: list[dict[str, Any]] | None,
+    *,
+    required: tuple[str, ...],
+    fields: dict[str, int],
+    label: str,
+) -> list[dict[str, Any]]:
+    validated = _require_ref_list(refs, required=required, label=label) or []
+    for ref in validated:
+        unknown = set(ref) - fields.keys()
+        if unknown:
+            raise ToolError(
+                f"invalid_argument: {label} entries contain unsupported fields: {', '.join(sorted(unknown))}"
+            )
+        for key, max_length in fields.items():
+            if key not in ref:
+                continue
+            value = ref[key]
+            if not isinstance(value, str) or not value or len(value) > max_length:
+                raise ToolError(
+                    f"invalid_argument: {label} {key} must be a non-empty string of at most {max_length} characters"
+                )
+    return validated
+
+
+def _require_observation(observation: str) -> str:
+    if not observation.strip():
+        raise ToolError("invalid_argument: observation must not be empty")
+    if len(observation) > _OBSERVATION_MAX_LENGTH:
+        raise ToolError(f"invalid_argument: observation must be at most {_OBSERVATION_MAX_LENGTH} characters")
+    if len(observation.splitlines()) > _OBSERVATION_MAX_LINES:
+        raise ToolError(f"invalid_argument: observation must be at most {_OBSERVATION_MAX_LINES} lines")
+    if any(pattern.search(observation) for pattern in _SECRET_PATTERNS):
+        raise ToolError("invalid_argument: observation must not contain credentials or secret keys")
+    return observation
+
+
+def _require_optional_identifier(value: str | None, *, label: str) -> str | None:
+    if value is not None and (not value or len(value) > 128):
+        raise ToolError(f"invalid_argument: {label} must be 1-128 characters")
+    return value
+
+
+def _require_occurred_at(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ToolError("invalid_argument: occurred_at must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ToolError("invalid_argument: occurred_at must include a timezone")
+    return value
+
+
 def _authorize_scope(identity: BrandIdentity, scope: str) -> None:
     if scope == MEMORY_SCOPE_BRAND and not role_satisfies(identity.role, _BRAND_WRITE_MIN_ROLE):
-        raise ToolError(
-            "not_authorized: brand memory writes require ADMIN or SOLSTICE_STAFF"
-        )
+        raise ToolError("not_authorized: brand memory writes require ADMIN or SOLSTICE_STAFF")
 
 
 def _actor_for(identity: BrandIdentity, subject: str) -> ActorEnvelope:
@@ -232,6 +313,136 @@ def register_memory_tools(
         except MemoryClientError as exc:
             raise _map_backend_error(exc, scope="recent work") from exc
         return {"tenant_slug": tenant_slug, "items": result.get("items", [])}
+
+    @write_tool
+    def solstice_memory_observe(
+        tenant_slug: Annotated[
+            str,
+            Field(description="Tenant workspace slug containing the signed-in actor."),
+        ],
+        scope: Annotated[
+            str,
+            Field(description="Caller intent: personal, tenant_personal, or brand."),
+        ],
+        observation: Annotated[
+            str,
+            Field(description="Durable semantic evidence only; maximum 1000 characters and 12 lines."),
+        ],
+        brand_id: Annotated[
+            str | None,
+            Field(description="Required for personal/brand scope; forbidden for tenant_personal."),
+        ] = None,
+        entity_refs: Annotated[
+            list[dict[str, Any]] | None,
+            Field(description="Canonical entity IDs only; never entity bodies."),
+        ] = None,
+        source_refs: Annotated[
+            list[dict[str, Any]] | None,
+            Field(description="Canonical source IDs only; never source content."),
+        ] = None,
+        occurred_at: Annotated[
+            str | None,
+            Field(description="Timezone-aware ISO-8601 observation time; defaults to now."),
+        ] = None,
+        host_correlation_id: Annotated[
+            str | None,
+            Field(description="Optional host turn correlation ID, maximum 128 characters."),
+        ] = None,
+        idempotency_key: Annotated[
+            str | None,
+            Field(description="Stable retry key, maximum 128 characters; defaults to a UUID."),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Submit one durable semantic observation for asynchronous classification.
+
+        Cooperative host finalizer: call once when a durable preference,
+        convention, or decision is observed. ``observation`` is natural-language
+        evidence, limited to 1000 characters and 12 lines. Never send document
+        bodies, claims, prompts, copied content, arbitrary tool results, or
+        credentials. Use canonical ID-only ``entity_refs`` and ``source_refs``.
+
+        ``scope`` is caller intent: ``tenant_personal`` forbids ``brand_id``;
+        ``personal`` and ``brand`` require it. Backend revalidates actor, scope,
+        reference ownership, and activation policy. Brand candidates require
+        approval. ``occurred_at`` defaults to now and must be timezone-aware.
+        ``idempotency_key`` defaults to a UUID; supply it to make a host retry
+        stable. ``host_correlation_id`` optionally links the host turn. The tool
+        never accepts ``user_id`` or ``role``.
+        """
+        scope = _require_scope(scope)
+        if scope == MEMORY_SCOPE_TENANT_PERSONAL:
+            if brand_id is not None:
+                raise ToolError("invalid_argument: brand_id is forbidden for tenant_personal observations")
+        elif brand_id is None:
+            raise ToolError(f"invalid_argument: brand_id is required for {scope} observations")
+
+        observation = _require_observation(observation)
+        entity_refs = _require_canonical_ref_list(
+            entity_refs,
+            required=_ENTITY_REF_REQUIRED,
+            fields=_ENTITY_REF_FIELDS,
+            label="entity_refs",
+        )
+        source_refs = _require_canonical_ref_list(
+            source_refs,
+            required=_SOURCE_REF_REQUIRED,
+            fields=_SOURCE_REF_FIELDS,
+            label="source_refs",
+        )
+        occurred_at = _require_occurred_at(datetime.now(UTC).isoformat() if occurred_at is None else occurred_at)
+        host_correlation_id = _require_optional_identifier(
+            host_correlation_id,
+            label="host_correlation_id",
+        )
+        idempotency_key = _require_optional_identifier(
+            str(uuid4()) if idempotency_key is None else idempotency_key,
+            label="idempotency_key",
+        )
+        assert idempotency_key is not None
+
+        subject = require_subject()
+        if brand_id is None:
+            if (
+                resolve_tenant_identity(
+                    subject,
+                    tenant_slug,
+                    registry=registry,
+                    session_factory=session_factory,
+                )
+                is None
+            ):
+                raise ToolError("not_authorized: no active tenant membership")
+        else:
+            require_brand_role(
+                subject,
+                tenant_slug,
+                brand_id,
+                min_role=UserRole.MEMBER,
+                registry=registry,
+                session_factory=session_factory,
+            )
+
+        try:
+            result = backend.record_observation(
+                actor_sub=subject,
+                tenant_slug=tenant_slug,
+                scope=scope,
+                brand_id=brand_id,
+                observation=observation,
+                entity_refs=entity_refs,
+                source_refs=source_refs,
+                occurred_at=occurred_at,
+                host_correlation_id=host_correlation_id,
+                idempotency_key=idempotency_key,
+            )
+        except MemoryClientError as exc:
+            raise _map_backend_error(exc, scope=scope) from exc
+        return {
+            **result,
+            "tenant_slug": tenant_slug,
+            "brand_id": brand_id,
+            "scope": scope,
+        }
 
     @write_tool
     def solstice_memory_remember(

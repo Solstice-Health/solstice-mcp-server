@@ -176,6 +176,10 @@ def test_memory_tools_do_not_emit_activity(app_harness: AppHarness, mint_token):
         200,
         b'{"memory_id":"mem-1","status":"forgotten"}',
     )
+    app_harness.backend_opener.responses[("POST", "/api/internal/agent-memory/observations")] = (
+        202,
+        b'{"observation_id":"obs-1","processing_state":"pending"}',
+    )
     token = mint_token()
 
     tool_payload(
@@ -184,6 +188,19 @@ def test_memory_tools_do_not_emit_activity(app_harness: AppHarness, mint_token):
             token,
             "solstice_memory_recall",
             {"tenant_slug": "tenant_a", "brand_id": BRAND_A1},
+        )
+    )
+    tool_payload(
+        _call(
+            app_harness,
+            token,
+            "solstice_memory_observe",
+            {
+                "tenant_slug": "tenant_a",
+                "brand_id": BRAND_A1,
+                "scope": "personal",
+                "observation": "The user prefers concise summaries.",
+            },
         )
     )
     tool_payload(
