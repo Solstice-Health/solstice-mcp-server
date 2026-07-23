@@ -45,6 +45,35 @@ def register_discovery_tools(
 ) -> None:
     read_only_tool = audited_tool(mcp, require_access_token, annotations=READ_ONLY)
 
+    def _resolve_email(token: Any) -> str | None:
+        """Email for the sibling-MCP gate: token claim, else tenant DB.
+
+        Gateway-minted OAuth tokens do not carry an ``email`` claim, so fall
+        back to the same source solstice_whoami uses — the subject's user row
+        in a tenant they belong to. The gate caches its decision per subject,
+        so the tenant scan runs at most once per cache window.
+        """
+        claims = token.claims or {}
+        email = claims.get("email")
+        if isinstance(email, str) and email:
+            return email
+        memberships = discover_tenants_for_sub(
+            token.subject,
+            registry=registry,
+            session_factory=session_factory,
+            cache=membership_cache,
+        )
+        for membership in memberships:
+            identity = resolve_tenant_identity(
+                token.subject,
+                membership.slug,
+                registry=registry,
+                session_factory=session_factory,
+            )
+            if identity is not None and identity.email:
+                return identity.email
+        return None
+
     @read_only_tool
     def solstice_server_info() -> dict[str, Any]:
         """Return public server and tool metadata, including the RBAC model."""
@@ -124,10 +153,7 @@ def register_discovery_tools(
     def solstice_check_access() -> dict[str, Any]:
         """Return whether the caller may see the sibling MCP directory."""
         token = require_access_token()
-        claims = token.claims or {}
-        email = claims.get("email")
-        email_value = email if isinstance(email, str) else None
-        decision = access_gate.evaluate(token.subject, email_value)
+        decision = access_gate.evaluate(token.subject, _resolve_email(token))
         return {
             "allowed": decision.allowed,
             "email": decision.email,
@@ -139,10 +165,7 @@ def register_discovery_tools(
     def solstice_list_sibling_mcps() -> dict[str, Any]:
         """List sibling MCPs the caller is authorized to use, if allowed."""
         token = require_access_token()
-        claims = token.claims or {}
-        email = claims.get("email")
-        email_value = email if isinstance(email, str) else None
-        decision = access_gate.evaluate(token.subject, email_value)
+        decision = access_gate.evaluate(token.subject, _resolve_email(token))
         if not decision.allowed:
             return {"allowed": False, "reason": decision.reason, "sibling_mcps": []}
         entries = sibling_registry.list()

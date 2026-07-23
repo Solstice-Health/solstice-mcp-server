@@ -43,6 +43,9 @@ def _operation(harness: AppHarness, op_id: str) -> CgOperation:
     with harness.session_factory(TENANT) as session:
         op = session.scalar(select(CgOperation).where(CgOperation.id == op_id))
         assert op is not None
+        # Touch deferred columns while the session is open so assertions can
+        # read them after detach.
+        _ = op.operation_metadata
         return op
 
 

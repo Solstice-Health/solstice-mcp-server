@@ -91,8 +91,14 @@ class CgOperation(Base):
     project_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), nullable=True)
     # NOT NULL in prod; populated on insert by the write path.
     user_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), nullable=True)
-    prompt: Mapped[str | None] = mapped_column(String, nullable=True)
-    filtered_clinical_claims_picker: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    # prompt and filtered_clinical_claims_picker are write-path columns and can
+    # be very large; deferred so list/read queries never load them. Deferral
+    # does not affect INSERTs, and any explicit attribute access still lazy-
+    # loads within the session.
+    prompt: Mapped[str | None] = mapped_column(String, nullable=True, deferred=True)
+    filtered_clinical_claims_picker: Mapped[Any | None] = mapped_column(
+        JSON, nullable=True, deferred=True
+    )
     page: Mapped[int | None] = mapped_column(nullable=True)
     status: Mapped[str | None] = mapped_column(String, nullable=True)
     chat_title: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -111,7 +117,12 @@ class CgOperation(Base):
     # uploaded/edited documents with is_html_saved=True so file-browser
     # queries (get_html_cg_operation_files_of_brand) include them.
     is_html_saved: Mapped[bool | None] = mapped_column(nullable=True)
-    operation_metadata: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    # Deferred: operation_metadata blobs run to hundreds of KB on generated
+    # operations. Loading them eagerly made list_operations_for_brand pull
+    # hundreds of MB on large brands and OOM-kill the worker (502 at the
+    # gateway). Write paths that mutate it (update_operation, commit finishing
+    # writes) still lazy-load it on attribute access inside their session.
+    operation_metadata: Mapped[Any | None] = mapped_column(JSON, nullable=True, deferred=True)
     version_number: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

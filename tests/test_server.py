@@ -480,7 +480,6 @@ def test_solstice_access_gate_rejects_invalid_config(kwargs, match):
         ("alice@solsticehealth.co", True),
         ("Alice@SolsticeHealth.co", True),
         ("eve@example.com", False),
-        (None, False),
     ],
 )
 def test_solstice_check_access_integration(app_harness: AppHarness, mint_token, email, allowed):
@@ -496,12 +495,43 @@ def test_solstice_check_access_integration(app_harness: AppHarness, mint_token, 
     if allowed:
         assert payload["email"] == email
         assert payload["reason"] == "email domain allowed"
-    elif email is None:
-        assert payload["email"] is None
-        assert payload["reason"] == "missing email claim"
     else:
         assert payload["email"] == email
         assert payload["reason"] == "email domain not allowed"
+
+
+def test_solstice_check_access_falls_back_to_tenant_db_email(app_harness: AppHarness, mint_token):
+    # Gateway-minted tokens carry no email claim; the gate must resolve the
+    # email from the subject's tenant user row (same source as whoami) instead
+    # of denying with "missing email claim". SHARED_SUB is alice@a.test in
+    # tenant_a — resolvable, but outside the allowed domain.
+    response = rpc(
+        app_harness,
+        "tools/call",
+        token=mint_token(email=None),
+        params={"name": "solstice_check_access", "arguments": {}},
+    )
+    payload = tool_payload(response)
+    assert payload["allowed"] is False
+    assert payload["email"] == "alice@a.test"
+    assert payload["reason"] == "email domain not allowed"
+
+
+def test_solstice_check_access_missing_everywhere(app_harness: AppHarness, mint_token):
+    # No email claim AND no tenant membership (soft-deleted user) -> the
+    # fallback finds nothing and the gate reports the missing claim.
+    from conftest import DELETED_SUB
+
+    response = rpc(
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=DELETED_SUB, email=None),
+        params={"name": "solstice_check_access", "arguments": {}},
+    )
+    payload = tool_payload(response)
+    assert payload["allowed"] is False
+    assert payload["email"] is None
+    assert payload["reason"] == "missing email claim"
 
 
 def test_solstice_list_sibling_mcps_allowed_user_sees_directory(app_harness: AppHarness, mint_token):

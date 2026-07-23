@@ -47,7 +47,12 @@ def _call(harness: AppHarness, token: str, name: str, args: dict[str, Any]):
 
 def _operation(harness: AppHarness, op_id: str) -> CgOperation | None:
     with harness.session_factory(TENANT) as session:
-        return session.scalar(select(CgOperation).where(CgOperation.id == op_id))
+        op = session.scalar(select(CgOperation).where(CgOperation.id == op_id))
+        if op is not None:
+            # Touch deferred columns while the session is open so assertions
+            # can read them after detach.
+            _ = op.operation_metadata
+        return op
 
 
 def _message_count(harness: AppHarness, op_id: str) -> int:
