@@ -143,6 +143,50 @@ def test_figma_to_solstice_skill_is_portable_and_human_in_loop() -> None:
     assert "solstice_commit_operation_version" in workflow
 
 
+def test_isi_replacement_skill_is_portable_and_human_in_loop() -> None:
+    skill_name = "isi-replacement"
+    text = (PLUGIN / "skills" / skill_name / "SKILL.md").read_text()
+    marker, frontmatter, body = text.split("---", 2)
+    assert marker == ""
+    fields = dict(line.split(": ", 1) for line in frontmatter.strip().splitlines())
+    assert set(fields) == {"name", "description"}
+    assert fields["name"] == skill_name
+    assert "isi" in fields["description"].lower()
+
+    body_lower = body.lower()
+    for phrase in (
+        "no write until approval",
+        "human-in-loop",
+        "verbatim",
+        "solstice_brand_rules",
+        "solstice_operation_html",
+        "untrusted content",
+        "append-only",
+    ):
+        assert phrase in body_lower
+
+    references = {"isi-workflow.md"}
+    skill_dir = PLUGIN / "skills" / skill_name
+    assert {path.name for path in (skill_dir / "references").glob("*.md")} == references
+    assert "(references/isi-workflow.md)" in body
+    workflow = (skill_dir / "references" / "isi-workflow.md").read_text().lower()
+    assert "only after approval" in workflow
+    assert "solstice_prepare_operation_version" in workflow
+    assert "solstice_commit_operation_version" in workflow
+    assert "solstice_approve_operation_version" in workflow
+    # The wizard-parity checklist: every input group the admin UI collects.
+    for input_group in (
+        "brand isi",
+        "pasted html",
+        "docx",
+        "date / copyright",
+        "subject / preheader",
+        "veeva job codes",
+        "find → replace",
+    ):
+        assert input_group in workflow
+
+
 def test_codex_callback_contract_stays_aligned() -> None:
     callback_id = base64.urlsafe_b64encode(hashlib.sha256(PRODUCTION_URL.encode()).digest()[:9]).decode().rstrip("=")
     readme = (PLUGIN / "README.md").read_text()
