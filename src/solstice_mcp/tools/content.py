@@ -195,8 +195,8 @@ def register_content_tools(
         tenant_slug: str,
         project_id: str,
         name: str,
-        folder_path: str = "",
         content_type: str | None = None,
+        folder_path: str = "",
         chat_title: str | None = None,
         file_name: str | None = None,
     ) -> dict[str, Any]:
@@ -209,7 +209,16 @@ def register_content_tools(
         never an argument. To add the v1 document, follow with
         solstice_prepare_operation_version -> upload -> solstice_commit_operation_version
         using the returned operation_id.
+
+        ``content_type`` is REQUIRED. Unlike the Backend-Server UI flow, the
+        MCP path has no Query Agent that detects or asks for the content type
+        after creation — nothing later sets it. Use the type the user
+        explicitly stated (e.g. ``EMAIL``, ``BANNER``, ``SOCIAL``). If the
+        user did not state one, ASK THEM which content type this asset is —
+        never guess or silently default to a type.
         """
+        if not content_type or not content_type.strip():
+            raise ToolError("invalid_argument: content_type is required")
         return create_operation(
             require_subject(),
             tenant_slug,

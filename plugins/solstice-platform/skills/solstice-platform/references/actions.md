@@ -55,8 +55,9 @@ An asset is an operation that appears as a file (a leaf) in a project's folder t
 
 1. Resolve the workspace, brand, and project from returned results or a Solstice deep link. Ask when the target is ambiguous.
 2. Confirm the target project, the destination folder path (root when omitted), and the file name before creating. The folder must already exist — the server does not create folders.
-3. Call `solstice_create_operation` with `tenant_slug`, `project_id`, `name`, and optional `folder_path`, `content_type`. Retain the returned `operation_id`.
-4. To give the new asset a first document, run the add-a-document-version workflow below with the returned `operation_id`; the prepared version will be v1.
+3. Determine the `content_type` (e.g. `EMAIL`, `BANNER`, `SOCIAL`). It is required: use the type the user explicitly stated, and if they did not state one, ask them before creating. Never guess or default — the MCP path has no later step that detects or fills it in, and an untyped asset renders incorrectly in the project view.
+4. Call `solstice_create_operation` with `tenant_slug`, `project_id`, `name`, `content_type`, and optional `folder_path`. Retain the returned `operation_id`.
+5. To give the new asset a first document, run the add-a-document-version workflow below with the returned `operation_id`; the prepared version will be v1.
 
 The owner is derived from your token; never pass a user ID or role. This write is append-only: it adds a new asset and one folder-tree entry and never overwrites anything.
 

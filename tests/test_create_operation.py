@@ -59,7 +59,8 @@ def test_create_at_root_inserts_row_and_leaf(app_harness: AppHarness, mint_token
     token = mint_token(sub=SHARED_SUB)  # ADMIN on BRAND_A1 (owns P2)
     response = _call(
         app_harness, token, "solstice_create_operation",
-        {"tenant_slug": TENANT, "project_id": PROJECT_P2, "name": "New Review.html"},
+        {"tenant_slug": TENANT, "project_id": PROJECT_P2, "name": "New Review.html",
+         "content_type": "EMAIL"},
     )
     payload = tool_payload(response)
     op_id = payload["operation_id"]
@@ -121,7 +122,7 @@ def test_create_into_existing_folder(app_harness: AppHarness, mint_token):
     response = _call(
         app_harness, token, "solstice_create_operation",
         {"tenant_slug": TENANT, "project_id": PROJECT_P1,
-         "name": "nested2.html", "folder_path": "Folder"},
+         "name": "nested2.html", "folder_path": "Folder", "content_type": "EMAIL"},
     )
     payload = tool_payload(response)
     op_id = payload["operation_id"]
@@ -146,7 +147,7 @@ def test_create_unknown_folder_path_rejected(app_harness: AppHarness, mint_token
     response = _call(
         app_harness, token, "solstice_create_operation",
         {"tenant_slug": TENANT, "project_id": PROJECT_P1,
-         "name": "x.html", "folder_path": "DoesNotExist"},
+         "name": "x.html", "folder_path": "DoesNotExist", "content_type": "EMAIL"},
     )
     assert "not_found" in _tool_error_text(response)
 
@@ -157,7 +158,8 @@ def test_create_unknown_project_rejected(app_harness: AppHarness, mint_token):
     token = mint_token(sub=SHARED_SUB)
     response = _call(
         app_harness, token, "solstice_create_operation",
-        {"tenant_slug": TENANT, "project_id": str(uuid4()), "name": "x.html"},
+        {"tenant_slug": TENANT, "project_id": str(uuid4()), "name": "x.html",
+         "content_type": "EMAIL"},
     )
     assert "not_authorized" in _tool_error_text(response)
 
@@ -167,9 +169,22 @@ def test_create_denied_for_non_member(app_harness: AppHarness, mint_token):
     token = mint_token(sub=DELETED_SUB)
     response = _call(
         app_harness, token, "solstice_create_operation",
-        {"tenant_slug": TENANT, "project_id": PROJECT_P2, "name": "x.html"},
+        {"tenant_slug": TENANT, "project_id": PROJECT_P2, "name": "x.html",
+         "content_type": "EMAIL"},
     )
     assert "not_authorized" in _tool_error_text(response)
+
+
+def test_create_requires_content_type(app_harness: AppHarness, mint_token):
+    # content_type is enforced at the MCP layer: the MCP path has no Query Agent
+    # that fills it in later, so an empty value is rejected before insert.
+    token = mint_token(sub=SHARED_SUB)
+    response = _call(
+        app_harness, token, "solstice_create_operation",
+        {"tenant_slug": TENANT, "project_id": PROJECT_P2, "name": "x.html"},
+    )
+    assert "invalid_argument" in _tool_error_text(response)
+    assert "content_type" in _tool_error_text(response)
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +196,8 @@ def test_create_then_add_v1_version(app_harness: AppHarness, mint_token):
     token = mint_token(sub=SHARED_SUB)  # ADMIN on BRAND_A1 -> final intent
     created = tool_payload(_call(
         app_harness, token, "solstice_create_operation",
-        {"tenant_slug": TENANT, "project_id": PROJECT_P2, "name": "doc.html"},
+        {"tenant_slug": TENANT, "project_id": PROJECT_P2, "name": "doc.html",
+         "content_type": "EMAIL"},
     ))
     op_id = created["operation_id"]
 

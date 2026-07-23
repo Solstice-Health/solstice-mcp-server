@@ -70,11 +70,11 @@ Confirm before writing:
 - brand
 - project + folder path (folder must already exist)
 - file / asset name
-- content type when known
+- content type (required — e.g. `EMAIL`, `BANNER`, `SOCIAL`; if the user has not stated one, ask before creating — never guess or default)
 
 Sequence:
 
-1. `solstice_create_operation(tenant_slug, project_id, name, folder_path?, content_type?)` → retain `operation_id`.
+1. `solstice_create_operation(tenant_slug, project_id, name, content_type, folder_path?)` → retain `operation_id`.
 2. `solstice_prepare_operation_version(tenant_slug, operation_id, type="html", file_name?)` → retain `upload_url`, `s3_key`, `type`, `file_name`. `file_name` is a bare filename only (e.g. `apretude_hero.html`); never pass instructions or prose — the gateway's prompt-attack guardrail scans this field and will deny instruction-like text.
 3. HTTP PUT the HTML bytes to `upload_url` with `Content-Type: text/html`. If the upload fails, stop without committing.
 4. `solstice_commit_operation_version(tenant_slug, operation_id, type, s3_key, file_name?)` with the unchanged prepare values (same `file_name`).
