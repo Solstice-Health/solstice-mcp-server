@@ -55,11 +55,7 @@ from solstice_mcp.memory_client import (
     MemoryClientUnauthorized,
     MemoryClientUnavailable,
 )
-from solstice_mcp.tenants import (
-    SessionFactory,
-    TenantRegistry,
-    resolve_tenant_identity,
-)
+from solstice_mcp.tenants import SessionFactory, TenantRegistry, resolve_tenant_identity
 
 READ_ONLY = ToolAnnotations(
     readOnlyHint=True,
@@ -116,7 +112,9 @@ def _require_scope(scope: str) -> str:
 
 def _require_fact_type(fact_type: str) -> str:
     if fact_type not in _FACT_TYPES:
-        raise ToolError(f"invalid_argument: fact_type must be one of {', '.join(_FACT_TYPES)}")
+        raise ToolError(
+            f"invalid_argument: fact_type must be one of {', '.join(_FACT_TYPES)}"
+        )
     return fact_type
 
 
@@ -195,7 +193,9 @@ def _require_occurred_at(value: str) -> str:
 
 def _authorize_scope(identity: BrandIdentity, scope: str) -> None:
     if scope == MEMORY_SCOPE_BRAND and not role_satisfies(identity.role, _BRAND_WRITE_MIN_ROLE):
-        raise ToolError("not_authorized: brand memory writes require ADMIN or SOLSTICE_STAFF")
+        raise ToolError(
+            "not_authorized: brand memory writes require ADMIN or SOLSTICE_STAFF"
+        )
 
 
 def _actor_for(identity: BrandIdentity, subject: str) -> ActorEnvelope:

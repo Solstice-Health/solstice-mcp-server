@@ -126,12 +126,12 @@ def test_memory_tools_listed_with_correct_annotations(app_harness: AppHarness, m
     ):
         assert name in by_name
     assert by_name["solstice_memory_recall"]["annotations"] == {
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
+        "readOnlyHint": True, "destructiveHint": False,
+        "idempotentHint": True, "openWorldHint": False,
     }
-    assert by_name["solstice_list_recent_work"]["annotations"] == by_name["solstice_memory_recall"]["annotations"]
+    assert by_name["solstice_list_recent_work"]["annotations"] == by_name[
+        "solstice_memory_recall"
+    ]["annotations"]
     for name in (
         "solstice_memory_observe",
         "solstice_memory_remember",
@@ -139,10 +139,8 @@ def test_memory_tools_listed_with_correct_annotations(app_harness: AppHarness, m
         "solstice_memory_forget",
     ):
         assert by_name[name]["annotations"] == {
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": False,
-            "openWorldHint": False,
+            "readOnlyHint": False, "destructiveHint": False,
+            "idempotentHint": False, "openWorldHint": False,
         }
     observe_properties = by_name["solstice_memory_observe"]["inputSchema"]["properties"]
     assert "user_id" not in observe_properties
@@ -164,7 +162,8 @@ def test_recall_succeeds_for_member(app_harness: AppHarness, mint_token):
         tenant_personal=[{"memory_id": "tp1"}],
     )
     token = mint_token(sub=SHARED_SUB)  # ADMIN on BRAND_A1
-    response = _call(app_harness, token, "solstice_memory_recall", {"tenant_slug": TENANT, "brand_id": BRAND_A1})
+    response = _call(app_harness, token, "solstice_memory_recall",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A1})
     payload = _ok(response)
     assert payload["status"] == "ok"
     assert payload["brand"] == [{"memory_id": "b1"}]
@@ -174,7 +173,8 @@ def test_recall_succeeds_for_member(app_harness: AppHarness, mint_token):
 
 def test_recall_denied_for_non_member(app_harness: AppHarness, mint_token):
     token = mint_token(sub=SHARED_SUB)  # not on BRAND_A3
-    response = _call(app_harness, token, "solstice_memory_recall", {"tenant_slug": TENANT, "brand_id": BRAND_A3})
+    response = _call(app_harness, token, "solstice_memory_recall",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A3})
     assert "not_authorized" in _tool_error_text(response)
     assert app_harness.backend_opener.calls == []
 
@@ -182,18 +182,9 @@ def test_recall_denied_for_non_member(app_harness: AppHarness, mint_token):
 def test_personal_write_succeeds_for_member(app_harness: AppHarness, mint_token):
     _set_remember_response(app_harness.backend_opener)
     token = mint_token(sub=SHARED_SUB)  # ADMIN on BRAND_A1
-    response = _call(
-        app_harness,
-        token,
-        "solstice_memory_remember",
-        {
-            "tenant_slug": TENANT,
-            "brand_id": BRAND_A1,
-            "scope": "personal",
-            "fact_type": "preference",
-            "statement": "prefer short emails",
-        },
-    )
+    response = _call(app_harness, token, "solstice_memory_remember",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A1, "scope": "personal",
+                     "fact_type": "preference", "statement": "prefer short emails"})
     payload = _ok(response)
     assert payload["scope"] == "personal"
     assert payload["memory_id"] == "mem-1"
@@ -223,18 +214,9 @@ def test_tenant_personal_write_omits_partition_brand(app_harness: AppHarness, mi
 
 def test_brand_write_denied_for_member(app_harness: AppHarness, mint_token):
     token = mint_token(sub=SHARED_SUB)  # MEMBER on BRAND_A2
-    response = _call(
-        app_harness,
-        token,
-        "solstice_memory_remember",
-        {
-            "tenant_slug": TENANT,
-            "brand_id": BRAND_A2,
-            "scope": "brand",
-            "fact_type": "convention",
-            "statement": "use sentence case",
-        },
-    )
+    response = _call(app_harness, token, "solstice_memory_remember",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A2, "scope": "brand",
+                     "fact_type": "convention", "statement": "use sentence case"})
     assert "not_authorized" in _tool_error_text(response)
     assert app_harness.backend_opener.calls == []
 
@@ -242,47 +224,26 @@ def test_brand_write_denied_for_member(app_harness: AppHarness, mint_token):
 def test_brand_write_succeeds_for_admin(app_harness: AppHarness, mint_token):
     _set_remember_response(app_harness.backend_opener)
     token = mint_token(sub=SHARED_SUB)  # ADMIN on BRAND_A1
-    response = _call(
-        app_harness,
-        token,
-        "solstice_memory_remember",
-        {
-            "tenant_slug": TENANT,
-            "brand_id": BRAND_A1,
-            "scope": "brand",
-            "fact_type": "decision",
-            "statement": "ship Q3",
-        },
-    )
+    response = _call(app_harness, token, "solstice_memory_remember",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A1, "scope": "brand",
+                     "fact_type": "decision", "statement": "ship Q3"})
     assert _ok(response)["scope"] == "brand"
 
 
 def test_brand_write_succeeds_for_solstice_staff(app_harness: AppHarness, mint_token):
     _set_remember_response(app_harness.backend_opener)
     token = mint_token(sub=STAFF_SUB)  # SOLSTICE_STAFF on BRAND_A1
-    response = _call(
-        app_harness,
-        token,
-        "solstice_memory_remember",
-        {
-            "tenant_slug": TENANT,
-            "brand_id": BRAND_A1,
-            "scope": "brand",
-            "fact_type": "decision",
-            "statement": "staff decision",
-        },
-    )
+    response = _call(app_harness, token, "solstice_memory_remember",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A1, "scope": "brand",
+                     "fact_type": "decision", "statement": "staff decision"})
     assert _ok(response)["scope"] == "brand"
 
 
 def test_invalid_scope_rejected(app_harness: AppHarness, mint_token):
     token = mint_token(sub=SHARED_SUB)
-    response = _call(
-        app_harness,
-        token,
-        "solstice_memory_remember",
-        {"tenant_slug": TENANT, "brand_id": BRAND_A1, "scope": "global", "fact_type": "preference", "statement": "x"},
-    )
+    response = _call(app_harness, token, "solstice_memory_remember",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A1, "scope": "global",
+                     "fact_type": "preference", "statement": "x"})
     assert "invalid_argument" in _tool_error_text(response)
     assert app_harness.backend_opener.calls == []
 
@@ -295,7 +256,8 @@ def test_invalid_scope_rejected(app_harness: AppHarness, mint_token):
 def test_cross_tenant_recall_denied(app_harness: AppHarness, mint_token):
     # OTHER is a tenant_a user but not a tenant_b user.
     token = mint_token(sub=OTHER_SUB)
-    response = _call(app_harness, token, "solstice_memory_recall", {"tenant_slug": TENANT_B, "brand_id": BRAND_B1})
+    response = _call(app_harness, token, "solstice_memory_recall",
+                    {"tenant_slug": TENANT_B, "brand_id": BRAND_B1})
     assert "not_authorized" in _tool_error_text(response)
     assert app_harness.backend_opener.calls == []
 
@@ -303,7 +265,8 @@ def test_cross_tenant_recall_denied(app_harness: AppHarness, mint_token):
 def test_cross_brand_recall_denied(app_harness: AppHarness, mint_token):
     # SHARED is not a member of BRAND_A3 in tenant_a.
     token = mint_token(sub=SHARED_SUB)
-    response = _call(app_harness, token, "solstice_memory_recall", {"tenant_slug": TENANT, "brand_id": BRAND_A3})
+    response = _call(app_harness, token, "solstice_memory_recall",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A3})
     assert "not_authorized" in _tool_error_text(response)
 
 
@@ -319,12 +282,9 @@ def _headers(call: dict[str, Any]) -> dict[str, Any]:
 def test_recall_request_schema_matches_backend_contract(app_harness: AppHarness, mint_token):
     _set_recall_response(app_harness.backend_opener)
     token = mint_token(sub=SHARED_SUB)  # ADMIN on BRAND_A1, user_id USER_A_SHARED
-    response = _call(
-        app_harness,
-        token,
-        "solstice_memory_recall",
-        {"tenant_slug": TENANT, "brand_id": BRAND_A1, "fact_type": "preference", "q": "email", "limit": 5},
-    )
+    response = _call(app_harness, token, "solstice_memory_recall",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A1,
+                     "fact_type": "preference", "q": "email", "limit": 5})
     assert _ok(response)["status"] == "ok"
 
     call = app_harness.backend_opener.calls[-1]
@@ -350,22 +310,14 @@ def test_recall_request_schema_matches_backend_contract(app_harness: AppHarness,
 def test_remember_request_schema_matches_backend_contract(app_harness: AppHarness, mint_token):
     _set_remember_response(app_harness.backend_opener)
     token = mint_token(sub=OTHER_SUB)  # MEMBER on BRAND_A1, user_id USER_A_OTHER
-    response = _call(
-        app_harness,
-        token,
-        "solstice_memory_remember",
-        {
-            "tenant_slug": TENANT,
-            "brand_id": BRAND_A1,
-            "scope": "personal",
-            "fact_type": "finding_disposition",
-            "statement": "claim C is unsupported for this brand",
-            "source_refs": [{"source_type": "claim", "source_id": "claim-7"}],
-            "entity_refs": [{"entity_type": "brand", "entity_id": BRAND_A1}],
-            "expires_at": "2027-01-01T00:00:00Z",
-            "reason": "user confirmed",
-        },
-    )
+    response = _call(app_harness, token, "solstice_memory_remember",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A1, "scope": "personal",
+                     "fact_type": "finding_disposition",
+                     "statement": "claim C is unsupported for this brand",
+                     "source_refs": [{"source_type": "claim", "source_id": "claim-7"}],
+                     "entity_refs": [{"entity_type": "brand", "entity_id": BRAND_A1}],
+                     "expires_at": "2027-01-01T00:00:00Z",
+                     "reason": "user confirmed"})
     assert _ok(response)["scope"] == "personal"
 
     call = app_harness.backend_opener.calls[-1]
@@ -610,20 +562,10 @@ def test_brand_observation_accepts_member_for_approval_candidate(
 def test_replace_request_schema(app_harness: AppHarness, mint_token):
     _set_replace_response(app_harness.backend_opener)
     token = mint_token(sub=SHARED_SUB)  # ADMIN on BRAND_A1 -> brand write ok
-    response = _call(
-        app_harness,
-        token,
-        "solstice_memory_replace",
-        {
-            "tenant_slug": TENANT,
-            "brand_id": BRAND_A1,
-            "memory_id": "mem-1",
-            "scope": "brand",
-            "fact_type": "decision",
-            "statement": "ship Q4 instead",
-            "reason": "replan",
-        },
-    )
+    response = _call(app_harness, token, "solstice_memory_replace",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A1, "memory_id": "mem-1",
+                     "scope": "brand", "fact_type": "decision",
+                     "statement": "ship Q4 instead", "reason": "replan"})
     payload = _ok(response)
     assert payload["superseded_id"] == "mem-1"
 
@@ -648,12 +590,9 @@ def test_replace_request_schema(app_harness: AppHarness, mint_token):
 def test_forget_request_schema(app_harness: AppHarness, mint_token):
     _set_forget_response(app_harness.backend_opener)
     token = mint_token(sub=SHARED_SUB)  # ADMIN on BRAND_A1 -> brand write ok
-    response = _call(
-        app_harness,
-        token,
-        "solstice_memory_forget",
-        {"tenant_slug": TENANT, "brand_id": BRAND_A1, "memory_id": "mem-1", "scope": "brand", "reason": "obsolete"},
-    )
+    response = _call(app_harness, token, "solstice_memory_forget",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A1, "memory_id": "mem-1",
+                     "scope": "brand", "reason": "obsolete"})
     payload = _ok(response)
     assert payload["status"] == "forgotten"
 
@@ -715,12 +654,8 @@ def test_tenant_personal_replace_and_forget_omit_partition_brand(
 def test_recall_entity_id_filter_is_passed_through(app_harness: AppHarness, mint_token):
     _set_recall_response(app_harness.backend_opener)
     token = mint_token(sub=SHARED_SUB)
-    _call(
-        app_harness,
-        token,
-        "solstice_memory_recall",
-        {"tenant_slug": TENANT, "brand_id": BRAND_A1, "entity_id": "op-123"},
-    )
+    _call(app_harness, token, "solstice_memory_recall",
+          {"tenant_slug": TENANT, "brand_id": BRAND_A1, "entity_id": "op-123"})
     call = app_harness.backend_opener.calls[-1]
     assert "entity_id=op-123" in call["url"]
 
@@ -734,10 +669,9 @@ def test_recent_work_tool_returns_backend_items(app_harness: AppHarness, mint_to
             "last_opened_at": "2026-07-23T12:00:00+00:00",
         }
     ]
-    app_harness.backend_opener.responses[("GET", "/api/internal/agent-memory/recent-work")] = (
-        200,
-        json.dumps({"items": items}).encode(),
-    )
+    app_harness.backend_opener.responses[
+        ("GET", "/api/internal/agent-memory/recent-work")
+    ] = (200, json.dumps({"items": items}).encode())
 
     payload = _ok(
         _call(
@@ -750,7 +684,9 @@ def test_recent_work_tool_returns_backend_items(app_harness: AppHarness, mint_to
 
     assert payload == {"tenant_slug": TENANT, "items": items}
     call = next(
-        call for call in app_harness.backend_opener.calls if call["path"] == "/api/internal/agent-memory/recent-work"
+        call
+        for call in app_harness.backend_opener.calls
+        if call["path"] == "/api/internal/agent-memory/recent-work"
     )
     assert call["method"] == "GET"
     assert f"actor_sub={urllib.parse.quote(SHARED_SUB, safe='')}" in call["url"]
@@ -761,31 +697,19 @@ def test_recent_work_tool_returns_backend_items(app_harness: AppHarness, mint_to
 
 def test_invalid_fact_type_rejected_before_backend(app_harness: AppHarness, mint_token):
     token = mint_token(sub=SHARED_SUB)
-    response = _call(
-        app_harness,
-        token,
-        "solstice_memory_remember",
-        {"tenant_slug": TENANT, "brand_id": BRAND_A1, "scope": "personal", "fact_type": "rumor", "statement": "x"},
-    )
+    response = _call(app_harness, token, "solstice_memory_remember",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A1, "scope": "personal",
+                     "fact_type": "rumor", "statement": "x"})
     assert "invalid_argument" in _tool_error_text(response)
     assert app_harness.backend_opener.calls == []
 
 
 def test_malformed_entity_ref_rejected_before_backend(app_harness: AppHarness, mint_token):
     token = mint_token(sub=SHARED_SUB)
-    response = _call(
-        app_harness,
-        token,
-        "solstice_memory_remember",
-        {
-            "tenant_slug": TENANT,
-            "brand_id": BRAND_A1,
-            "scope": "personal",
-            "fact_type": "preference",
-            "statement": "x",
-            "entity_refs": [{"entity_type": "brand"}],
-        },
-    )  # missing entity_id
+    response = _call(app_harness, token, "solstice_memory_remember",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A1, "scope": "personal",
+                     "fact_type": "preference", "statement": "x",
+                     "entity_refs": [{"entity_type": "brand"}]})  # missing entity_id
     assert "invalid_argument" in _tool_error_text(response)
     assert app_harness.backend_opener.calls == []
 
@@ -801,12 +725,9 @@ def test_backend_5xx_redacted(app_harness: AppHarness, mint_token):
         b'{"detail":"internal stack trace with secret sql://creds"}',
     )
     token = mint_token(sub=SHARED_SUB)
-    response = _call(
-        app_harness,
-        token,
-        "solstice_memory_remember",
-        {"tenant_slug": TENANT, "brand_id": BRAND_A1, "scope": "personal", "fact_type": "preference", "statement": "x"},
-    )
+    response = _call(app_harness, token, "solstice_memory_remember",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A1, "scope": "personal",
+                     "fact_type": "preference", "statement": "x"})
     text = _tool_error_text(response)
     assert "service_unavailable" in text
     assert "internal stack trace" not in text
@@ -837,16 +758,12 @@ def test_observation_backend_error_is_redacted(app_harness: AppHarness, mint_tok
 
 def test_backend_404_maps_to_not_found(app_harness: AppHarness, mint_token):
     app_harness.backend_opener.responses[("POST", "/api/internal/agent-memory/mem-1/forget")] = (
-        404,
-        b'{"detail":"no such fact"}',
+        404, b'{"detail":"no such fact"}',
     )
     token = mint_token(sub=SHARED_SUB)
-    response = _call(
-        app_harness,
-        token,
-        "solstice_memory_forget",
-        {"tenant_slug": TENANT, "brand_id": BRAND_A1, "memory_id": "mem-1", "scope": "brand"},
-    )
+    response = _call(app_harness, token, "solstice_memory_forget",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A1, "memory_id": "mem-1",
+                     "scope": "brand"})
     text = _tool_error_text(response)
     assert "not_found" in text
     assert "no such fact" not in text
@@ -854,23 +771,12 @@ def test_backend_404_maps_to_not_found(app_harness: AppHarness, mint_token):
 
 def test_backend_409_maps_to_conflict(app_harness: AppHarness, mint_token):
     app_harness.backend_opener.responses[("POST", "/api/internal/agent-memory/mem-1/supersede")] = (
-        409,
-        b'{"detail":"version mismatch"}',
+        409, b'{"detail":"version mismatch"}',
     )
     token = mint_token(sub=SHARED_SUB)
-    response = _call(
-        app_harness,
-        token,
-        "solstice_memory_replace",
-        {
-            "tenant_slug": TENANT,
-            "brand_id": BRAND_A1,
-            "memory_id": "mem-1",
-            "scope": "brand",
-            "fact_type": "decision",
-            "statement": "x",
-        },
-    )
+    response = _call(app_harness, token, "solstice_memory_replace",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A1, "memory_id": "mem-1",
+                     "scope": "brand", "fact_type": "decision", "statement": "x"})
     text = _tool_error_text(response)
     assert "conflict" in text
     assert "version mismatch" not in text
@@ -878,11 +784,11 @@ def test_backend_409_maps_to_conflict(app_harness: AppHarness, mint_token):
 
 def test_backend_401_maps_to_not_authorized(app_harness: AppHarness, mint_token):
     app_harness.backend_opener.responses[("GET", "/api/internal/agent-memory")] = (
-        401,
-        b'{"detail":"bad m2m token"}',
+        401, b'{"detail":"bad m2m token"}',
     )
     token = mint_token(sub=SHARED_SUB)
-    response = _call(app_harness, token, "solstice_memory_recall", {"tenant_slug": TENANT, "brand_id": BRAND_A1})
+    response = _call(app_harness, token, "solstice_memory_recall",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A1})
     text = _tool_error_text(response)
     assert "not_authorized" in text
     assert "bad m2m token" not in text
@@ -893,24 +799,16 @@ def test_backend_401_maps_to_not_authorized(app_harness: AppHarness, mint_token)
 # ---------------------------------------------------------------------------
 
 
-def test_audit_omits_statement_and_results(app_harness: AppHarness, mint_token, caplog: pytest.LogCaptureFixture):
+def test_audit_omits_statement_and_results(app_harness: AppHarness, mint_token,
+                                           caplog: pytest.LogCaptureFixture):
     caplog.set_level(logging.INFO, logger=AUDIT_LOGGER_NAME)
     _set_remember_response(app_harness.backend_opener)
     token = mint_token(sub=SHARED_SUB)
     statement_text = "RECALL_ME_AUDIT_NEEDLE"
-    response = _call(
-        app_harness,
-        token,
-        "solstice_memory_remember",
-        {
-            "tenant_slug": TENANT,
-            "brand_id": BRAND_A1,
-            "scope": "personal",
-            "fact_type": "preference",
-            "statement": statement_text,
-            "reason": "REASON_NEEDLE",
-        },
-    )
+    response = _call(app_harness, token, "solstice_memory_remember",
+                    {"tenant_slug": TENANT, "brand_id": BRAND_A1, "scope": "personal",
+                     "fact_type": "preference", "statement": statement_text,
+                     "reason": "REASON_NEEDLE"})
     payload = _ok(response)
     assert payload["memory_id"] == "mem-1"
     assert payload["scope"] == "personal"
@@ -918,7 +816,8 @@ def test_audit_omits_statement_and_results(app_harness: AppHarness, mint_token, 
     events = [
         json.loads(record.message)
         for record in caplog.records
-        if record.name == AUDIT_LOGGER_NAME and json.loads(record.message).get("event") == AUDIT_EVENT_NAME
+        if record.name == AUDIT_LOGGER_NAME
+        and json.loads(record.message).get("event") == AUDIT_EVENT_NAME
     ]
     memory_events = [e for e in events if e["tool"] == "solstice_memory_remember"]
     assert len(memory_events) == 1
@@ -930,19 +829,18 @@ def test_audit_omits_statement_and_results(app_harness: AppHarness, mint_token, 
     assert event["outcome"] == "success"
 
 
-def test_audit_records_denied_brand_write(app_harness: AppHarness, mint_token, caplog: pytest.LogCaptureFixture):
+def test_audit_records_denied_brand_write(app_harness: AppHarness, mint_token,
+                                          caplog: pytest.LogCaptureFixture):
     caplog.set_level(logging.INFO, logger=AUDIT_LOGGER_NAME)
     token = mint_token(sub=SHARED_SUB)  # MEMBER on BRAND_A2 -> brand write denied
-    _call(
-        app_harness,
-        token,
-        "solstice_memory_remember",
-        {"tenant_slug": TENANT, "brand_id": BRAND_A2, "scope": "brand", "fact_type": "convention", "statement": "x"},
-    )
+    _call(app_harness, token, "solstice_memory_remember",
+          {"tenant_slug": TENANT, "brand_id": BRAND_A2, "scope": "brand",
+           "fact_type": "convention", "statement": "x"})
     events = [
         json.loads(record.message)
         for record in caplog.records
-        if record.name == AUDIT_LOGGER_NAME and json.loads(record.message).get("event") == AUDIT_EVENT_NAME
+        if record.name == AUDIT_LOGGER_NAME
+        and json.loads(record.message).get("event") == AUDIT_EVENT_NAME
     ]
     event = [e for e in events if e["tool"] == "solstice_memory_remember"][-1]
     assert event["outcome"] == "denied"
@@ -1085,8 +983,7 @@ class _FakeAcquirer:
 def test_backend_client_redacts_5xx_body():
     opener = FakeBackendOpener()
     opener.responses[("GET", "/api/internal/agent-memory")] = (
-        500,
-        b'{"detail":"internal db creds leak"}',
+        500, b'{"detail":"internal db creds leak"}',
     )
     client = _direct_client(opener)
     from solstice_mcp.memory_client import ActorEnvelope
@@ -1102,12 +999,9 @@ def test_backend_client_maps_404_409_403_422():
     from solstice_mcp.memory_client import ActorEnvelope
 
     actor = ActorEnvelope(actor_sub="sub", tenant_slug="tenant_a", brand_id=BRAND_A1, user_id="u")
-    for status, exc_type in [
-        (404, MemoryClientNotFound),
-        (409, MemoryClientConflict),
-        (403, MemoryClientUnauthorized),
-        (422, MemoryClientInvalidArgument),
-    ]:
+    for status, exc_type in [(404, MemoryClientNotFound), (409, MemoryClientConflict),
+                             (403, MemoryClientUnauthorized),
+                             (422, MemoryClientInvalidArgument)]:
         opener = FakeBackendOpener()
         opener.responses[("POST", "/api/internal/agent-memory")] = (status, b'{"detail":"x"}')
         client = _direct_client(opener)

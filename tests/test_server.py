@@ -406,7 +406,9 @@ def test_tenant_database_factory_rejects_missing_env(tmp_path):
     import json
 
     config_path = tmp_path / "tenants.json"
-    config_path.write_text(json.dumps({"tenant_dev": {"db_name": "tenant_dev", "env": "development"}}))
+    config_path.write_text(
+        json.dumps({"tenant_dev": {"db_name": "tenant_dev", "env": "development"}})
+    )
     registry = TenantRegistry()
     registry.load(config_path)
 
