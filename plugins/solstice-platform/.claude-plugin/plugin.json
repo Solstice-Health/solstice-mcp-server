@@ -1,7 +1,7 @@
 {
   "name": "solstice-platform",
   "description": "Access Solstice workspaces, reviews, and documents, including append-only HTML and PDF versions.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "author": {
     "name": "Solstice Health",
     "email": "engineering@solsticehealth.co"
