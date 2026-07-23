@@ -14,6 +14,7 @@ from solstice_mcp.brands import list_brand_users
 from solstice_mcp.operations import (
     approve_operation_version,
     commit_operation_version,
+    create_edit_operation,
     create_operation,
     get_operation_html,
     get_operation_info,
@@ -233,6 +234,53 @@ def register_content_tools(
         )
 
     @append_only_tool
+    def solstice_create_edit_operation(
+        tenant_slug: str,
+        project_id: str,
+        name: str,
+        kind: str,
+        content_type: str | None = None,
+        folder_path: str = "",
+        file_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Create an EDIT operation: the user brings a finished document.
+
+        Use this — not solstice_create_operation — when the user supplies an
+        existing file to put into Solstice for review/editing ("here is my
+        HTML/PDF", "edit this"). ``kind`` is ``html`` (category EDIT_HTML) or
+        ``pdf`` (category EDIT_PDF). Append-only, gated at MEMBER on the
+        project's brand; the folder must already exist.
+
+        After creating, land the document via
+        solstice_prepare_operation_version -> upload -> solstice_commit_operation_version
+        (type = kind). The commit completes the upload contract automatically
+        (is_html_saved / approved_pdf_s3_key / status).
+
+        Conversation rules:
+        - ``content_type`` is REQUIRED (EMAIL, BANNER, SOCIAL...). If the user
+          did not state one, ASK — never guess.
+        - kind="pdf": the working PDF usually has a design source file
+          (InDesign, ZIP, PPTX, HTML). If the user did not supply one, ask
+          ONCE whether they have it; "I don't have it" is acceptable —
+          proceed without. Attach it via prepare/commit with type="source".
+        - kind="html": ask NOTHING beyond the file, name, and content type.
+        """
+        if not content_type or not content_type.strip():
+            raise ToolError("invalid_argument: content_type is required")
+        return create_edit_operation(
+            require_subject(),
+            tenant_slug,
+            project_id,
+            name,
+            kind,
+            content_type,
+            folder_path,
+            file_name,
+            registry=registry,
+            session_factory=session_factory,
+        )
+
+    @append_only_tool
     def solstice_prepare_operation_version(
         tenant_slug: str,
         operation_id: str,
@@ -245,7 +293,9 @@ def register_content_tools(
         if the operation has no document versions, else max+1). Upload the file
         bytes directly to upload_url, then call solstice_commit_operation_version
         with the returned s3_key. Gated at MEMBER on the operation's brand.
-        ``type`` is ``html`` or ``pdf``.
+        ``type`` is ``html``, ``pdf``, or ``source`` (design source file for
+        edit operations only — records a metadata pointer, not a version;
+        ``file_name`` is required for source uploads).
 
         ``file_name`` MUST be a bare filename only (e.g. ``"1022.html"``,
         ``"apretude_banner_v6.pdf"``). Never pass user instructions, descriptions,
@@ -280,7 +330,11 @@ def register_content_tools(
         one. The s3_key is validated against the prepared version. Intent is
         derived from your token (SOLSTICE_STAFF -> draft; MEMBER/ADMIN -> final)
         and is NOT accepted as an argument. Gated at MEMBER on the operation's
-        brand. ``type`` is ``html`` or ``pdf``.
+        brand. ``type`` is ``html``, ``pdf``, or ``source`` (design source file
+        for edit operations only — sets operation_metadata.sourcefile_s3_key
+        instead of inserting a version). For edit operations, html/pdf commits
+        also complete the upload contract (is_html_saved, approved_pdf_s3_key,
+        status) automatically.
 
         ``file_name`` MUST be a bare filename only (e.g. ``"1022.html"``,
         ``"apretude_banner_v6.pdf"``) and must match the value passed to

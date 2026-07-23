@@ -49,6 +49,13 @@ Use `solstice_operation_messages` for the chosen review. Summarize the returned 
 
 State when a link is time-limited. Never fetch a body merely to preview what the link contains.
 
+## Create vs edit: route by intent
+
+Every new asset is one of two request types. Pick by what the user is doing, confirm the choice back in plain words, and never silently pick:
+
+- **Create request** — the user wants Solstice to produce content ("make me an email", "generate a banner"). Use the create-an-asset workflow below (`solstice_create_operation`). Plain-language name: *"Create with Solstice AI"*.
+- **Edit request** — the user brings a finished file ("here is my HTML, put it in Solstice", "edit this PDF"). Use the create-an-edit-asset workflow (`solstice_create_edit_operation`), kind chosen by the file type. Plain-language names: *"Edit an existing HTML"* / *"Edit an existing PDF"*.
+
 ## Create an asset in a folder
 
 An asset is an operation that appears as a file (a leaf) in a project's folder tree. Only start this workflow when the user explicitly asks to create a new asset/file and names the target project (and folder).
@@ -60,6 +67,17 @@ An asset is an operation that appears as a file (a leaf) in a project's folder t
 5. To give the new asset a first document, run the add-a-document-version workflow below with the returned `operation_id`; the prepared version will be v1.
 
 The owner is derived from your token; never pass a user ID or role. This write is append-only: it adds a new asset and one folder-tree entry and never overwrites anything.
+
+## Create an edit asset (user brings a finished document)
+
+Use when the user supplies an existing HTML or PDF to put into Solstice for review/edits. Same placement rules as the create workflow (project, folder must exist, `content_type` required — ask if not stated).
+
+1. Pick `kind` from the file: `html` → EDIT_HTML, `pdf` → EDIT_PDF. Confirm in plain words ("Edit an existing HTML/PDF").
+2. `kind="pdf"` only: the working PDF usually has a design source file (InDesign package, ZIP, PPTX, or HTML). If the user did not provide one, ask ONCE whether they have it. "I don't have it" is fine — proceed without. Do NOT ask this for `kind="html"`; ask nothing beyond file, name, content type.
+3. Call `solstice_create_edit_operation` with `tenant_slug`, `project_id`, `name`, `kind`, `content_type`, optional `folder_path`. Retain `operation_id`.
+4. Land the document: prepare → upload → commit with `type` = the kind. The commit completes the upload contract automatically (`is_html_saved`, `approved_pdf_s3_key`, `status`).
+5. If a source file was supplied: prepare → upload → commit again with `type="source"` and the source's bare `file_name`. This records the design source pointer; it is not a version.
+6. Report the committed version, server-derived intent, and (for pdf) whether a source file was attached.
 
 ## Add a document version
 

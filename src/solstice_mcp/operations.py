@@ -107,6 +107,10 @@ class CgOperation(Base):
     # only (backend ORM), so an MCP insert that omits it stores NULL and the
     # row is filtered out (NULL == FALSE is NULL in SQL). Always set it.
     is_chat_history_deleted: Mapped[bool | None] = mapped_column(nullable=True)
+    # Set by the category-aware commit finishing writes: the backend flags
+    # uploaded/edited documents with is_html_saved=True so file-browser
+    # queries (get_html_cg_operation_files_of_brand) include them.
+    is_html_saved: Mapped[bool | None] = mapped_column(nullable=True)
     operation_metadata: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     version_number: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -305,6 +309,7 @@ def create_operation(
     chat_title: str | None = None,
     file_name: str | None = None,
     *,
+    operation_category: str = "SOLSTICE_GENERATED",
     registry: TenantRegistry,
     session_factory: SessionFactory,
 ) -> dict[str, Any]:
@@ -315,6 +320,10 @@ def create_operation(
     ``folder_path`` (root by default). Mirrors the Backend-Server
     ``ProjectService.add_operation_to_project`` leaf shape so the operation
     appears in the UI file tree.
+
+    ``operation_category`` is keyword-only and never caller-supplied at the
+    tool boundary: the create tool always passes SOLSTICE_GENERATED and the
+    edit tool maps its ``kind`` to EDIT_HTML / EDIT_PDF.
 
     Authorization is gated at MEMBER on the project's brand (resolved from the
     project row, never a caller argument). ``user_id`` on the new row is the
@@ -361,17 +370,17 @@ def create_operation(
             prompt="",
             filtered_clinical_claims_picker=[],
             page=1,
-                status="EDITING",
-                chat_title=chat_title or name,
-                file_name=file_name or name,
-                content_type=content_type,
-                # Mirrors the Backend-Server generate flow. NULL would hide the
-                # operation from category-filtered dashboards and the FE router
-                # (parse-operation getOperationCategory returns null).
-                operation_category="SOLSTICE_GENERATED",
-                # Visibility filters also require this to be FALSE, not NULL —
-                # the backend default is ORM-side only and does not apply here.
-                is_chat_history_deleted=False,
+            status="EDITING",
+            chat_title=chat_title or name,
+            file_name=file_name or name,
+            content_type=content_type,
+            # NULL here would hide the operation from category-filtered
+            # dashboards and the FE router (parse-operation
+            # getOperationCategory returns null for unknown values).
+            operation_category=operation_category,
+            # Visibility filters also require this to be FALSE, not NULL —
+            # the backend default is ORM-side only and does not apply here.
+            is_chat_history_deleted=False,
             operation_metadata={},
             version_number=1,
             created_at=now,
@@ -398,8 +407,52 @@ def create_operation(
         "folder_path": folder_path,
         "name": name,
         "status": "EDITING",
+        "operation_category": operation_category,
         "version_number": 1,
     }
+
+
+_EDIT_KIND_TO_CATEGORY = {"html": "EDIT_HTML", "pdf": "EDIT_PDF"}
+
+
+def create_edit_operation(
+    subject: str,
+    tenant_slug: str,
+    project_id: str,
+    name: str,
+    kind: str,
+    content_type: str,
+    folder_path: str = "",
+    file_name: str | None = None,
+    *,
+    registry: TenantRegistry,
+    session_factory: SessionFactory,
+) -> dict[str, Any]:
+    """Create an *edit request* operation (user brings a finished document).
+
+    Identical write shape to ``create_operation`` except the category is
+    EDIT_HTML / EDIT_PDF (mapped from ``kind``, never caller-supplied
+    directly). The document itself lands afterwards via
+    ``prepare_operation_version`` + ``commit_operation_version``, whose
+    category-aware finishing writes complete the backend upload contract
+    (``is_html_saved``, ``approved_pdf_s3_key``, ``status``).
+    """
+    category = _EDIT_KIND_TO_CATEGORY.get(kind)
+    if category is None:
+        raise ToolError("invalid_argument: kind must be 'html' or 'pdf'")
+    return create_operation(
+        subject,
+        tenant_slug,
+        project_id,
+        name,
+        folder_path,
+        content_type,
+        None,
+        file_name,
+        operation_category=category,
+        registry=registry,
+        session_factory=session_factory,
+    )
 
 
 def list_operations_for_brand(
@@ -810,11 +863,18 @@ def _sanitize_file_name(file_name: str | None) -> str:
 
 
 _VERSION_KINDS = ("html", "pdf")
+# "source" is not a version: it uploads the design source file (InDesign,
+# ZIP, PPTX, HTML...) alongside an edit operation's working document. It
+# shares the prepare/commit tool pair but writes a metadata pointer
+# (operation_metadata.sourcefile_s3_key) instead of message rows.
+_UPLOAD_KINDS = (*_VERSION_KINDS, "source")
+# Categories whose operations may carry a design source file.
+_EDIT_CATEGORIES = ("EDIT_HTML", "EDIT_PDF")
 
 
-def _require_version_kind(kind: str) -> None:
-    if kind not in _VERSION_KINDS:
-        raise ToolError(f"invalid_arguments: type must be one of {', '.join(_VERSION_KINDS)}")
+def _require_upload_kind(kind: str) -> None:
+    if kind not in _UPLOAD_KINDS:
+        raise ToolError(f"invalid_arguments: type must be one of {', '.join(_UPLOAD_KINDS)}")
 
 
 def _version_s3_key(
@@ -854,8 +914,28 @@ def _validate_version_key(
     raise ToolError(f"invalid_key: unsupported type {kind!r}")
 
 
+def _validate_source_key(s3_key: str, operation_id: str) -> None:
+    """Validate a client-supplied s3_key for a source-file upload.
+
+    The key must sit directly under ``sourcefiles/{operation_id}/`` — no
+    nesting, no other operation, no arbitrary prefix."""
+    prefix = f"sourcefiles/{operation_id}/"
+    if not s3_key.startswith(prefix):
+        raise ToolError("invalid_key: key does not match the prepared source upload")
+    remainder = s3_key[len(prefix) :]
+    if not remainder or "/" in remainder:
+        raise ToolError("invalid_key: malformed source file name segment")
+
+
 def _doc_message_metadata(
-    *, version: int, intent: str, s3_key: str, message_id: str, now: datetime, file_name: str | None
+    *,
+    kind: str,
+    version: int,
+    intent: str,
+    s3_key: str,
+    message_id: str,
+    now: datetime,
+    file_name: str | None,
 ) -> dict[str, Any]:
     """Mirror the Backend-Server bot document-message metadata shape so the
     frontend renders an MCP-created version identically to a UI-created one.
@@ -865,8 +945,12 @@ def _doc_message_metadata(
     blob, not the DB ``type`` column, and drops any document row that isn't
     ``type == "bot"``. Without it an MCP-created version is invisible in the UI.
     ``htmlDocumentLastVersion`` mirrors BE (build_final_document_bot_metadata):
-    the *previous* version number, i.e. version - 1."""
-    return {
+    the *previous* version number, i.e. version - 1.
+
+    PDF versions additionally carry ``approved_pdf_s3_key`` — the FE version
+    history and Apryse viewer resolve each PDF version from the message
+    metadata (use-editorial-version-history.ts), not the DB content column."""
+    metadata = {
         "id": message_id,
         "timestamp": now.isoformat(),
         "type": "bot",
@@ -879,6 +963,9 @@ def _doc_message_metadata(
         "finalContent": "",
         "fileName": file_name,
     }
+    if kind == "pdf":
+        metadata["approved_pdf_s3_key"] = s3_key
+    return metadata
 
 
 def prepare_operation_version(
@@ -901,8 +988,14 @@ def prepare_operation_version(
     row. Authorization is gated at MEMBER on the operation's brand (resolved
     from the row). No version row is created here; the version number is
     recomputed at commit under an operation-row lock.
+
+    ``kind="source"`` prepares a design source-file upload instead of a
+    document version: the key targets ``sourcefiles/{operation_id}/`` and the
+    commit step records ``operation_metadata.sourcefile_s3_key`` rather than
+    inserting version rows. Only edit operations (EDIT_HTML / EDIT_PDF) may
+    carry a source file.
     """
-    _require_version_kind(kind)
+    _require_upload_kind(kind)
     with tenant_session(tenant_slug, session_factory) as session:
         op = session.scalar(
             select(CgOperation).where(
@@ -912,6 +1005,7 @@ def prepare_operation_version(
         if op is None:
             raise ToolError("not_authorized: unknown operation")
         brand_id = op.brand_id
+        operation_category = op.operation_category
     require_brand_role(
         subject, tenant_slug, brand_id,
         min_role=UserRole.MEMBER,
@@ -921,6 +1015,27 @@ def prepare_operation_version(
     bucket = tenant_config.s3_bucket if tenant_config is not None else ""
     if not bucket:
         raise ToolError("not_configured: tenant has no s3_bucket")
+    if kind == "source":
+        # Fail fast at prepare so the caller does not upload bytes it can
+        # never commit. Same rule is re-checked at commit under the lock.
+        if operation_category not in _EDIT_CATEGORIES:
+            raise ToolError(
+                "invalid_state: source files attach to edit operations (EDIT_HTML/EDIT_PDF) only"
+            )
+        safe_name = _sanitize_file_name(file_name)
+        if not safe_name:
+            raise ToolError("invalid_arguments: file_name is required for source uploads")
+        key = f"sourcefiles/{operation_id}/{safe_name}"
+        upload_url = s3.presign_put(bucket, key, presign_expiry, "application/octet-stream")
+        return {
+            "operation_id": operation_id,
+            "type": kind,
+            "version_number": None,
+            "message_id": None,
+            "s3_key": key,
+            "upload_url": upload_url,
+            "expires_in": presign_expiry,
+        }
     with tenant_session(tenant_slug, session_factory) as session:
         max_v = session.scalar(
             select(func.max(CgOperationMessage.version_number)).where(
@@ -968,8 +1083,19 @@ def commit_operation_version(
     SOLSTICE_STAFF -> ``draft``; MEMBER / ADMIN -> ``final``. There is no
     ``intent`` argument — the filter is derived from the token, mirroring the
     read-side rule.
+
+    ``kind="source"`` commits a design source-file upload instead: it sets
+    ``operation_metadata.sourcefile_s3_key`` on the operation row and inserts
+    no message rows. Restricted to edit operations (EDIT_HTML / EDIT_PDF).
+
+    Category-aware finishing writes (mirroring the Backend-Server upload
+    contract) run for edit operations after the version rows are inserted:
+    - EDIT_HTML + html: ``is_html_saved=True``.
+    - EDIT_PDF + pdf: ``operation_metadata.approved_pdf_s3_key`` always;
+      ``status="COMPLETED"`` + ``is_html_saved=True`` only when the derived
+      intent is ``final`` (the backend's as_draft path skips the status flip).
     """
-    _require_version_kind(kind)
+    _require_upload_kind(kind)
     with tenant_session(tenant_slug, session_factory) as session:
         op = session.scalar(
             select(CgOperation).where(
@@ -989,6 +1115,39 @@ def commit_operation_version(
     bucket = tenant_config.s3_bucket if tenant_config is not None else ""
     if not bucket:
         raise ToolError("not_configured: tenant has no s3_bucket")
+    if kind == "source":
+        _validate_source_key(s3_key, operation_id)
+        size = s3.head(bucket, s3_key)
+        if size is None:
+            raise ToolError("not_found: object not uploaded - PUT to the upload_url first")
+        with tenant_session(tenant_slug, session_factory) as session:
+            locked = session.scalar(
+                select(CgOperation).where(
+                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
+                ).with_for_update()
+            )
+            if locked is None:
+                raise ToolError("not_authorized: unknown operation")
+            if locked.operation_category not in _EDIT_CATEGORIES:
+                raise ToolError(
+                    "invalid_state: source files attach to edit operations (EDIT_HTML/EDIT_PDF) only"
+                )
+            metadata = dict(locked.operation_metadata) if isinstance(
+                locked.operation_metadata, dict
+            ) else {}
+            metadata["sourcefile_s3_key"] = s3_key
+            # Reassign so SQLAlchemy tracks the JSON change (in-place mutation
+            # is not tracked). Mirrors update_operation / create_operation.
+            locked.operation_metadata = metadata
+            locked.updated_at = datetime.now(UTC)
+            session.commit()
+        return {
+            "operation_id": operation_id,
+            "type": kind,
+            "s3_key": s3_key,
+            "sourcefile_s3_key": s3_key,
+            "size": size,
+        }
     with tenant_session(tenant_slug, session_factory) as session:
         locked = session.scalar(
             select(CgOperation).where(
@@ -1049,7 +1208,7 @@ def commit_operation_version(
             intent=intent,
             position=base_pos + 1,
             message_metadata=_doc_message_metadata(
-                version=next_v, intent=intent, s3_key=s3_key,
+                kind=kind, version=next_v, intent=intent, s3_key=s3_key,
                 message_id=message_id, now=now, file_name=file_name,
             ),
             created_at=now,
@@ -1057,6 +1216,28 @@ def commit_operation_version(
         )
         session.add(pill)
         session.add(doc)
+        # Category-aware finishing writes: complete the Backend-Server upload
+        # contract for edit operations so the FE renders them exactly like a
+        # UI upload (content_gen_sqlalchemy.py upload flows).
+        if locked.operation_category == "EDIT_HTML" and kind == "html":
+            # Backend bootstrap sets this at create; MCP sets it when the
+            # document actually lands. Flags the op for HTML file-browser
+            # queries (is_html_saved filter).
+            locked.is_html_saved = True
+            locked.updated_at = now
+        elif locked.operation_category == "EDIT_PDF" and kind == "pdf":
+            # Pointer is always written (backend sets it before the as_draft
+            # branch); the status flip is final-intent only, mirroring
+            # admin_approve_cg_operation_with_pdf_only's as_draft behavior.
+            metadata = dict(locked.operation_metadata) if isinstance(
+                locked.operation_metadata, dict
+            ) else {}
+            metadata["approved_pdf_s3_key"] = s3_key
+            locked.operation_metadata = metadata
+            if intent == "final":
+                locked.status = "COMPLETED"
+                locked.is_html_saved = True
+            locked.updated_at = now
         session.commit()
     return {
         "operation_id": operation_id,
@@ -1075,6 +1256,7 @@ __all__ = [
     "Project",
     "approve_operation_version",
     "commit_operation_version",
+    "create_edit_operation",
     "create_operation",
     "get_operation_html",
     "get_operation_info",
