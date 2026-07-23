@@ -34,8 +34,14 @@ def register_brand_context_tools(
     session_factory: SessionFactory,
     s3: S3Reader,
     presign_expiry: int,
+    record_activity: Callable[..., Any] | None = None,
 ) -> None:
-    read_only_tool = audited_tool(mcp, require_access_token, annotations=READ_ONLY)
+    read_only_tool = audited_tool(
+        mcp,
+        require_access_token,
+        annotations=READ_ONLY,
+        record_activity=record_activity,
+    )
 
     @read_only_tool
     def solstice_brand_rules(tenant_slug: str, brand_id: str) -> dict[str, Any]:

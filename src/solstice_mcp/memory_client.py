@@ -2,9 +2,9 @@
 
 The MCP server stays stateless: it validates the end-user OAuth subject,
 rechecks tenant/brand membership via ``require_brand_role``, then calls the
-Backend-Server internal memory routes with an RS256 Auth0 client-credentials
-bearer and a server-derived actor envelope. The MCP never touches the
-tenant Postgres store; Backend is the sole trust root for memory writes.
+Backend-Server internal memory, activity, and recent-work routes with an RS256
+Auth0 client-credentials bearer. The MCP never touches the tenant Postgres
+store; Backend is the sole trust root.
 
 The actor fields in the request query/body are revalidated against the
 tenant DB; they never grant access on their own. Caller-supplied roles are
@@ -196,7 +196,12 @@ class BackendMemoryClient:
             params["q"] = q
         if limit is not None:
             params["limit"] = str(limit)
-        return self._request("GET", "/api/internal/agent-memory", actor=actor, params=params)
+        return self._request(
+            "GET",
+            "/api/internal/agent-memory",
+            tenant_slug=actor.tenant_slug,
+            params=params,
+        )
 
     def remember(
         self,
@@ -220,7 +225,12 @@ class BackendMemoryClient:
             expires_at=expires_at,
             reason=reason,
         )
-        return self._request("POST", "/api/internal/agent-memory", actor=actor, json_body=body)
+        return self._request(
+            "POST",
+            "/api/internal/agent-memory",
+            tenant_slug=actor.tenant_slug,
+            json_body=body,
+        )
 
     def replace(
         self,
@@ -248,7 +258,7 @@ class BackendMemoryClient:
         return self._request(
             "POST",
             f"/api/internal/agent-memory/{memory_id}/supersede",
-            actor=actor,
+            tenant_slug=actor.tenant_slug,
             json_body=body,
         )
 
@@ -271,8 +281,69 @@ class BackendMemoryClient:
         return self._request(
             "POST",
             f"/api/internal/agent-memory/{memory_id}/forget",
-            actor=actor,
+            tenant_slug=actor.tenant_slug,
             json_body=body,
+        )
+
+    def record_activity(
+        self,
+        *,
+        actor_sub: str,
+        tenant_slug: str,
+        tool_name: str,
+        outcome: str,
+        occurred_at: str,
+        idempotency_key: str,
+        brand_id: str | None = None,
+        project_id: str | None = None,
+        operation_id: str | None = None,
+        message_id: str | None = None,
+        host_correlation_id: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "actor_sub": actor_sub,
+            "tenant_slug": tenant_slug,
+            "tool_name": tool_name,
+            "outcome": outcome,
+            "occurred_at": occurred_at,
+            "idempotency_key": idempotency_key,
+        }
+        for name, value in (
+            ("brand_id", brand_id),
+            ("project_id", project_id),
+            ("operation_id", operation_id),
+            ("message_id", message_id),
+            ("host_correlation_id", host_correlation_id),
+        ):
+            if value is not None:
+                body[name] = value
+        return self._request(
+            "POST",
+            "/api/internal/agent-memory/activity",
+            tenant_slug=tenant_slug,
+            json_body=body,
+        )
+
+    def list_recent_work(
+        self,
+        *,
+        actor_sub: str,
+        tenant_slug: str,
+        brand_id: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        params = {
+            "actor_sub": actor_sub,
+            "tenant_slug": tenant_slug,
+            "limit": str(limit),
+        }
+        if brand_id is not None:
+            params["brand_id"] = brand_id
+        return self._request(
+            "GET",
+            "/api/internal/agent-memory/recent-work",
+            tenant_slug=tenant_slug,
+            params=params,
         )
 
     def _request(
@@ -280,7 +351,7 @@ class BackendMemoryClient:
         method: str,
         path: str,
         *,
-        actor: ActorEnvelope,
+        tenant_slug: str,
         params: dict[str, str] | None = None,
         json_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -293,7 +364,7 @@ class BackendMemoryClient:
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
             # TenantMiddleware requires this on every Backend API request.
-            "X-Tenant-Slug": actor.tenant_slug,
+            "X-Tenant-Slug": tenant_slug,
         }
         data: bytes | None = None
         if json_body is not None:

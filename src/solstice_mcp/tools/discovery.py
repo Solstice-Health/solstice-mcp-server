@@ -42,8 +42,14 @@ def register_discovery_tools(
     membership_cache: TenantMembershipCache,
     access_gate: SolsticeAccessGate,
     sibling_registry: SiblingMCPRegistry,
+    record_activity: Callable[..., Any] | None = None,
 ) -> None:
-    read_only_tool = audited_tool(mcp, require_access_token, annotations=READ_ONLY)
+    read_only_tool = audited_tool(
+        mcp,
+        require_access_token,
+        annotations=READ_ONLY,
+        record_activity=record_activity,
+    )
 
     def _resolve_email(token: Any) -> str | None:
         """Email for the sibling-MCP gate: token claim, else tenant DB.
@@ -118,6 +124,7 @@ def register_discovery_tools(
                 "solstice_create_operation",
                 "solstice_prepare_operation_version",
                 "solstice_commit_operation_version",
+                "solstice_list_recent_work",
             ],
         }
 

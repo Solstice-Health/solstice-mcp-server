@@ -39,6 +39,13 @@ AUDIT_RESOURCE_FIELDS = {
     "memory_id",
     "scope",
 }
+ACTIVITY_RESOURCE_FIELDS = (
+    "tenant_slug",
+    "brand_id",
+    "project_id",
+    "operation_id",
+    "message_id",
+)
 
 logger = logging.getLogger(AUDIT_LOGGER_NAME)
 
@@ -57,8 +64,13 @@ def audited_tool(
     require_access_token: Callable[[], Any],
     *,
     annotations: ToolAnnotations,
+    record_activity: Callable[..., Any] | None = None,
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
-    """Register a tool that emits one payload-free audit event per invocation."""
+    """Register a tool that emits audit and bounded activity events.
+
+    Activity ingestion is best-effort: personalization telemetry may lag, but
+    the completed or failed platform action remains authoritative.
+    """
 
     def register(function: Callable[P, R]) -> Callable[P, R]:
         signature = inspect.signature(function)
@@ -83,6 +95,47 @@ def audited_tool(
                 "resources": resources,
             }
 
+            async def emit_activity(outcome: str, result: Any = None) -> None:
+                if record_activity is None or function.__name__.startswith("solstice_memory_"):
+                    return
+                activity_resources: dict[str, str] = {}
+                for source in (bound.arguments, result if isinstance(result, dict) else {}):
+                    activity_resources.update(
+                        {
+                            name: value
+                            for name in ACTIVITY_RESOURCE_FIELDS
+                            if isinstance((value := source.get(name)), str) and value
+                        }
+                    )
+                tenant_slug = activity_resources.pop("tenant_slug", None)
+                if tenant_slug is None:
+                    return
+                try:
+                    await anyio.to_thread.run_sync(
+                        partial(
+                            record_activity,
+                            actor_sub=token.subject,
+                            tenant_slug=tenant_slug,
+                            tool_name=function.__name__,
+                            outcome=outcome,
+                            occurred_at=event["timestamp"],
+                            idempotency_key=event["event_id"],
+                            **activity_resources,
+                        )
+                    )
+                except Exception as activity_exc:
+                    logger.warning(
+                        json.dumps(
+                            {
+                                "event_id": event["event_id"],
+                                "tool": function.__name__,
+                                "error_type": type(activity_exc).__name__,
+                            },
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        )
+                    )
+
             try:
                 # Tool bodies do blocking I/O (SQLAlchemy, boto3). The MCP SDK
                 # calls sync tools inline on the event loop, so offload to a
@@ -99,6 +152,7 @@ def audited_tool(
                     duration_ms=round((time.monotonic() - started_at) * 1000, 3),
                 )
                 logger.info(json.dumps(event, separators=(",", ":"), sort_keys=True))
+                await emit_activity(event["outcome"])
                 raise
 
             event.update(
@@ -106,6 +160,7 @@ def audited_tool(
                 duration_ms=round((time.monotonic() - started_at) * 1000, 3),
             )
             logger.info(json.dumps(event, separators=(",", ":"), sort_keys=True))
+            await emit_activity(event["outcome"], result)
             return result
 
         return mcp.tool(annotations=annotations)(audited)

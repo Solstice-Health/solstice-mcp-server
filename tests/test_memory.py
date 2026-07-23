@@ -101,13 +101,21 @@ def _set_forget_response(opener) -> None:
 def test_memory_tools_listed_with_correct_annotations(app_harness: AppHarness, mint_token):
     tools = rpc(app_harness, "tools/list", token=mint_token()).json()["result"]["tools"]
     by_name = {tool["name"]: tool for tool in tools}
-    for name in ("solstice_memory_recall", "solstice_memory_remember",
-                 "solstice_memory_replace", "solstice_memory_forget"):
+    for name in (
+        "solstice_memory_recall",
+        "solstice_list_recent_work",
+        "solstice_memory_remember",
+        "solstice_memory_replace",
+        "solstice_memory_forget",
+    ):
         assert name in by_name
     assert by_name["solstice_memory_recall"]["annotations"] == {
         "readOnlyHint": True, "destructiveHint": False,
         "idempotentHint": True, "openWorldHint": False,
     }
+    assert by_name["solstice_list_recent_work"]["annotations"] == by_name[
+        "solstice_memory_recall"
+    ]["annotations"]
     for name in ("solstice_memory_remember", "solstice_memory_replace", "solstice_memory_forget"):
         assert by_name[name]["annotations"] == {
             "readOnlyHint": False, "destructiveHint": False,
@@ -408,6 +416,41 @@ def test_recall_entity_id_filter_is_passed_through(app_harness: AppHarness, mint
           {"tenant_slug": TENANT, "brand_id": BRAND_A1, "entity_id": "op-123"})
     call = app_harness.backend_opener.calls[-1]
     assert "entity_id=op-123" in call["url"]
+
+
+def test_recent_work_tool_returns_backend_items(app_harness: AppHarness, mint_token):
+    items = [
+        {
+            "brand_id": BRAND_A1,
+            "entity_type": "operation",
+            "entity_id": "op-7",
+            "last_opened_at": "2026-07-23T12:00:00+00:00",
+        }
+    ]
+    app_harness.backend_opener.responses[
+        ("GET", "/api/internal/agent-memory/recent-work")
+    ] = (200, json.dumps({"items": items}).encode())
+
+    payload = _ok(
+        _call(
+            app_harness,
+            mint_token(sub=SHARED_SUB),
+            "solstice_list_recent_work",
+            {"tenant_slug": TENANT, "brand_id": BRAND_A1, "limit": 7},
+        )
+    )
+
+    assert payload == {"tenant_slug": TENANT, "items": items}
+    call = next(
+        call
+        for call in app_harness.backend_opener.calls
+        if call["path"] == "/api/internal/agent-memory/recent-work"
+    )
+    assert call["method"] == "GET"
+    assert f"actor_sub={urllib.parse.quote(SHARED_SUB, safe='')}" in call["url"]
+    assert f"tenant_slug={TENANT}" in call["url"]
+    assert f"brand_id={BRAND_A1}" in call["url"]
+    assert "limit=7" in call["url"]
 
 
 def test_invalid_fact_type_rejected_before_backend(app_harness: AppHarness, mint_token):
@@ -785,6 +828,82 @@ def test_backend_client_remember_emits_exact_body_and_headers():
         "reason": "user confirmed",
         "actor_sub": "sub-1",
         "tenant_slug": "tenant_a",
+    }
+
+
+def test_backend_client_activity_emits_exact_body_and_headers():
+    opener = FakeBackendOpener()
+    opener.responses[("POST", "/api/internal/agent-memory/activity")] = (
+        200,
+        b'{"id":"event-1"}',
+    )
+    client = _direct_client(opener)
+
+    client.record_activity(
+        actor_sub="sub-1",
+        tenant_slug="tenant_a",
+        brand_id=BRAND_A1,
+        tool_name="solstice_operation_info",
+        outcome="success",
+        project_id="project-1",
+        operation_id="operation-1",
+        message_id="message-1",
+        occurred_at="2026-07-23T12:00:00+00:00",
+        host_correlation_id="host-1",
+        idempotency_key="event-1",
+    )
+
+    call = opener.calls[-1]
+    assert call["method"] == "POST"
+    assert call["path"] == "/api/internal/agent-memory/activity"
+    assert _headers(call) == {
+        "authorization": "Bearer m2m-bearer",
+        "accept": "application/json",
+        "x-tenant-slug": "tenant_a",
+        "content-type": "application/json",
+    }
+    assert json.loads(call["body"]) == {
+        "actor_sub": "sub-1",
+        "tenant_slug": "tenant_a",
+        "brand_id": BRAND_A1,
+        "tool_name": "solstice_operation_info",
+        "outcome": "success",
+        "project_id": "project-1",
+        "operation_id": "operation-1",
+        "message_id": "message-1",
+        "occurred_at": "2026-07-23T12:00:00+00:00",
+        "host_correlation_id": "host-1",
+        "idempotency_key": "event-1",
+    }
+
+
+def test_backend_client_recent_work_emits_exact_query_and_headers():
+    opener = FakeBackendOpener()
+    opener.responses[("GET", "/api/internal/agent-memory/recent-work")] = (
+        200,
+        b'{"items":[]}',
+    )
+    client = _direct_client(opener)
+
+    assert client.list_recent_work(
+        actor_sub="auth0|sub",
+        tenant_slug="tenant_a",
+        brand_id=BRAND_A1,
+        limit=20,
+    ) == {"items": []}
+
+    call = opener.calls[-1]
+    assert call["method"] == "GET"
+    assert call["path"] == "/api/internal/agent-memory/recent-work"
+    assert "actor_sub=auth0%7Csub" in call["url"]
+    assert "tenant_slug=tenant_a" in call["url"]
+    assert f"brand_id={BRAND_A1}" in call["url"]
+    assert "limit=20" in call["url"]
+    assert call["body"] is None
+    assert _headers(call) == {
+        "authorization": "Bearer m2m-bearer",
+        "accept": "application/json",
+        "x-tenant-slug": "tenant_a",
     }
 
 

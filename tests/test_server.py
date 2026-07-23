@@ -154,6 +154,7 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
         "solstice_list_requests",
         "solstice_dismiss_request",
         "solstice_memory_recall",
+        "solstice_list_recent_work",
         "solstice_memory_remember",
         "solstice_memory_replace",
         "solstice_memory_forget",

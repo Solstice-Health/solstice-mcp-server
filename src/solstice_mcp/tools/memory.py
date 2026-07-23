@@ -1,4 +1,4 @@
-"""Register the four audited Solstice memory tools.
+"""Register explicit memory tools and read-only recent work.
 
 The MCP server stays stateless. Each tool:
 
@@ -16,6 +16,9 @@ require ``MEMBER``.
 Audit events carry selectors and IDs only (``tenant_slug``, ``brand_id``,
 ``memory_id``, ``scope``). Statements, source/entity refs, query text, and
 returned memory never enter audit logs.
+
+Bounded platform activity is observed automatically for recent work. Semantic
+remember, replace, and forget remain explicit and never infer conversation.
 """
 
 from __future__ import annotations
@@ -145,9 +148,20 @@ def register_memory_tools(
     registry: TenantRegistry,
     session_factory: SessionFactory,
     backend: BackendMemoryClient,
+    record_activity: Callable[..., Any] | None = None,
 ) -> None:
-    read_only_tool = audited_tool(mcp, require_access_token, annotations=READ_ONLY)
-    write_tool = audited_tool(mcp, require_access_token, annotations=EXPLICIT_WRITE)
+    read_only_tool = audited_tool(
+        mcp,
+        require_access_token,
+        annotations=READ_ONLY,
+        record_activity=record_activity,
+    )
+    write_tool = audited_tool(
+        mcp,
+        require_access_token,
+        annotations=EXPLICIT_WRITE,
+        record_activity=record_activity,
+    )
 
     @read_only_tool
     def solstice_memory_recall(
@@ -195,6 +209,29 @@ def register_memory_tools(
         except MemoryClientError as exc:
             raise _map_backend_error(exc, scope="recall") from exc
         return {"status": "ok", "tenant_slug": tenant_slug, "brand_id": brand_id, **result}
+
+    @read_only_tool
+    def solstice_list_recent_work(
+        tenant_slug: str,
+        brand_id: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """List the signed-in user's recently opened projects and operations.
+
+        Read-only. Backend re-resolves the OAuth subject and returns only
+        entities covered by active brand memberships. ``brand_id`` optionally
+        narrows the result; ``limit`` defaults to 20.
+        """
+        try:
+            result = backend.list_recent_work(
+                actor_sub=require_subject(),
+                tenant_slug=tenant_slug,
+                brand_id=brand_id,
+                limit=limit,
+            )
+        except MemoryClientError as exc:
+            raise _map_backend_error(exc, scope="recent work") from exc
+        return {"tenant_slug": tenant_slug, "items": result.get("items", [])}
 
     @write_tool
     def solstice_memory_remember(

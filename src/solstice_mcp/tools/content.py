@@ -62,10 +62,23 @@ def register_content_tools(
     s3: S3Reader,
     presign_expiry: int,
     max_inline_bytes: int,
+    record_activity: Callable[..., Any] | None = None,
 ) -> None:
-    read_only_tool = audited_tool(mcp, require_access_token, annotations=READ_ONLY)
-    append_only_tool = audited_tool(mcp, require_access_token, annotations=APPEND_ONLY_WRITE)
-    update_tool = audited_tool(mcp, require_access_token, annotations=UPDATE_IN_PLACE)
+    read_only_tool = audited_tool(
+        mcp, require_access_token, annotations=READ_ONLY, record_activity=record_activity
+    )
+    append_only_tool = audited_tool(
+        mcp,
+        require_access_token,
+        annotations=APPEND_ONLY_WRITE,
+        record_activity=record_activity,
+    )
+    update_tool = audited_tool(
+        mcp,
+        require_access_token,
+        annotations=UPDATE_IN_PLACE,
+        record_activity=record_activity,
+    )
 
     @read_only_tool
     def solstice_list_projects(tenant_slug: str, brand_id: str) -> dict[str, Any]:

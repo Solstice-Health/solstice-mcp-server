@@ -35,9 +35,17 @@ def register_request_tools(
     require_access_token: Callable[[], Any],
     registry: TenantRegistry,
     session_factory: SessionFactory,
+    record_activity: Callable[..., Any] | None = None,
 ) -> None:
-    read_only_tool = audited_tool(mcp, require_access_token, annotations=READ_ONLY)
-    update_tool = audited_tool(mcp, require_access_token, annotations=UPDATE_IN_PLACE)
+    read_only_tool = audited_tool(
+        mcp, require_access_token, annotations=READ_ONLY, record_activity=record_activity
+    )
+    update_tool = audited_tool(
+        mcp,
+        require_access_token,
+        annotations=UPDATE_IN_PLACE,
+        record_activity=record_activity,
+    )
 
     @read_only_tool
     def solstice_list_requests(
