@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 PLUGIN = ROOT / "plugins" / "solstice-platform"
 PLUGIN_NAME = "solstice-platform"
-PLUGIN_VERSION = "0.3.4"
+PLUGIN_VERSION = "0.3.5"
 PRODUCTION_URL = "https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
 PRODUCTION_AUDIENCE = PRODUCTION_URL
 CURSOR_CLIENT_ID = "uoOiEXHZxyDBkkBEfnOQEp6IhqcnAgTP"
@@ -66,7 +66,8 @@ def test_mcp_configs_share_the_production_auth_contract() -> None:
     codex = load_json(PLUGIN / "codex.mcp.json")["mcp_servers"][PLUGIN_NAME]
 
     assert cursor["url"] == claude["url"] == codex["url"] == PRODUCTION_URL == PRODUCTION_AUDIENCE
-    assert set(cursor["auth"]["scopes"]) == set(claude["oauth"]["scopes"].split()) == set(codex["scopes"]) == SCOPES
+    assert set(cursor["auth"]["scopes"]) == set(claude["auth"]["scopes"]) == SCOPES
+    assert set(claude["oauth"]["scopes"].split()) == set(codex["scopes"]) == SCOPES
     assert claude["type"] == "http"
     assert codex["auth"] == "oauth"
     assert codex["oauth_resource"] == PRODUCTION_AUDIENCE
@@ -74,12 +75,17 @@ def test_mcp_configs_share_the_production_auth_contract() -> None:
 
     # Static PKCE client (no secret); DCR is disabled on the Auth0 tenant, so
     # every host config must carry the pre-registered client ID in its own
-    # dialect: Cursor reads auth.CLIENT_ID, Claude reads oauth.clientId (its
-    # documented no-DCR mechanism; the Cursor-style auth block is ignored and
-    # Claude falls back to DCR, which Auth0 rejects), Codex reads
-    # oauth.client_id. Claude's loopback callback port 8787 matches the
-    # http://localhost:8787/callback redirect registered at Auth0.
-    assert cursor["auth"]["CLIENT_ID"] == claude["oauth"]["clientId"] == codex["oauth"]["client_id"] == CURSOR_CLIENT_ID
+    # dialect. CRITICAL: .mcp.json must carry BOTH blocks, because Cursor loads
+    # the dotfile .mcp.json in preference to mcp.json (proven twice: e7c5616 on
+    # Jul 21 and the 0.3.4 regression on Jul 23 — oauth-only .mcp.json makes
+    # Cursor fall back to DCR, which Auth0 rejects with 400, and the login
+    # browser never opens). Cursor reads auth.CLIENT_ID; Claude reads
+    # oauth.clientId (its documented no-DCR mechanism — it ignores the
+    # Cursor-style auth block); Codex reads oauth.client_id in codex.mcp.json.
+    # Each host ignores the other's key. Claude's loopback callback port 8787
+    # matches the http://localhost:8787/callback redirect registered at Auth0.
+    assert cursor["auth"]["CLIENT_ID"] == claude["auth"]["CLIENT_ID"] == CURSOR_CLIENT_ID
+    assert claude["oauth"]["clientId"] == codex["oauth"]["client_id"] == CURSOR_CLIENT_ID
     assert claude["oauth"]["callbackPort"] == 8787
 
 
