@@ -51,7 +51,7 @@ State when a link is time-limited. Never fetch a body merely to preview what the
 
 ## Create vs edit: route by intent
 
-Every new asset is one of two request types. Pick by what the user is doing, confirm the choice back in plain words, and never silently pick:
+Every new asset is one of two request types (full background: [operation-types.md](operation-types.md)). Pick by what the user is doing, confirm the choice back in plain words, and never silently pick:
 
 - **Create request** — the user wants Solstice to produce content ("make me an email", "generate a banner"). Use the create-an-asset workflow below (`solstice_create_operation`). Plain-language name: *"Create with Solstice AI"*.
 - **Edit request** — the user brings a finished file ("here is my HTML, put it in Solstice", "edit this PDF"). Use the create-an-edit-asset workflow (`solstice_create_edit_operation`), kind chosen by the file type. Plain-language names: *"Edit an existing HTML"* / *"Edit an existing PDF"*.

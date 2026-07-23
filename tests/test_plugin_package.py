@@ -103,6 +103,7 @@ def test_shared_skill_is_portable_and_action_focused() -> None:
         "data-model.md",
         "errors.md",
         "memory.md",
+        "operation-types.md",
         "request-triage.md",
     }
     assert {path.name for path in (skill_dir / "references").glob("*.md")} == references
