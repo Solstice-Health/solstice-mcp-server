@@ -80,7 +80,7 @@ Sequence:
 4. `solstice_commit_operation_version(tenant_slug, operation_id, type, s3_key, file_name?)` with the unchanged prepare values (same `file_name`).
 5. Report:
    - committed `version_number` and server-derived `intent`
-   - asset deep link from `solstice_server_info` deep_links.asset_url (tenant subdomain + `/home/assets/` + operation_id; hyphens/underscores interchangeable; strip leading `www.` when parsing inbound links)
+   - the `asset_url` returned by the commit response, ending the reply with a markdown link titled "Open asset in Solstice" pointing at that URL — never hand the user a bare operation UUID
 
 Intent is derived from the token (SOLSTICE_STAFF → draft; MEMBER/ADMIN → final). Never pass intent or role as an argument.
 

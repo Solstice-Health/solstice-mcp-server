@@ -163,6 +163,19 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
+def build_asset_url(tenant_slug: str, operation_id: str) -> str:
+    """User-facing Solstice link for one operation.
+
+    Every successful write response includes this so agents can hand the user
+    a clickable URL instead of a bare operation UUID. Subdomains use hyphens
+    while tenant slugs use underscores (sanofi_sandbox -> sanofi-sandbox);
+    the link grants nothing — Solstice still enforces the signed-in user's
+    tenant and brand access.
+    """
+    host = tenant_slug.replace("_", "-")
+    return f"https://www.{host}.solsticehealth.co/home/assets/{operation_id}"
+
+
 def _project_summary(project: Project) -> dict[str, Any]:
     return {
         "id": project.id,
@@ -420,6 +433,7 @@ def create_operation(
         "status": "EDITING",
         "operation_category": operation_category,
         "version_number": 1,
+        "asset_url": build_asset_url(tenant_slug, operation_id),
     }
 
 
@@ -844,6 +858,7 @@ def approve_operation_version(
                 "version_number": msg.version_number,
                 "intent": "final",
                 "already_final": True,
+                "asset_url": build_asset_url(tenant_slug, operation_id),
             }
         if msg.intent != "draft":
             raise ToolError(
@@ -862,6 +877,7 @@ def approve_operation_version(
         "version_number": version_number,
         "intent": "final",
         "already_final": False,
+        "asset_url": build_asset_url(tenant_slug, operation_id),
     }
 
 
@@ -1158,6 +1174,7 @@ def commit_operation_version(
             "s3_key": s3_key,
             "sourcefile_s3_key": s3_key,
             "size": size,
+            "asset_url": build_asset_url(tenant_slug, operation_id),
         }
     with tenant_session(tenant_slug, session_factory) as session:
         locked = session.scalar(
@@ -1258,6 +1275,7 @@ def commit_operation_version(
         "message_id": message_id,
         "s3_key": s3_key,
         "size": size,
+        "asset_url": build_asset_url(tenant_slug, operation_id),
     }
 
 
@@ -1266,6 +1284,7 @@ __all__ = [
     "CgOperationMessage",
     "Project",
     "approve_operation_version",
+    "build_asset_url",
     "commit_operation_version",
     "create_edit_operation",
     "create_operation",

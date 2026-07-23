@@ -217,6 +217,10 @@ def register_content_tools(
         explicitly stated (e.g. ``EMAIL``, ``BANNER``, ``SOCIAL``). If the
         user did not state one, ASK THEM which content type this asset is —
         never guess or silently default to a type.
+
+        The response includes ``asset_url`` — the operation's Solstice page.
+        End your user-facing reply with ``[Open asset in Solstice](<asset_url>)``
+        instead of handing the user the operation UUID.
         """
         if not content_type or not content_type.strip():
             raise ToolError("invalid_argument: content_type is required")
@@ -264,6 +268,10 @@ def register_content_tools(
           ONCE whether they have it; "I don't have it" is acceptable —
           proceed without. Attach it via prepare/commit with type="source".
         - kind="html": ask NOTHING beyond the file, name, and content type.
+
+        The response includes ``asset_url`` — the operation's Solstice page.
+        End your user-facing reply with ``[Open asset in Solstice](<asset_url>)``
+        instead of handing the user the operation UUID.
         """
         if not content_type or not content_type.strip():
             raise ToolError("invalid_argument: content_type is required")
@@ -343,6 +351,10 @@ def register_content_tools(
         field is scanned by the gateway's prompt-attack guardrail, and
         instruction-like text will cause the call to be denied. Keep the
         user's intent in your own reasoning, not in this argument.
+
+        The response includes ``asset_url`` — the operation's Solstice page.
+        End your user-facing reply with ``[Open asset in Solstice](<asset_url>)``
+        instead of handing the user the operation UUID.
         """
         return commit_operation_version(
             require_subject(),
@@ -425,6 +437,10 @@ def register_content_tools(
         must be an html or pdf document version (find message_ids via
         solstice_operation_messages). Approving an already-final version is an
         idempotent no-op; text/blueprint messages are rejected.
+
+        The response includes ``asset_url`` — the operation's Solstice page.
+        End your user-facing reply with ``[Open asset in Solstice](<asset_url>)``
+        instead of handing the user the operation UUID.
         """
         return approve_operation_version(
             require_subject(),
