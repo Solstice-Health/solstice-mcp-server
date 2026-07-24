@@ -166,14 +166,14 @@ class _BackendObservation(BaseModel):
     id: UUID
     actor_user_id: UUID
     scope: Literal["personal", "tenant_personal"]
-    brand_id: UUID | None
+    brand_id: UUID | None = None
     occurred_at: datetime
-    host_correlation_id: str | None
+    host_correlation_id: str | None = None
     idempotency_key: str
     processing_state: Literal["pending", "processed"]
-    outcome: Literal["activated", "reinforced", "contradicted", "suppressed", "ineligible", "no_memory"] | None
-    fact_id: UUID | None
-    processed_at: datetime | None
+    outcome: Literal["activated", "reinforced", "contradicted", "suppressed", "ineligible", "no_memory"] | None = None
+    fact_id: UUID | None = None
+    processed_at: datetime | None = None
 
 
 def _tool_observation_response(result: dict[str, Any]) -> dict[str, Any]:
