@@ -195,7 +195,9 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "solstice_list_operations",
         "solstice_operation_messages",
         "solstice_operation_html(..., fetch=true)",
-        "no list/get tool for `prc_template_versions`",
+        "solstice_prc_template(..., fetch=true)",
+        "operation, brand, environment, then platform precedence",
+        "returned `prc_template_versions` html",
     ):
         assert phrase in workflow
 

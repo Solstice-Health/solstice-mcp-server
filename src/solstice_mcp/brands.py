@@ -68,7 +68,7 @@ class Brand(Base):
     """Mapping of the tenant ``brands`` table.
 
     Read paths use identity columns; brand-context tools also read the admin
-    JSON fields (``design_bible``, ``isi``, ``drug_info``).
+    JSON fields, including PRC template selections in ``brand_metadata``.
     """
 
     __tablename__ = "brands"
@@ -78,6 +78,7 @@ class Brand(Base):
     design_bible: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     isi: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     drug_info: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    brand_metadata: Mapped[Any | None] = mapped_column(JSON, nullable=True, deferred=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 

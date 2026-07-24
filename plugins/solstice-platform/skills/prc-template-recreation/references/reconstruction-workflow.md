@@ -152,12 +152,21 @@ Never fall back across content types. If no exact-type final HTML exists, say
 "no same-content-type exemplar available" and use brand rules plus the source.
 
 An operation HTML exemplar is a creative exemplar, not a PRC-template exemplar.
-The current Solstice MCP has no list/get tool for `prc_template_versions`.
-For the proof shell, use in order:
+For the proof shell:
 
-1. a user-provided template of the same content type;
-2. the current canonical same-content-type seed when available locally;
-3. the structural contract in `renderer-contract.md`.
+1. Call `solstice_prc_template(..., fetch=true)` with the selected
+   `tenant_slug`, `brand_id`, and exact lowercase `content_type`. Pass
+   `operation_id` when recreating an existing operation so its explicit
+   override can win.
+2. Use the returned `prc_template_versions` HTML as the structural exemplar.
+   The tool applies operation, brand, environment, then platform precedence and
+   does not cross content types.
+3. If no row resolves, use a user-provided same-type template, then the current
+   canonical same-type seed when available locally, then the structural
+   contract in `renderer-contract.md`.
+
+When the input itself is a reusable proof shell, it remains the visual target;
+use the resolved Solstice template to verify renderer seams and behavior.
 
 Do not present a creative operation as though it were a reusable proof shell.
 

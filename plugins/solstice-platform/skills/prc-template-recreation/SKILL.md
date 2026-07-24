@@ -53,9 +53,11 @@ creative into one document.
    annotations. Use the decision rules in
    [the reconstruction workflow](references/reconstruction-workflow.md).
 3. **Gather brand context and exemplars.** Resolve the Solstice workspace and
-   brand, then load brand rules, design assets, and claims. Fetch a final HTML
-   creative exemplar only after its operation metadata exactly matches the
-   classified content type.
+   brand, then load brand rules, design assets, and claims. Call
+   `solstice_prc_template(..., fetch=true)` with the exact classified content
+   type for the effective `prc_template_versions` proof-shell exemplar. Fetch a
+   final HTML creative exemplar only after its operation metadata matches that
+   same content type exactly.
 4. **Recreate both layers.**
    - `creative.html`: complete, standalone creative HTML for the detected
      content type.
