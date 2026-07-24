@@ -21,13 +21,13 @@ jobs:
       AWS_REGION: us-east-1
       ECS_CLUSTER: solstice-prod-cluster
       ECS_SERVICE: solstice-prod-mcp-server
+      BACKEND_ECS_SERVICE: solstice-prod-backend-server
       ECR_REPOSITORY: solstice-prod-mcp
       RESOURCE_URL: https://api.solsticehealth.co/mcp
       BACKEND_BASE_URL: https://api.solsticehealth.co
       BACKEND_AUTH0_CLIENT_ID: P65vxcrfpTUR9HV3NHXM1ISMupr41I3b
       BACKEND_AUTH0_AUDIENCE: https://api.solsticehealth.co/agent-memory
       BACKEND_AUTH0_SCOPE: memory:invoke
-      BACKEND_AUTH0_SECRET_ARN: arn:aws:ssm:us-east-1:432113314921:parameter/solstice/prod/AUTH0_CLIENT_SECRET
       # Bedrock AgentCore gateway that fronts this server for MCP clients.
       # It snapshots the tool schema at sync time, so every deploy must re-sync
       # or clients keep seeing the previous deploy's tool list.
@@ -80,6 +80,19 @@ jobs:
           aws ecs describe-task-definition \
             --task-definition "$TASK_DEFINITION" \
             --query taskDefinition > task-definition.json
+          BACKEND_TASK_DEFINITION=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$BACKEND_ECS_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+          BACKEND_AUTH0_SECRET_ARN=$(aws ecs describe-task-definition \
+            --task-definition "$BACKEND_TASK_DEFINITION" \
+            --query 'taskDefinition.containerDefinitions[].secrets[?name == `AUTH0_CLIENT_SECRET`].valueFrom | [0]' \
+            --output text)
+          if [ -z "$BACKEND_AUTH0_SECRET_ARN" ] || [ "$BACKEND_AUTH0_SECRET_ARN" = "None" ]; then
+            echo "Production Backend task does not expose AUTH0_CLIENT_SECRET through ECS secrets"
+            exit 1
+          fi
           jq \
             --arg image "$IMAGE" \
             --arg backend_base_url "$BACKEND_BASE_URL" \
