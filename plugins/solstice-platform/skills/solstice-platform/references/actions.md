@@ -121,7 +121,9 @@ the user separately whether to publish the PRC template and whether to publish
 the creative content. If they choose the template, ask separately for its name
 and key, then call `solstice_create_prc_template_version(..., confirmed=true)`.
 Status defaults to published; do not ask for it. The tool appends a row and does
-not update brand or operation selections.
+not update brand or operation selections. It rejects reserved
+brand/environment/platform auto-resolving keys; select the new version in
+Template Settings when needed.
 
 ## Unsupported changes
 

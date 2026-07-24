@@ -58,6 +58,7 @@ logger = logging.getLogger(__name__)
 
 _HTML_S3_KEY_PREFIX = "cg_operation_msg_html"
 _PRC_CONTENT_TYPES = {"banner", "email", "social"}
+_PRC_RESERVED_KEY_PREFIXES = ("brand_", "environment_default_", "platform_default_")
 _PRC_TEMPLATE_STATUSES = {"draft", "published"}
 
 
@@ -533,6 +534,11 @@ def create_prc_template_version(
         raise ToolError("invalid_request: template_key is required")
     if len(normalized_key) > 255:
         raise ToolError("invalid_request: template_key must be at most 255 characters")
+    if normalized_key.lower().startswith(_PRC_RESERVED_KEY_PREFIXES):
+        raise ToolError(
+            "invalid_request: template_key uses a reserved auto-resolving prefix; "
+            "use a custom key and select the version in Template Settings"
+        )
     if normalized_content_type not in _PRC_CONTENT_TYPES:
         allowed = ", ".join(sorted(_PRC_CONTENT_TYPES))
         raise ToolError(f"invalid_request: content_type must be one of {allowed}")

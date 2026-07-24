@@ -267,9 +267,9 @@ Never combine those choices into one question. For each accepted artifact:
   "What template key should I use?" as separate questions. Call
   `solstice_create_prc_template_version(..., confirmed=true)` without a status;
   it defaults to published. Explain that this appends `prc_template_versions`
-  without changing any brand or operation selection. An auto-resolving key may
-  become effective immediately; other templates still require selection in
-  Template Settings.
+  without changing any brand or operation selection. Reserved
+  brand/environment/platform auto-resolving keys are rejected; the new version
+  must be selected in Template Settings.
 - Creative content: land it through the append-only `solstice-platform` flow,
   following its create-vs-edit routing and explicit content type requirement.
 

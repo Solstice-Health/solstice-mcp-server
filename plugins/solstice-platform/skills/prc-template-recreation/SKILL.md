@@ -78,8 +78,9 @@ creative into one document.
    as separate questions. Call
    `solstice_create_prc_template_version(..., confirmed=true)`; status defaults
    to published, so do not ask for it. The tool appends a row but does not
-   select it for a brand or operation; explain that an auto-resolving key may
-   immediately become effective. If they choose the creative content, use the
+   select it for a brand or operation. Reserved brand/environment/platform
+   auto-resolving keys are rejected; explain that the new version must be
+   selected in Template Settings. If they choose the creative content, use the
    `figma-to-solstice` / `solstice-platform` append-only flow.
 
 ## Output contract

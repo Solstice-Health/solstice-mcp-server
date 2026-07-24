@@ -182,6 +182,7 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "what template name should i use?",
         "what template key should i use?",
         "status defaults",
+        "reserved brand/environment/platform",
     ):
         assert phrase in body_lower
 
@@ -207,6 +208,8 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "what template name should i use?",
         "what template key should i use?",
         "defaults to published",
+        "reserved",
+        "auto-resolving keys are rejected",
         "operation, brand, environment, then platform precedence",
         "returned `prc_template_versions` html",
     ):

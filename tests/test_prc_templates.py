@@ -463,6 +463,9 @@ def test_create_prc_template_version_requires_staff_and_confirmation(
     ("overrides", "error"),
     [
         ({"content_type": "print"}, "content_type must be one of"),
+        ({"template_key": "brand_other_email"}, "reserved auto-resolving prefix"),
+        ({"template_key": "environment_default_email"}, "reserved auto-resolving prefix"),
+        ({"template_key": "platform_default_email"}, "reserved auto-resolving prefix"),
         ({"status": "active"}, "status must be one of"),
         ({"html_template": "   "}, "html_template is required"),
         ({"html_template": "x" * 2_000_001}, "too_large"),

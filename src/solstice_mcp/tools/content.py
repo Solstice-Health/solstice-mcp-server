@@ -231,9 +231,10 @@ def register_content_tools(
         This inserts a new ``prc_template_versions`` row and derives its id,
         next version number, creator, and timestamps server-side. It never
         updates or deletes an existing version and never changes brand or
-        operation template selections. A published row under an auto-resolving
-        brand/environment/platform key may immediately become the effective
-        latest version. Requires SOLSTICE_STAFF on the selected brand.
+        operation template selections. Brand, environment, and platform
+        auto-resolving key prefixes are reserved to prevent a brand-scoped
+        caller from affecting another brand; select the new version in Template
+        Settings when needed. Requires SOLSTICE_STAFF on the selected brand.
         """
         template = create_prc_template_version(
             require_subject(),
