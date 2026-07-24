@@ -16,6 +16,7 @@ from solstice_mcp.operations import (
     commit_operation_version,
     create_edit_operation,
     create_operation,
+    create_prc_template_version,
     get_operation_html,
     get_operation_info,
     get_project_info,
@@ -198,6 +199,60 @@ def register_content_tools(
             raise ToolError(
                 f"not_found: no PRC template for content_type {content_type.strip().lower()!r}"
             )
+        return {
+            "status": "ok",
+            "tenant_slug": tenant_slug,
+            "brand_id": brand_id,
+            **template,
+        }
+
+    @append_only_tool
+    def solstice_create_prc_template_version(
+        tenant_slug: str,
+        brand_id: str,
+        template_key: str,
+        content_type: str,
+        name: str,
+        html_template: str,
+        confirmed: bool,
+        description: str | None = None,
+        config_schema: dict[str, Any] | None = None,
+        default_field_values: dict[str, Any] | None = None,
+        status: str = "published",
+    ) -> dict[str, Any]:
+        """Append one reusable PRC proof-template version.
+
+        After the user approves the exact HTML preview and chooses to publish
+        the PRC template, ask separately for its display name and template key.
+        Use the tenant, brand, and content type already established during
+        conversion, then pass ``confirmed=true``. Status defaults to
+        ``published``; do not ask the user to choose it.
+
+        This inserts a new ``prc_template_versions`` row and derives its id,
+        next version number, creator, and timestamps server-side. It never
+        updates or deletes an existing version and never changes brand or
+        operation template selections. Brand, environment, and platform
+        auto-resolving key prefixes are reserved to prevent a brand-scoped
+        caller from affecting another brand; select the new version in Template
+        Settings when needed. Requires SOLSTICE_STAFF on the selected brand.
+        """
+        template = create_prc_template_version(
+            require_subject(),
+            tenant_slug,
+            brand_id,
+            template_key,
+            content_type,
+            name,
+            html_template,
+            confirmed=confirmed,
+            description=description,
+            config_schema=config_schema,
+            default_field_values=default_field_values,
+            status=status,
+            max_inline_bytes=max_inline_bytes,
+            registry=registry,
+            session_factory=session_factory,
+        )
         return {
             "status": "ok",
             "tenant_slug": tenant_slug,

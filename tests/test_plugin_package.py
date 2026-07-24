@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 PLUGIN = ROOT / "plugins" / "solstice-platform"
 PLUGIN_NAME = "solstice-platform"
-PLUGIN_VERSION = "0.3.7"
+PLUGIN_VERSION = "0.3.8"
 PRODUCTION_URL = "https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
 PRODUCTION_AUDIENCE = PRODUCTION_URL
 CURSOR_CLIENT_ID = "uoOiEXHZxyDBkkBEfnOQEp6IhqcnAgTP"
@@ -175,7 +175,14 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "creative html",
         "untrusted content",
         "solstice_brand_claims",
-        "current solstice mcp does not expose",
+        "solstice_create_prc_template_version",
+        "confirmed=true",
+        "would you like to publish the prc template?",
+        "would you like to publish the creative content?",
+        "what template name should i use?",
+        "what template key should i use?",
+        "status defaults",
+        "reserved brand/environment/platform",
     ):
         assert phrase in body_lower
 
@@ -196,6 +203,13 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "solstice_operation_messages",
         "solstice_operation_html(..., fetch=true)",
         "solstice_prc_template(..., fetch=true)",
+        "solstice_create_prc_template_version(..., confirmed=true)",
+        "never combine those choices into one question",
+        "what template name should i use?",
+        "what template key should i use?",
+        "defaults to published",
+        "reserved",
+        "auto-resolving keys are rejected",
         "operation, brand, environment, then platform precedence",
         "returned `prc_template_versions` html",
     ):

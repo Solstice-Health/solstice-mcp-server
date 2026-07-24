@@ -12,7 +12,7 @@
       "name": "solstice-platform",
       "source": "plugins/solstice-platform",
       "description": "Access Solstice review content and append document versions.",
-      "version": "0.3.7",
+      "version": "0.3.8",
       "logo": "plugins/solstice-platform/assets/logo.png"
     }
   ]

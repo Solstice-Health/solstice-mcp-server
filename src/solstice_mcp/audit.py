@@ -33,6 +33,8 @@ AUDIT_RESOURCE_FIELDS = {
     "message_id",
     "request_id",
     "status",
+    "template_key",
+    "content_type",
     "reason_category",
     "type",
     "fetch",

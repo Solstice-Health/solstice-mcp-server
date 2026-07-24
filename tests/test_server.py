@@ -145,6 +145,7 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
         "solstice_operation_messages",
         "solstice_operation_html",
         "solstice_prc_template",
+        "solstice_create_prc_template_version",
         "solstice_create_operation",
         "solstice_create_edit_operation",
         "solstice_prepare_operation_version",
@@ -160,7 +161,17 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
         "solstice_memory_replace",
         "solstice_memory_forget",
     }
+    prc_create_schema = next(
+        tool["inputSchema"]
+        for tool in listed_tools
+        if tool["name"] == "solstice_create_prc_template_version"
+    )
+    assert "confirmed" in prc_create_schema["required"]
+    assert "status" not in prc_create_schema["required"]
+    assert prc_create_schema["properties"]["status"]["default"] == "published"
+
     non_destructive_writes = {
+        "solstice_create_prc_template_version",
         "solstice_create_operation",
         "solstice_create_edit_operation",
         "solstice_prepare_operation_version",

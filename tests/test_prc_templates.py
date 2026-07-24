@@ -3,7 +3,19 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from conftest import BRAND_A1, BRAND_A3, OP_A1, SHARED_SUB, AppHarness
+import pytest
+from conftest import (
+    BRAND_A1,
+    BRAND_A3,
+    OP_A1,
+    SHARED_SUB,
+    STAFF_SUB,
+    USER_A_STAFF,
+    AppHarness,
+)
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 from test_server import rpc, tool_payload
 
 from solstice_mcp.brands import Brand
@@ -61,6 +73,21 @@ def _call(
         "tools/call",
         token=mint_token(sub=SHARED_SUB),
         params={"name": "solstice_prc_template", "arguments": arguments},
+    )
+
+
+def _create_call(
+    app_harness: AppHarness,
+    mint_token,
+    *,
+    sub: str = STAFF_SUB,
+    **arguments: Any,
+):
+    return rpc(
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=sub),
+        params={"name": "solstice_create_prc_template_version", "arguments": arguments},
     )
 
 
@@ -326,3 +353,180 @@ def test_prc_template_denies_brand_non_member(
         content_type="email",
     )
     assert "not_authorized" in _tool_error_text(response)
+
+
+def test_create_prc_template_version_appends_and_preserves_prior_version(
+    app_harness: AppHarness,
+    mint_token,
+):
+    arguments = {
+        "tenant_slug": "tenant_a",
+        "brand_id": BRAND_A1,
+        "template_key": "custom_email",
+        "content_type": "EMAIL",
+        "name": "Custom Email",
+        "description": "First version",
+        "html_template": "\n<!doctype html><html>v1</html>\n",
+        "confirmed": True,
+        "config_schema": {"fields": [{"id": "jobCode"}]},
+        "default_field_values": {"jobCode": "ABC-123"},
+    }
+    first = tool_payload(_create_call(app_harness, mint_token, **arguments))
+
+    assert first["version_number"] == 1
+    assert first["template_status"] == "published"
+    assert first["brand_selection_updated"] is False
+    assert first["html_size_bytes"] == len(arguments["html_template"].encode())
+
+    with app_harness.session_factory("tenant_a") as session:
+        first_row = session.get(PrcTemplateVersion, first["id"])
+        assert first_row is not None
+        assert first_row.created_by == USER_A_STAFF
+        original = {
+            "html_template": first_row.html_template,
+            "description": first_row.description,
+            "status": first_row.status,
+            "config_schema": first_row.config_schema,
+            "default_field_values": first_row.default_field_values,
+        }
+
+    second = tool_payload(
+        _create_call(
+            app_harness,
+            mint_token,
+            **{
+                **arguments,
+                "description": "Second version",
+                "html_template": "<!doctype html><html>v2</html>",
+                "status": "draft",
+            },
+        )
+    )
+    assert second["version_number"] == 2
+    assert second["id"] != first["id"]
+
+    with app_harness.session_factory("tenant_a") as session:
+        rows = session.scalars(
+            select(PrcTemplateVersion)
+            .where(
+                PrcTemplateVersion.template_key == "custom_email",
+                PrcTemplateVersion.content_type == "email",
+            )
+            .order_by(PrcTemplateVersion.version_number)
+        ).all()
+        assert [row.version_number for row in rows] == [1, 2]
+        assert {
+            "html_template": rows[0].html_template,
+            "description": rows[0].description,
+            "status": rows[0].status,
+            "config_schema": rows[0].config_schema,
+            "default_field_values": rows[0].default_field_values,
+        } == original
+        brand = session.get(Brand, BRAND_A1)
+        assert brand is not None
+        assert brand.brand_metadata is None
+
+
+def test_create_prc_template_version_requires_staff_and_confirmation(
+    app_harness: AppHarness,
+    mint_token,
+):
+    arguments = {
+        "tenant_slug": "tenant_a",
+        "brand_id": BRAND_A1,
+        "template_key": "staff_only_email",
+        "content_type": "email",
+        "name": "Staff Only",
+        "html_template": "<html></html>",
+        "status": "draft",
+        "confirmed": True,
+    }
+    denied = _create_call(app_harness, mint_token, sub=SHARED_SUB, **arguments)
+    assert "required role SOLSTICE_STAFF" in _tool_error_text(denied)
+
+    unconfirmed = _create_call(
+        app_harness,
+        mint_token,
+        **{**arguments, "confirmed": False},
+    )
+    assert "confirmation_required" in _tool_error_text(unconfirmed)
+
+    with app_harness.session_factory("tenant_a") as session:
+        assert session.scalar(
+            select(PrcTemplateVersion).where(
+                PrcTemplateVersion.template_key == "staff_only_email"
+            )
+        ) is None
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error"),
+    [
+        ({"content_type": "print"}, "content_type must be one of"),
+        ({"template_key": "brand_other_email"}, "reserved auto-resolving prefix"),
+        ({"template_key": "environment_default_email"}, "reserved auto-resolving prefix"),
+        ({"template_key": "platform_default_email"}, "reserved auto-resolving prefix"),
+        ({"status": "active"}, "status must be one of"),
+        ({"html_template": "   "}, "html_template is required"),
+        ({"html_template": "x" * 2_000_001}, "too_large"),
+    ],
+)
+def test_create_prc_template_version_rejects_invalid_rows(
+    app_harness: AppHarness,
+    mint_token,
+    overrides: dict[str, Any],
+    error: str,
+):
+    response = _create_call(
+        app_harness,
+        mint_token,
+        **{
+            "tenant_slug": "tenant_a",
+            "brand_id": BRAND_A1,
+            "template_key": "invalid_email",
+            "content_type": "email",
+            "name": "Invalid",
+            "html_template": "<html></html>",
+            "status": "draft",
+            "confirmed": True,
+            **overrides,
+        },
+    )
+    assert error in _tool_error_text(response)
+
+
+def test_create_prc_template_version_returns_typed_concurrent_conflict(
+    app_harness: AppHarness,
+    mint_token,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    original_commit = Session.commit
+
+    def conflict_on_template_insert(session: Session) -> None:
+        if any(isinstance(row, PrcTemplateVersion) for row in session.new):
+            raise IntegrityError("insert", {}, Exception("unique conflict"))
+        original_commit(session)
+
+    monkeypatch.setattr(Session, "commit", conflict_on_template_insert)
+    response = _create_call(
+        app_harness,
+        mint_token,
+        tenant_slug="tenant_a",
+        brand_id=BRAND_A1,
+        template_key="concurrent_email",
+        content_type="email",
+        name="Concurrent",
+        html_template="<html></html>",
+        status="draft",
+        confirmed=True,
+    )
+
+    assert "conflict: another PRC template version was created concurrently" in _tool_error_text(
+        response
+    )
+    with app_harness.session_factory("tenant_a") as session:
+        assert session.scalar(
+            select(PrcTemplateVersion).where(
+                PrcTemplateVersion.template_key == "concurrent_email"
+            )
+        ) is None

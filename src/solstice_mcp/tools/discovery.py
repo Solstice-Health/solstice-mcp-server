@@ -116,6 +116,7 @@ def register_discovery_tools(
                 "solstice_operation_messages",
                 "solstice_operation_html",
                 "solstice_prc_template",
+                "solstice_create_prc_template_version",
                 "solstice_create_operation",
                 "solstice_prepare_operation_version",
                 "solstice_commit_operation_version",

@@ -8,6 +8,7 @@
 - **Service unavailable:** say Solstice could not complete the read and suggest retrying later. Do not expose provider exception text.
 - **Upload failed:** do not call the commit tool. Say the file was not added and ask whether the user wants to retry.
 - **Commit failed:** do not retry automatically. Say the new version was not committed and preserve the error's safe next step.
-- **Unsupported write:** say that only append-only document versions are supported and no other change was made.
+- **PRC template conflict:** say another version was created concurrently and ask whether to retry appending the next version; never overwrite.
+- **Unsupported write:** say the requested change is not supported and no change was made.
 
 Never invent missing results, retry with a different workspace without consent, or use content from an earlier failed request as if it were current.
