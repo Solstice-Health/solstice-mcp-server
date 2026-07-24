@@ -196,7 +196,12 @@ class BackendMemoryClient:
             params["q"] = q
         if limit is not None:
             params["limit"] = str(limit)
-        return self._request("GET", "/api/internal/agent-memory", actor=actor, params=params)
+        return self._request(
+            "GET",
+            "/api/internal/agent-memory",
+            tenant_slug=actor.tenant_slug,
+            params=params,
+        )
 
     def remember(
         self,
@@ -220,7 +225,12 @@ class BackendMemoryClient:
             expires_at=expires_at,
             reason=reason,
         )
-        return self._request("POST", "/api/internal/agent-memory", actor=actor, json_body=body)
+        return self._request(
+            "POST",
+            "/api/internal/agent-memory",
+            tenant_slug=actor.tenant_slug,
+            json_body=body,
+        )
 
     def replace(
         self,
@@ -248,7 +258,7 @@ class BackendMemoryClient:
         return self._request(
             "POST",
             f"/api/internal/agent-memory/{memory_id}/supersede",
-            actor=actor,
+            tenant_slug=actor.tenant_slug,
             json_body=body,
         )
 
@@ -271,7 +281,42 @@ class BackendMemoryClient:
         return self._request(
             "POST",
             f"/api/internal/agent-memory/{memory_id}/forget",
-            actor=actor,
+            tenant_slug=actor.tenant_slug,
+            json_body=body,
+        )
+
+    def record_observation(
+        self,
+        *,
+        actor_sub: str,
+        tenant_slug: str,
+        scope: str,
+        observation: str,
+        entity_refs: list[dict[str, Any]],
+        source_refs: list[dict[str, Any]],
+        occurred_at: str,
+        idempotency_key: str,
+        brand_id: str | None = None,
+        host_correlation_id: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "actor_sub": actor_sub,
+            "tenant_slug": tenant_slug,
+            "scope": scope,
+            "observation": observation,
+            "entity_refs": entity_refs,
+            "source_refs": source_refs,
+            "occurred_at": occurred_at,
+            "idempotency_key": idempotency_key,
+        }
+        if brand_id is not None:
+            body["brand_id"] = brand_id
+        if host_correlation_id is not None:
+            body["host_correlation_id"] = host_correlation_id
+        return self._request(
+            "POST",
+            "/api/internal/agent-memory/observations",
+            tenant_slug=tenant_slug,
             json_body=body,
         )
 
@@ -280,7 +325,7 @@ class BackendMemoryClient:
         method: str,
         path: str,
         *,
-        actor: ActorEnvelope,
+        tenant_slug: str,
         params: dict[str, str] | None = None,
         json_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -293,7 +338,7 @@ class BackendMemoryClient:
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
             # TenantMiddleware requires this on every Backend API request.
-            "X-Tenant-Slug": actor.tenant_slug,
+            "X-Tenant-Slug": tenant_slug,
         }
         data: bytes | None = None
         if json_body is not None:

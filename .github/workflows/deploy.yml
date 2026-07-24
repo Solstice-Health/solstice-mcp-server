@@ -23,6 +23,11 @@ jobs:
       ECS_SERVICE: solstice-prod-mcp-server
       ECR_REPOSITORY: solstice-prod-mcp
       RESOURCE_URL: https://api.solsticehealth.co/mcp
+      BACKEND_BASE_URL: https://api.solsticehealth.co
+      BACKEND_AUTH0_CLIENT_ID: P65vxcrfpTUR9HV3NHXM1ISMupr41I3b
+      BACKEND_AUTH0_AUDIENCE: https://api.solsticehealth.co/agent-memory
+      BACKEND_AUTH0_SCOPE: memory:invoke
+      BACKEND_AUTH0_SECRET_ARN: arn:aws:ssm:us-east-1:432113314921:parameter/solstice/prod/AUTH0_CLIENT_SECRET
       # Bedrock AgentCore gateway that fronts this server for MCP clients.
       # It snapshots the tool schema at sync time, so every deploy must re-sync
       # or clients keep seeing the previous deploy's tool list.
@@ -75,8 +80,35 @@ jobs:
           aws ecs describe-task-definition \
             --task-definition "$TASK_DEFINITION" \
             --query taskDefinition > task-definition.json
-          jq --arg image "$IMAGE" '
-            (.containerDefinitions[] | select(.name == "mcp-server").image) = $image
+          jq \
+            --arg image "$IMAGE" \
+            --arg backend_base_url "$BACKEND_BASE_URL" \
+            --arg backend_client_id "$BACKEND_AUTH0_CLIENT_ID" \
+            --arg backend_audience "$BACKEND_AUTH0_AUDIENCE" \
+            --arg backend_scope "$BACKEND_AUTH0_SCOPE" \
+            --arg backend_secret_arn "$BACKEND_AUTH0_SECRET_ARN" \
+            '
+            (.containerDefinitions[] | select(.name == "mcp-server")) |= (
+              .image = $image
+              | .environment = (
+                  ((.environment // []) | map(select(
+                    .name != "SOLSTICE_BACKEND_BASE_URL"
+                    and .name != "SOLSTICE_BACKEND_AUTH0_CLIENT_ID"
+                    and .name != "SOLSTICE_BACKEND_AUTH0_AUDIENCE"
+                    and .name != "SOLSTICE_BACKEND_AUTH0_SCOPE"
+                  )))
+                  + [
+                      {name: "SOLSTICE_BACKEND_BASE_URL", value: $backend_base_url},
+                      {name: "SOLSTICE_BACKEND_AUTH0_CLIENT_ID", value: $backend_client_id},
+                      {name: "SOLSTICE_BACKEND_AUTH0_AUDIENCE", value: $backend_audience},
+                      {name: "SOLSTICE_BACKEND_AUTH0_SCOPE", value: $backend_scope}
+                    ]
+                )
+              | .secrets = (
+                  ((.secrets // []) | map(select(.name != "SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET")))
+                  + [{name: "SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET", valueFrom: $backend_secret_arn}]
+                )
+            )
             | del(
                 .taskDefinitionArn,
                 .revision,
@@ -88,7 +120,12 @@ jobs:
               )
           ' task-definition.json > next-task-definition.json
           jq -e --arg image "$IMAGE" \
-            '.containerDefinitions | any(.name == "mcp-server" and .image == $image)' \
+            '.containerDefinitions | any(
+              .name == "mcp-server"
+              and .image == $image
+              and (.environment | any(.name == "SOLSTICE_BACKEND_BASE_URL"))
+              and (.secrets | any(.name == "SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET"))
+            )' \
             next-task-definition.json > /dev/null
           TASK_ARN=$(aws ecs register-task-definition \
             --cli-input-json file://next-task-definition.json \
