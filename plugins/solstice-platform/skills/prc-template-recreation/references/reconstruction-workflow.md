@@ -160,7 +160,8 @@ For the proof shell:
    override can win.
 2. Use the returned `prc_template_versions` HTML as the structural exemplar.
    The tool applies operation, brand, environment, then platform precedence and
-   does not cross content types.
+   does not cross content types. A brand opt-out returns no template instead of
+   silently falling through to a default.
 3. If no row resolves, use a user-provided same-type template, then the current
    canonical same-type seed when available locally, then the structural
    contract in `renderer-contract.md`.

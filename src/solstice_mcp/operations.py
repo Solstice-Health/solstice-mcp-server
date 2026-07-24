@@ -284,13 +284,17 @@ def _prc_explicitly_disabled(metadata: Any, content_type: str) -> bool:
     prc_templates = metadata.get("prc_templates")
     if isinstance(prc_templates, dict):
         config = prc_templates.get(content_type)
-        if isinstance(config, dict) and config.get("enabled") is False:
-            return True
+        if isinstance(config, dict):
+            pinned = _normalized_uuid(config.get("template_version_id"))
+            if config.get("enabled") is False and pinned is None:
+                return True
     if content_type == "email":
         email_settings = metadata.get("email_settings")
         if isinstance(email_settings, dict):
             legacy = email_settings.get("interactive_prc_template")
-            return isinstance(legacy, dict) and legacy.get("enabled") is False
+            if isinstance(legacy, dict):
+                pinned = _normalized_uuid(legacy.get("template_version_id"))
+                return legacy.get("enabled") is False and pinned is None
     return False
 
 
@@ -409,11 +413,13 @@ def resolve_prc_template_for_brand(
         if brand is None:
             return None
         metadata = brand.brand_metadata if isinstance(brand.brand_metadata, dict) else {}
+        if _prc_explicitly_disabled(metadata, normalized_content_type):
+            return None
 
         template = None
         tier = ""
         parsed_operation_id = _normalized_uuid(operation_id)
-        if parsed_operation_id and not _prc_explicitly_disabled(metadata, normalized_content_type):
+        if parsed_operation_id:
             operation = session.scalar(
                 select(CgOperation).where(
                     CgOperation.id == parsed_operation_id,

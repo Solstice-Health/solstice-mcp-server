@@ -176,7 +176,8 @@ def register_content_tools(
         default, then platform default. By default returns metadata and field
         configuration without the potentially large HTML body. Set
         ``fetch=True`` when the template HTML is needed as a structural
-        exemplar.
+        exemplar. A brand opt-out (``enabled=false`` with no pinned template)
+        returns ``not_found`` instead of falling through to a default.
 
         Read-only; gated at MEMBER on the selected brand. ``operation_id`` is
         honored only when that operation belongs to the same brand and exact

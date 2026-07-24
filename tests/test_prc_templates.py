@@ -269,6 +269,51 @@ def test_prc_template_prefers_latest_matching_brand_template(
     assert payload["html_template"] == "<html>brand v2</html>"
 
 
+def test_prc_template_brand_opt_out_blocks_operation_and_default_fallbacks(
+    app_harness: AppHarness,
+    mint_token,
+):
+    with app_harness.session_factory("tenant_a") as session:
+        session.add_all(
+            [
+                _template(
+                    OPERATION_EMAIL,
+                    key="operation_email",
+                    content_type="email",
+                    html="<html>operation shell</html>",
+                ),
+                _template(
+                    ENV_EMAIL,
+                    key="environment_default_email",
+                    content_type="email",
+                    html="<html>environment email</html>",
+                ),
+            ]
+        )
+        brand = session.get(Brand, BRAND_A1)
+        operation = session.get(CgOperation, OP_A1)
+        assert brand is not None
+        assert operation is not None
+        brand.brand_metadata = {
+            "prc_templates": {
+                "email": {"enabled": False, "template_version_id": None}
+            }
+        }
+        operation.content_type = "email"
+        operation.operation_metadata = {"prc_template_version_id": OPERATION_EMAIL}
+        session.commit()
+
+    response = _call(
+        app_harness,
+        mint_token,
+        tenant_slug="tenant_a",
+        brand_id=BRAND_A1,
+        content_type="email",
+        operation_id=OP_A1,
+    )
+    assert "not_found" in _tool_error_text(response)
+
+
 def test_prc_template_denies_brand_non_member(
     app_harness: AppHarness,
     mint_token,
