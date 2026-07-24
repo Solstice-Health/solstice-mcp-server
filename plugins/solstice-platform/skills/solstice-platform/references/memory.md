@@ -5,8 +5,8 @@ tenant Postgres store:
 
 - `solstice_memory_recall` — read-only; returns separate `brand`, `personal`,
   and `tenant_personal` collections for the signed-in user.
-- `solstice_memory_observe` — cooperative host finalizer; submits one bounded
-  personal observation for asynchronous classification.
+- `solstice_memory_observe` — cooperative auto-save; records one structured
+  personal preference or convention and returns the final outcome immediately.
 - `solstice_memory_remember` — explicit write; creates one new active fact.
 - `solstice_memory_replace` — explicit write; supersedes one existing fact.
 - `solstice_memory_forget` — explicit write; removes one fact from active recall.
@@ -17,20 +17,41 @@ grant access. Never pass a `user_id` or `role` argument — it is ignored.
 
 ## Cooperative observation
 
-Call `solstice_memory_observe` once when a durable user preference or convention
-is observed. The stateless MCP cannot read the host conversation or detect a
-turn boundary, so this is cooperative finalization, not server-side conversation
-capture. Observing is not the same as saving active memory: Backend re-resolves
-the actor, validates the partition and canonical references, classifies the
-observation, and decides whether anything activates.
+Call `solstice_memory_observe` whenever the user states a durable preference or
+convention, or corrects your assumption about how they work — every time it
+happens, not just once per conversation. The stateless MCP cannot read the host
+conversation, and the backend no longer runs a classifier: you are the sole
+judge of what qualifies. Apply this bar before calling:
 
-Send one semantic summary of at most 1000 characters and 12 lines. References
-must contain canonical IDs only. Preserve the same `idempotency_key` when
-retrying an observation; `occurred_at` must be timezone-aware.
+- **Durable** — it applies beyond the current task ("I always want…",
+  "we never…", "actually, I prefer…").
+- **User-stated or user-confirmed** — said by the user, or confirmed by them
+  when you asked. Never silently inferred from a single action.
+- **Never** task ephemera, one-off instructions ("just for this one…"), or
+  anything from the prohibited-content list below.
 
-The tool response uses stable MCP names: `observation_id`, `status` (`pending`
-or `processed`), `outcome`, and `fact_id`. A successful submission normally
-returns `status="pending"`; it does not mean a fact was activated.
+You supply the fact in structured, normalized form:
+
+- `statement` — one bounded fact of at most 1000 characters (e.g. "Prefers
+  concise review summaries"), not a narrative or transcript excerpt.
+- `fact_type` — `preference` or `convention` only. Decisions and finding
+  dispositions go through explicit `solstice_memory_remember`.
+- `semantic_subject` — a short name for the stable topic (e.g. "review summary
+  style") so repeat observations of the same topic dedupe and reinforce
+  instead of piling up.
+
+References must contain canonical IDs only; `occurred_at`, when provided, must
+be timezone-aware.
+
+The backend applies deterministic gates (validation, secret scan, scope rules,
+subject dedupe) and returns the final result in the same call — there is no
+pending state. The response is `outcome` plus the stored `fact` (or null):
+
+- `activated` — a new fact was saved.
+- `reinforced` — an equivalent fact already existed; its recency was refreshed.
+- `suppressed` — the user previously forgot this memory. Respect that choice:
+  do not resubmit it, rephrase it to slip past the gate, or work around it.
+- `ineligible` — a gate rejected the observation; nothing was stored.
 
 Automatic observations support only:
 
@@ -105,8 +126,11 @@ Never store, and never ask the user to provide through these tools:
 - On a successful recall: "Here is what brand, brand-personal, and
   tenant-personal memory have for this context. Live Solstice records still
   take precedence."
-- On a successful observation: "Submitted that preference or convention for
-  memory classification." Do not say it was saved as active memory.
+- On an `activated` observation: "Saved to {tenant-personal|personal} memory."
+- On a `reinforced` observation: say the existing memory was reinforced, e.g.
+  "You already had that saved — I reinforced it."
+- On a `suppressed` or `ineligible` observation: do not claim anything was
+  saved, and do not retry; for `suppressed`, the user previously forgot this.
 - On a successful write: "Saved to {tenant-personal|personal|brand} memory."
 - On a brand-write denial: "Saving to brand memory needs an ADMIN or
   SOLSTICE_STAFF role on this brand, so I did not make the change."

@@ -291,11 +291,12 @@ class BackendMemoryClient:
         actor_sub: str,
         tenant_slug: str,
         scope: str,
-        observation: str,
+        statement: str,
+        fact_type: str,
+        semantic_subject: str,
         entity_refs: list[dict[str, Any]],
         source_refs: list[dict[str, Any]],
         occurred_at: str,
-        idempotency_key: str,
         brand_id: str | None = None,
         host_correlation_id: str | None = None,
     ) -> dict[str, Any]:
@@ -303,11 +304,12 @@ class BackendMemoryClient:
             "actor_sub": actor_sub,
             "tenant_slug": tenant_slug,
             "scope": scope,
-            "observation": observation,
+            "statement": statement,
+            "fact_type": fact_type,
+            "semantic_subject": semantic_subject,
             "entity_refs": entity_refs,
             "source_refs": source_refs,
             "occurred_at": occurred_at,
-            "idempotency_key": idempotency_key,
         }
         if brand_id is not None:
             body["brand_id"] = brand_id
