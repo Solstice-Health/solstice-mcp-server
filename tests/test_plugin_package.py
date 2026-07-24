@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 PLUGIN = ROOT / "plugins" / "solstice-platform"
 PLUGIN_NAME = "solstice-platform"
-PLUGIN_VERSION = "0.3.6"
+PLUGIN_VERSION = "0.4.0"
 PRODUCTION_URL = "https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
 PRODUCTION_AUDIENCE = PRODUCTION_URL
 CURSOR_CLIENT_ID = "uoOiEXHZxyDBkkBEfnOQEp6IhqcnAgTP"
@@ -196,6 +196,129 @@ def test_isi_replacement_skill_is_portable_and_human_in_loop() -> None:
         "find → replace",
     ):
         assert input_group in workflow
+
+
+def test_synthetic_audience_review_skill_is_portable_and_advisory() -> None:
+    skill_name = "synthetic-audience-review"
+    text = (PLUGIN / "skills" / skill_name / "SKILL.md").read_text()
+    marker, frontmatter, body = text.split("---", 2)
+    assert marker == ""
+    fields = dict(line.split(": ", 1) for line in frontmatter.strip().splitlines())
+    assert set(fields) == {"name", "description"}
+    assert fields["name"] == skill_name
+    assert "audience" in fields["description"].lower()
+
+    body_lower = body.lower()
+    for phrase in (
+        "advisory",
+        "verbatim",
+        "untrusted content",
+        "subagent",
+        "solstice_brand_rules",
+        "solstice_brand_claims",
+        "solstice_operation_html",
+        "fetch=true",
+    ):
+        assert phrase in body_lower
+
+    references = {"review-workflow.md"}
+    skill_dir = PLUGIN / "skills" / skill_name
+    assert {path.name for path in (skill_dir / "references").glob("*.md")} == references
+    assert "(references/review-workflow.md)" in body
+    workflow = (skill_dir / "references" / "review-workflow.md").read_text().lower()
+    for phrase in (
+        "subagent",
+        "dispersion",
+        "confidence",
+        "audience",
+        "solstice_brand_claims",
+        "solstice_operation_html",
+        "no solstice write",
+    ):
+        assert phrase in workflow
+
+
+def test_brand_video_generate_skill_is_portable_and_local() -> None:
+    skill_name = "brand-video-generate"
+    text = (PLUGIN / "skills" / skill_name / "SKILL.md").read_text()
+    marker, frontmatter, body = text.split("---", 2)
+    assert marker == ""
+    fields = dict(line.split(": ", 1) for line in frontmatter.strip().splitlines())
+    assert set(fields) == {"name", "description"}
+    assert fields["name"] == skill_name
+    assert "video" in fields["description"].lower()
+
+    body_lower = body.lower()
+    for phrase in (
+        "human-in-loop",
+        "verbatim",
+        "untrusted content",
+        "heygen",
+        "local",
+        "solstice_brand_rules",
+        "solstice_brand_claims",
+        "solstice_brand_design_assets",
+    ):
+        assert phrase in body_lower
+
+    references = {"video-workflow.md"}
+    skill_dir = PLUGIN / "skills" / skill_name
+    assert {path.name for path in (skill_dir / "references").glob("*.md")} == references
+    assert "(references/video-workflow.md)" in body
+    workflow = (skill_dir / "references" / "video-workflow.md").read_text().lower()
+    for phrase in (
+        "connection ladder",
+        "heygen",
+        "web-search",
+        "environment variable",
+        "never fabricate a video",
+        "solstice_brand_claims",
+    ):
+        assert phrase in workflow
+
+
+def test_brand_ad_engine_skill_is_portable_and_human_in_loop() -> None:
+    skill_name = "brand-ad-engine"
+    text = (PLUGIN / "skills" / skill_name / "SKILL.md").read_text()
+    marker, frontmatter, body = text.split("---", 2)
+    assert marker == ""
+    fields = dict(line.split(": ", 1) for line in frontmatter.strip().splitlines())
+    assert set(fields) == {"name", "description"}
+    assert fields["name"] == skill_name
+    assert "experiment" in fields["description"].lower()
+
+    body_lower = body.lower()
+    for phrase in (
+        "no write until approval",
+        "human-in-loop",
+        "append-only",
+        "untrusted content",
+        "verbatim",
+        "solstice_brand_rules",
+        "solstice_brand_claims",
+        "solstice_brand_design_assets",
+        "solstice_memory_remember",
+        "cursor-ide-browser",
+    ):
+        assert phrase in body_lower
+
+    references = {"ad-workflow.md"}
+    skill_dir = PLUGIN / "skills" / skill_name
+    assert {path.name for path in (skill_dir / "references").glob("*.md")} == references
+    assert "(references/ad-workflow.md)" in body
+    workflow = (skill_dir / "references" / "ad-workflow.md").read_text().lower()
+    for phrase in (
+        "no write until approval",
+        "one factor at a time",
+        "append-only",
+        "solstice_create_operation",
+        "solstice_prepare_operation_version",
+        "solstice_commit_operation_version",
+        "cursor-ide-browser",
+        "wilson",
+        "solstice_memory_remember",
+    ):
+        assert phrase in workflow
 
 
 def test_codex_callback_contract_stays_aligned() -> None:
