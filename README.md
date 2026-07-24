@@ -31,7 +31,7 @@ are ignored.
 
 ## Memory tools (optional)
 
-The four `solstice_memory_*` tools are registered only when the Backend memory
+The five `solstice_memory_*` tools are registered only when the Backend memory
 contract is configured. When `SOLSTICE_BACKEND_BASE_URL` and
 `SOLSTICE_BACKEND_AUTH0_CLIENT_ID` are unset, the tools are not exposed and the
 MCP remains a pure content-review server. The MCP stays stateless: it validates
@@ -40,6 +40,10 @@ Backend-Server `/api/internal/agent-memory` routes with an RS256 Auth0
 client-credentials bearer and a server-derived actor envelope. The tenant
 Postgres store and the mutation audit log live in Backend-Server; the MCP
 never touches them.
+
+`solstice_memory_observe` is a cooperative host finalizer for bounded personal
+preferences and conventions. It does not capture conversations or automatically
+write brand memory; explicit remember, replace, and forget behavior is unchanged.
 
 - `SOLSTICE_BACKEND_BASE_URL` — Backend-Server origin (e.g. `https://api.solsticehealth.co`)
 - `SOLSTICE_BACKEND_TIMEOUT_SECONDS` — per-request timeout, default 10

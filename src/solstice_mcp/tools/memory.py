@@ -1,4 +1,4 @@
-"""Register the four audited Solstice memory tools.
+"""Register explicit memory tools and the cooperative observation finalizer.
 
 The MCP server stays stateless. Each tool:
 
@@ -16,16 +16,23 @@ require ``MEMBER``.
 Audit events carry selectors and IDs only (``tenant_slug``, ``brand_id``,
 ``memory_id``, ``scope``). Statements, source/entity refs, query text, and
 returned memory never enter audit logs.
+
+The host may submit one bounded personal preference or convention for Backend
+classification. Brand memory remains explicit-only.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
-from typing import Any
+from datetime import UTC, datetime
+from typing import Annotated, Any, Literal
+from uuid import UUID, uuid4
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from solstice_mcp.audit import audited_tool
 from solstice_mcp.brands import (
@@ -36,6 +43,7 @@ from solstice_mcp.brands import (
 )
 from solstice_mcp.memory_client import (
     MEMORY_SCOPE_BRAND,
+    MEMORY_SCOPE_PERSONAL,
     MEMORY_SCOPE_TENANT_PERSONAL,
     MEMORY_SCOPES,
     ActorEnvelope,
@@ -47,7 +55,7 @@ from solstice_mcp.memory_client import (
     MemoryClientUnauthorized,
     MemoryClientUnavailable,
 )
-from solstice_mcp.tenants import SessionFactory, TenantRegistry
+from solstice_mcp.tenants import SessionFactory, TenantRegistry, resolve_tenant_identity
 
 READ_ONLY = ToolAnnotations(
     readOnlyHint=True,
@@ -71,6 +79,114 @@ _BRAND_WRITE_MIN_ROLE = UserRole.ADMIN
 _FACT_TYPES = ("preference", "convention", "decision", "finding_disposition")
 _ENTITY_REF_REQUIRED = ("entity_type", "entity_id")
 _SOURCE_REF_REQUIRED = ("source_type", "source_id")
+_SECRET_PATTERNS = (
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE),
+    re.compile(
+        r"\b(?:password|passwd|secret|client[_ -]?secret|api[_ -]?key|token|"
+        r"access[_ -]?token|refresh[_ -]?token)\s*[:=]\s*\S+",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/-]{8,}", re.IGNORECASE),
+    re.compile(r"\b(?:sk-[A-Za-z0-9_-]{12,}|AKIA[0-9A-Z]{16})\b"),
+)
+
+
+class _EntityRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entity_type: str = Field(min_length=1, max_length=64)
+    entity_id: str = Field(min_length=1, max_length=128)
+    entity_version: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class _SourceRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_type: str = Field(min_length=1, max_length=64)
+    source_id: str = Field(min_length=1, max_length=128)
+    source_version: str | None = Field(default=None, min_length=1, max_length=64)
+    fingerprint: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class _ObservationRequest(BaseModel):
+    """Bounded host observation; Backend still revalidates the trust boundary."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_slug: str = Field(min_length=1, max_length=128)
+    scope: Literal["personal", "tenant_personal"]
+    observation: str = Field(min_length=1, max_length=1000)
+    brand_id: UUID | None = None
+    entity_refs: list[_EntityRef] = Field(default_factory=list, max_length=50)
+    source_refs: list[_SourceRef] = Field(default_factory=list, max_length=50)
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    host_correlation_id: str | None = Field(default=None, min_length=1, max_length=128)
+    idempotency_key: str = Field(default_factory=lambda: str(uuid4()), min_length=1, max_length=128)
+
+    @field_validator("observation")
+    @classmethod
+    def validate_observation(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("observation must not be empty")
+        if len(value.splitlines()) > 12:
+            raise ValueError("observation must be at most 12 lines")
+        if any(pattern.search(value) for pattern in _SECRET_PATTERNS):
+            raise ValueError("observation must not contain credentials or secret keys")
+        return value
+
+    @field_validator("occurred_at")
+    @classmethod
+    def validate_occurred_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("occurred_at must include a timezone")
+        return value
+
+    @model_validator(mode="after")
+    def validate_partition(self) -> _ObservationRequest:
+        if self.scope == MEMORY_SCOPE_TENANT_PERSONAL and self.brand_id is not None:
+            raise ValueError("brand_id is forbidden for tenant_personal observations")
+        if self.scope == MEMORY_SCOPE_PERSONAL and self.brand_id is None:
+            raise ValueError("brand_id is required for personal observations")
+        return self
+
+
+def _observation_request(**values: Any) -> _ObservationRequest:
+    try:
+        return _ObservationRequest.model_validate(values)
+    except ValidationError as exc:
+        message = exc.errors(include_url=False)[0]["msg"]
+        raise ToolError(f"invalid_argument: {message}") from exc
+
+
+class _BackendObservation(BaseModel):
+    """Backend ObservationOut fields used to define the stable MCP response."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: UUID
+    actor_user_id: UUID
+    scope: Literal["personal", "tenant_personal"]
+    brand_id: UUID | None
+    occurred_at: datetime
+    host_correlation_id: str | None
+    idempotency_key: str
+    processing_state: Literal["pending", "processed"]
+    outcome: Literal["activated", "reinforced", "contradicted", "suppressed", "ineligible", "no_memory"] | None
+    fact_id: UUID | None
+    processed_at: datetime | None
+
+
+def _tool_observation_response(result: dict[str, Any]) -> dict[str, Any]:
+    try:
+        observation = _BackendObservation.model_validate(result)
+    except ValidationError as exc:
+        raise ToolError("internal_error: memory backend returned an unexpected observation result") from exc
+    return {
+        "observation_id": str(observation.id),
+        "status": observation.processing_state,
+        "outcome": observation.outcome,
+        "fact_id": None if observation.fact_id is None else str(observation.fact_id),
+    }
 
 
 def _require_scope(scope: str) -> str:
@@ -195,6 +311,120 @@ def register_memory_tools(
         except MemoryClientError as exc:
             raise _map_backend_error(exc, scope="recall") from exc
         return {"status": "ok", "tenant_slug": tenant_slug, "brand_id": brand_id, **result}
+
+    @write_tool
+    def solstice_memory_observe(
+        tenant_slug: Annotated[
+            str,
+            Field(description="Tenant workspace slug containing the signed-in actor."),
+        ],
+        scope: Annotated[
+            str,
+            Field(description="Personal scope: personal or tenant_personal."),
+        ],
+        observation: Annotated[
+            str,
+            Field(description="Durable preference or convention evidence; maximum 1000 characters and 12 lines."),
+        ],
+        brand_id: Annotated[
+            str | None,
+            Field(description="Required for personal scope; forbidden for tenant_personal."),
+        ] = None,
+        entity_refs: Annotated[
+            list[dict[str, Any]] | None,
+            Field(description="Canonical entity IDs only; never entity bodies."),
+        ] = None,
+        source_refs: Annotated[
+            list[dict[str, Any]] | None,
+            Field(description="Canonical source IDs only; never source content."),
+        ] = None,
+        occurred_at: Annotated[
+            str | None,
+            Field(description="Timezone-aware ISO-8601 observation time; defaults to now."),
+        ] = None,
+        host_correlation_id: Annotated[
+            str | None,
+            Field(description="Optional host turn correlation ID, maximum 128 characters."),
+        ] = None,
+        idempotency_key: Annotated[
+            str | None,
+            Field(description="Stable retry key, maximum 128 characters; defaults to a UUID."),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Submit one durable personal observation for asynchronous classification.
+
+        Cooperative host finalizer: call once when a durable user preference or
+        convention is observed. Never send document bodies, claims, prompts,
+        copied content, arbitrary tool results, credentials, ``user_id``, or
+        ``role``. References contain canonical IDs only.
+
+        Automatic brand memory is unsupported. Use the explicit brand-memory
+        tools when the user asks to save a brand convention or decision. Backend
+        re-resolves the actor, validates references, and decides whether the
+        observation activates; do not claim this call saved active memory.
+        Returns stable tool fields ``observation_id``, ``status`` (``pending`` or
+        ``processed``), ``outcome``, and ``fact_id`` rather than Backend-internal
+        response names.
+        """
+        if scope == MEMORY_SCOPE_BRAND:
+            raise ToolError(
+                "invalid_argument: automatic brand observations are unsupported; "
+                "use solstice_memory_remember for explicit brand memory"
+            )
+        request = _observation_request(
+            tenant_slug=tenant_slug,
+            scope=scope,
+            observation=observation,
+            brand_id=brand_id,
+            entity_refs=[] if entity_refs is None else entity_refs,
+            source_refs=[] if source_refs is None else source_refs,
+            **({} if occurred_at is None else {"occurred_at": occurred_at}),
+            host_correlation_id=host_correlation_id,
+            **({} if idempotency_key is None else {"idempotency_key": idempotency_key}),
+        )
+
+        subject = require_subject()
+        brand_id_value = None if request.brand_id is None else str(request.brand_id)
+        if brand_id_value is None:
+            identity = resolve_tenant_identity(
+                subject,
+                request.tenant_slug,
+                registry=registry,
+                session_factory=session_factory,
+            )
+            if identity is None:
+                raise ToolError("not_authorized: no active tenant membership")
+        else:
+            require_brand_role(
+                subject,
+                request.tenant_slug,
+                brand_id_value,
+                min_role=UserRole.MEMBER,
+                registry=registry,
+                session_factory=session_factory,
+            )
+
+        try:
+            result = backend.record_observation(
+                actor_sub=subject,
+                tenant_slug=request.tenant_slug,
+                scope=request.scope,
+                brand_id=brand_id_value,
+                observation=request.observation,
+                entity_refs=[ref.model_dump(exclude_none=True) for ref in request.entity_refs],
+                source_refs=[ref.model_dump(exclude_none=True) for ref in request.source_refs],
+                occurred_at=request.occurred_at.isoformat(),
+                host_correlation_id=request.host_correlation_id,
+                idempotency_key=request.idempotency_key,
+            )
+        except MemoryClientError as exc:
+            raise _map_backend_error(exc, scope=request.scope) from exc
+        return {
+            **_tool_observation_response(result),
+            "tenant_slug": request.tenant_slug,
+            "brand_id": brand_id_value,
+            "scope": request.scope,
+        }
 
     @write_tool
     def solstice_memory_remember(
