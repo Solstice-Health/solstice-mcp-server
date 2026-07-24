@@ -23,6 +23,7 @@ from solstice_mcp.operations import (
     list_operations_for_brand,
     list_projects_for_brand,
     prepare_operation_version,
+    resolve_prc_template_for_brand,
     update_operation,
 )
 from solstice_mcp.storage import S3Reader
@@ -158,6 +159,50 @@ def register_content_tools(
             "operation_id": operation_id,
             "messages": messages,
             "count": len(messages),
+        }
+
+    @read_only_tool
+    def solstice_prc_template(
+        tenant_slug: str,
+        brand_id: str,
+        content_type: str,
+        operation_id: str | None = None,
+        fetch: bool = False,
+    ) -> dict[str, Any]:
+        """Resolve the effective PRC proof template for a brand and content type.
+
+        Reads ``prc_template_versions`` using the same precedence as Solstice:
+        operation override, explicit/derived brand template, environment
+        default, then platform default. By default returns metadata and field
+        configuration without the potentially large HTML body. Set
+        ``fetch=True`` when the template HTML is needed as a structural
+        exemplar. A brand opt-out (``enabled=false`` with no pinned template)
+        returns ``not_found`` instead of falling through to a default.
+
+        Read-only; gated at MEMBER on the selected brand. ``operation_id`` is
+        honored only when that operation belongs to the same brand and exact
+        content type.
+        """
+        template = resolve_prc_template_for_brand(
+            require_subject(),
+            tenant_slug,
+            brand_id,
+            content_type,
+            operation_id=operation_id,
+            fetch=fetch,
+            max_inline_bytes=max_inline_bytes,
+            registry=registry,
+            session_factory=session_factory,
+        )
+        if template is None:
+            raise ToolError(
+                f"not_found: no PRC template for content_type {content_type.strip().lower()!r}"
+            )
+        return {
+            "status": "ok",
+            "tenant_slug": tenant_slug,
+            "brand_id": brand_id,
+            **template,
         }
 
     @read_only_tool

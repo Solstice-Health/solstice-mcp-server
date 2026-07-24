@@ -1,4 +1,4 @@
-"""Read-only access to Solstice content-generation projects, operations, and chat.
+"""Access to Solstice content-generation projects, operations, PRC templates, and chat.
 
 Mirrors the Backend-Server data model (see
 ``Backend-Server/src/content_generation_new/db/content_generation_models.py``)
@@ -14,6 +14,9 @@ without importing it:
   ``cg_operation_msg_html/...``; the ``content`` column holds either inline
   HTML or that S3 key. This module returns the S3 key but NOT the body — the
   body fetch is deferred to a future tool (see ``solstice_operation_html``).
+- ``prc_template_versions`` — versioned proof-shell HTML. Reads resolve the
+  effective template through operation, brand, environment, then platform
+  precedence and never expose an unscoped tenant-wide template listing.
 
 Authorization: every function routes through ``require_brand_role`` (MEMBER),
   so the subject must hold a live ``brand_team_members`` row on the brand that
@@ -33,13 +36,14 @@ import logging
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from mcp.server.fastmcp.exceptions import ToolError
-from sqlalchemy import JSON, DateTime, String, Uuid, func, or_, select
+from sqlalchemy import JSON, DateTime, Integer, String, Text, Uuid, func, or_, select
 from sqlalchemy.orm import Mapped, mapped_column
 
 from solstice_mcp.brands import (
+    Brand,
     BrandTeamMember,
     UserRole,
     require_brand_role,
@@ -159,6 +163,26 @@ class CgOperationMessage(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class PrcTemplateVersion(Base):
+    """Read-only mapping of the tenant ``prc_template_versions`` table."""
+
+    __tablename__ = "prc_template_versions"
+
+    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)
+    template_key: Mapped[str] = mapped_column(String)
+    version_number: Mapped[int] = mapped_column(Integer)
+    content_type: Mapped[str] = mapped_column(String)
+    name: Mapped[str] = mapped_column(String)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    html_template: Mapped[str] = mapped_column(Text, deferred=True)
+    config_schema: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    default_field_values: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
@@ -226,6 +250,232 @@ def _message_summary(msg: CgOperationMessage) -> dict[str, Any]:
     if msg.type == "blueprint":
         return {**base, "has_blueprint": True, "body": None}
     return base
+
+
+def _normalized_uuid(value: Any) -> str | None:
+    try:
+        return str(UUID(str(value)))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _pinned_template_id(metadata: Any, content_type: str) -> str | None:
+    if not isinstance(metadata, dict):
+        return None
+    prc_templates = metadata.get("prc_templates")
+    if isinstance(prc_templates, dict):
+        config = prc_templates.get(content_type)
+        if isinstance(config, dict):
+            pinned = _normalized_uuid(config.get("template_version_id"))
+            if pinned:
+                return pinned
+    if content_type == "email":
+        email_settings = metadata.get("email_settings")
+        if isinstance(email_settings, dict):
+            legacy = email_settings.get("interactive_prc_template")
+            if isinstance(legacy, dict):
+                return _normalized_uuid(legacy.get("template_version_id"))
+    return None
+
+
+def _prc_explicitly_disabled(metadata: Any, content_type: str) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    prc_templates = metadata.get("prc_templates")
+    if isinstance(prc_templates, dict):
+        config = prc_templates.get(content_type)
+        if isinstance(config, dict):
+            pinned = _normalized_uuid(config.get("template_version_id"))
+            if config.get("enabled") is False and pinned is None:
+                return True
+    if content_type == "email":
+        email_settings = metadata.get("email_settings")
+        if isinstance(email_settings, dict):
+            legacy = email_settings.get("interactive_prc_template")
+            if isinstance(legacy, dict):
+                pinned = _normalized_uuid(legacy.get("template_version_id"))
+                return legacy.get("enabled") is False and pinned is None
+    return False
+
+
+def _template_by_id(session, template_id: str | None) -> PrcTemplateVersion | None:
+    if template_id is None:
+        return None
+    return session.scalar(
+        select(PrcTemplateVersion).where(
+            PrcTemplateVersion.id == template_id,
+            PrcTemplateVersion.deleted_at.is_(None),
+        )
+    )
+
+
+def _latest_published_template(
+    session,
+    template_key: str,
+    content_type: str,
+) -> PrcTemplateVersion | None:
+    return session.scalar(
+        select(PrcTemplateVersion)
+        .where(
+            PrcTemplateVersion.template_key == template_key,
+            PrcTemplateVersion.content_type == content_type,
+            PrcTemplateVersion.status == "published",
+            PrcTemplateVersion.deleted_at.is_(None),
+        )
+        .order_by(PrcTemplateVersion.version_number.desc())
+    )
+
+
+def _brand_template(
+    session,
+    brand_name: str,
+    content_type: str,
+) -> PrcTemplateVersion | None:
+    suffix = f"_{content_type}"
+    rows = session.scalars(
+        select(PrcTemplateVersion)
+        .where(
+            PrcTemplateVersion.template_key.like(f"brand_%{suffix}"),
+            PrcTemplateVersion.content_type == content_type,
+            PrcTemplateVersion.status == "published",
+            PrcTemplateVersion.deleted_at.is_(None),
+        )
+        .order_by(PrcTemplateVersion.version_number.desc())
+    ).all()
+    matches: list[tuple[int, int, PrcTemplateVersion]] = []
+    lowered_name = brand_name.lower()
+    for row in rows:
+        slug = row.template_key[len("brand_") : -len(suffix)]
+        if slug and slug in lowered_name:
+            matches.append((len(slug), row.version_number, row))
+    if not matches:
+        return None
+    return max(matches, key=lambda item: (item[0], item[1]))[2]
+
+
+def _prc_template_payload(
+    template: PrcTemplateVersion,
+    *,
+    tier: str,
+    fetch: bool,
+    max_inline_bytes: int,
+) -> dict[str, Any]:
+    payload = {
+        "id": template.id,
+        "template_key": template.template_key,
+        "version_number": template.version_number,
+        "content_type": template.content_type,
+        "name": template.name,
+        "description": template.description,
+        "config_schema": template.config_schema,
+        "default_field_values": template.default_field_values,
+        "template_status": template.status,
+        "resolved_tier": tier,
+        "created_at": _iso(template.created_at),
+        "updated_at": _iso(template.updated_at),
+    }
+    if not fetch:
+        return {**payload, "html_template": None}
+    html = template.html_template
+    size_bytes = len(html.encode("utf-8"))
+    if size_bytes > max_inline_bytes:
+        raise ToolError(
+            f"too_large: PRC template is {size_bytes} bytes; inline limit is {max_inline_bytes}"
+        )
+    return {**payload, "html_template": html, "html_size_bytes": size_bytes}
+
+
+def resolve_prc_template_for_brand(
+    subject: str,
+    tenant_slug: str,
+    brand_id: str,
+    content_type: str,
+    *,
+    operation_id: str | None = None,
+    fetch: bool = False,
+    max_inline_bytes: int,
+    registry: TenantRegistry,
+    session_factory: SessionFactory,
+) -> dict[str, Any] | None:
+    """Resolve one brand-scoped PRC template using Backend-Server precedence."""
+    normalized_content_type = content_type.strip().lower()
+    if not normalized_content_type:
+        raise ToolError("invalid_request: content_type is required")
+    require_brand_role(
+        subject, tenant_slug, brand_id,
+        min_role=UserRole.MEMBER,
+        registry=registry, session_factory=session_factory,
+    )
+    with tenant_session(tenant_slug, session_factory) as session:
+        brand = session.scalar(
+            select(Brand).where(Brand.id == brand_id, Brand.deleted_at.is_(None))
+        )
+        if brand is None:
+            return None
+        metadata = brand.brand_metadata if isinstance(brand.brand_metadata, dict) else {}
+        if _prc_explicitly_disabled(metadata, normalized_content_type):
+            return None
+
+        template = None
+        tier = ""
+        parsed_operation_id = _normalized_uuid(operation_id)
+        if parsed_operation_id:
+            operation = session.scalar(
+                select(CgOperation).where(
+                    CgOperation.id == parsed_operation_id,
+                    CgOperation.brand_id == brand_id,
+                    func.lower(CgOperation.content_type) == normalized_content_type,
+                    CgOperation.deleted_at.is_(None),
+                )
+            )
+            operation_metadata = operation.operation_metadata if operation is not None else None
+            operation_pin = (
+                _normalized_uuid(operation_metadata.get("prc_template_version_id"))
+                if isinstance(operation_metadata, dict)
+                else None
+            )
+            template = _template_by_id(session, operation_pin)
+            if template is not None and template.content_type == normalized_content_type:
+                tier = "operation"
+            else:
+                template = None
+
+        if template is None:
+            template = _template_by_id(
+                session, _pinned_template_id(metadata, normalized_content_type)
+            )
+            if template is not None and template.content_type == normalized_content_type:
+                tier = "brand"
+            else:
+                template = None
+
+        if template is None:
+            template = _brand_template(session, brand.name, normalized_content_type)
+            if template is not None:
+                tier = "brand"
+
+        if template is None:
+            template = _latest_published_template(
+                session, f"environment_default_{normalized_content_type}", normalized_content_type
+            )
+            if template is not None:
+                tier = "environment"
+
+        if template is None:
+            template = _latest_published_template(
+                session, f"platform_default_{normalized_content_type}", normalized_content_type
+            )
+            if template is not None:
+                tier = "default"
+
+        if template is None:
+            return None
+        return _prc_template_payload(
+            template,
+            tier=tier,
+            fetch=fetch,
+            max_inline_bytes=max_inline_bytes,
+        )
 
 
 def _brand_id_for_project(session, project_id: str) -> str | None:

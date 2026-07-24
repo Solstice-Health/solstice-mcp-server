@@ -1,6 +1,6 @@
 # Solstice Platform plugin
 
-This private plugin connects Cursor, Claude Code, and Codex to the production Solstice MCP. It provides one shared Agent Skill for workspaces, brands, projects, content reviews, review activity, documents, and append-only HTML or PDF document versions. Each user signs in through Auth0; no client secret is distributed.
+This private plugin connects Cursor, Claude Code, and Codex to the production Solstice MCP. Its bundled Agent Skills cover platform operations, Figma conversion, PRC template recreation, ISI replacement, and browser fallback. Each user signs in through Auth0; no client secret is distributed.
 
 ## Cursor local
 
