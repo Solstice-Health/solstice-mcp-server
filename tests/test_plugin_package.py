@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 PLUGIN = ROOT / "plugins" / "solstice-platform"
 PLUGIN_NAME = "solstice-platform"
-PLUGIN_VERSION = "0.3.6"
+PLUGIN_VERSION = "0.3.7"
 PRODUCTION_URL = "https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
 PRODUCTION_AUDIENCE = PRODUCTION_URL
 CURSOR_CLIENT_ID = "uoOiEXHZxyDBkkBEfnOQEp6IhqcnAgTP"
@@ -152,6 +152,67 @@ def test_figma_to_solstice_skill_is_portable_and_human_in_loop() -> None:
     assert "only after approval" in workflow
     assert "solstice_prepare_operation_version" in workflow
     assert "solstice_commit_operation_version" in workflow
+
+
+def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts() -> None:
+    skill_name = "prc-template-recreation"
+    skill_dir = PLUGIN / "skills" / skill_name
+    text = (skill_dir / "SKILL.md").read_text()
+    marker, frontmatter, body = text.split("---", 2)
+    assert marker == ""
+    fields = dict(line.split(": ", 1) for line in frontmatter.strip().splitlines())
+    assert set(fields) == {"name", "description"}
+    assert fields["name"] == skill_name
+    description = fields["description"].lower()
+    for trigger in ("pdf", "figma", "email", "banner", "social"):
+        assert trigger in description
+
+    body_lower = body.lower()
+    for phrase in (
+        "no write until approval",
+        "filter exemplars by exact content type",
+        "proof template",
+        "creative html",
+        "untrusted content",
+        "solstice_brand_claims",
+        "current solstice mcp does not expose",
+    ):
+        assert phrase in body_lower
+
+    references = {"reconstruction-workflow.md", "renderer-contract.md"}
+    assert {path.name for path in (skill_dir / "references").glob("*.md")} == references
+    for reference in references:
+        assert f"(references/{reference})" in body
+
+    workflow = (skill_dir / "references" / "reconstruction-workflow.md").read_text().lower()
+    for phrase in (
+        "same-content-type exemplar rule",
+        "operation summaries omit `content_type`",
+        "solstice_list_projects",
+        "solstice_project_info",
+        "keep only operation ids where content_type == detected email|banner|social",
+        "never fall back across content types",
+        "solstice_list_operations",
+        "solstice_operation_messages",
+        "solstice_operation_html(..., fetch=true)",
+        "no list/get tool for `prc_template_versions`",
+    ):
+        assert phrase in workflow
+
+    contract = (skill_dir / "references" / "renderer-contract.md").read_text()
+    for seam in (
+        "#prc-cover-data",
+        ".prc-render-stage",
+        ".prc-render-frame",
+        ".prc-callout-gutter",
+        ".prc-connector-svg",
+        "#banner-template-data",
+        "#banner-scene-adapter",
+        "[data-banner-section]",
+        "#prc-platform-page-tpl",
+        "VIEWPORT|Links to:",
+    ):
+        assert seam in contract
 
 
 def test_isi_replacement_skill_is_portable_and_human_in_loop() -> None:
