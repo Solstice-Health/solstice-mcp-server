@@ -70,9 +70,13 @@ creative into one document.
 6. **Preview and iterate.** Show the user the local composed result and explain
    any source region that could not be mapped.
 7. **Land only after approval.** Use the `figma-to-solstice` /
-   `solstice-platform` append-only flow for creative HTML. Current Solstice MCP does not expose
-   `prc_template_versions` create/publish tools; save the PRC template through
-   Solstice Studio or Template Settings instead of pretending it was published.
+   `solstice-platform` append-only flow for creative HTML. Before creating the
+   PRC version, ask the user to confirm the tenant, brand, template key, exact
+   content type, display name, description/configuration, draft vs. published
+   status, and final HTML preview. Then call
+   `solstice_create_prc_template_version(..., confirmed=true)`. The tool appends
+   a row but does not select it for a brand or operation; explain that a
+   published auto-resolving key may immediately become effective.
 
 ## Output contract
 

@@ -145,6 +145,7 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
         "solstice_operation_messages",
         "solstice_operation_html",
         "solstice_prc_template",
+        "solstice_create_prc_template_version",
         "solstice_create_operation",
         "solstice_create_edit_operation",
         "solstice_prepare_operation_version",
@@ -161,6 +162,7 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
         "solstice_memory_forget",
     }
     non_destructive_writes = {
+        "solstice_create_prc_template_version",
         "solstice_create_operation",
         "solstice_create_edit_operation",
         "solstice_prepare_operation_version",

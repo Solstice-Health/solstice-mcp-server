@@ -16,7 +16,8 @@ without importing it:
   body fetch is deferred to a future tool (see ``solstice_operation_html``).
 - ``prc_template_versions`` — versioned proof-shell HTML. Reads resolve the
   effective template through operation, brand, environment, then platform
-  precedence and never expose an unscoped tenant-wide template listing.
+  precedence and never expose an unscoped tenant-wide template listing. Writes
+  append a new version only and require SOLSTICE_STAFF on a selected brand.
 
 Authorization: every function routes through ``require_brand_role`` (MEMBER),
   so the subject must hold a live ``brand_team_members`` row on the brand that
@@ -39,7 +40,8 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from mcp.server.fastmcp.exceptions import ToolError
-from sqlalchemy import JSON, DateTime, Integer, String, Text, Uuid, func, or_, select
+from sqlalchemy import JSON, DateTime, Integer, String, Text, UniqueConstraint, Uuid, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, mapped_column
 
 from solstice_mcp.brands import (
@@ -55,6 +57,8 @@ from solstice_mcp.tenants import Base, SessionFactory, TenantRegistry, tenant_se
 logger = logging.getLogger(__name__)
 
 _HTML_S3_KEY_PREFIX = "cg_operation_msg_html"
+_PRC_CONTENT_TYPES = {"banner", "email", "social"}
+_PRC_TEMPLATE_STATUSES = {"draft", "published"}
 
 
 def _looks_like_s3_key(content: str | None) -> bool:
@@ -164,7 +168,7 @@ class CgOperationMessage(Base):
 
 
 class PrcTemplateVersion(Base):
-    """Read-only mapping of the tenant ``prc_template_versions`` table."""
+    """Mapping of the tenant ``prc_template_versions`` table."""
 
     __tablename__ = "prc_template_versions"
 
@@ -178,9 +182,19 @@ class PrcTemplateVersion(Base):
     config_schema: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     default_field_values: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String)
+    created_by: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "template_key",
+            "content_type",
+            "version_number",
+            name="uix_prc_template_key_content_version",
+        ),
+    )
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -476,6 +490,122 @@ def resolve_prc_template_for_brand(
             fetch=fetch,
             max_inline_bytes=max_inline_bytes,
         )
+
+
+def create_prc_template_version(
+    subject: str,
+    tenant_slug: str,
+    brand_id: str,
+    template_key: str,
+    content_type: str,
+    name: str,
+    html_template: str,
+    status: str,
+    confirmed: bool,
+    description: str | None = None,
+    config_schema: dict[str, Any] | None = None,
+    default_field_values: dict[str, Any] | None = None,
+    *,
+    max_inline_bytes: int,
+    registry: TenantRegistry,
+    session_factory: SessionFactory,
+) -> dict[str, Any]:
+    """Append one PRC template version without selecting or mutating another row."""
+    identity = require_brand_role(
+        subject,
+        tenant_slug,
+        brand_id,
+        min_role=UserRole.SOLSTICE_STAFF,
+        registry=registry,
+        session_factory=session_factory,
+    )
+    if not confirmed:
+        raise ToolError(
+            "confirmation_required: show the user the template key, content type, "
+            "name, status, and HTML preview before retrying with confirmed=true"
+        )
+
+    normalized_key = template_key.strip()
+    normalized_content_type = content_type.strip().lower()
+    normalized_name = name.strip()
+    normalized_status = status.strip().lower()
+    if not normalized_key:
+        raise ToolError("invalid_request: template_key is required")
+    if len(normalized_key) > 255:
+        raise ToolError("invalid_request: template_key must be at most 255 characters")
+    if normalized_content_type not in _PRC_CONTENT_TYPES:
+        allowed = ", ".join(sorted(_PRC_CONTENT_TYPES))
+        raise ToolError(f"invalid_request: content_type must be one of {allowed}")
+    if not normalized_name:
+        raise ToolError("invalid_request: name is required")
+    if len(normalized_name) > 255:
+        raise ToolError("invalid_request: name must be at most 255 characters")
+    if normalized_status not in _PRC_TEMPLATE_STATUSES:
+        allowed = ", ".join(sorted(_PRC_TEMPLATE_STATUSES))
+        raise ToolError(f"invalid_request: status must be one of {allowed}")
+    if not html_template.strip():
+        raise ToolError("invalid_request: html_template is required")
+    html_size_bytes = len(html_template.encode("utf-8"))
+    if html_size_bytes > max_inline_bytes:
+        raise ToolError(
+            f"too_large: PRC template is {html_size_bytes} bytes; inline limit is {max_inline_bytes}"
+        )
+
+    now = datetime.now(UTC)
+    with tenant_session(tenant_slug, session_factory) as session:
+        brand = session.scalar(
+            select(Brand)
+            .where(Brand.id == brand_id, Brand.deleted_at.is_(None))
+            .with_for_update()
+        )
+        if brand is None:
+            raise ToolError("not_authorized: unknown brand")
+        latest_version = session.scalar(
+            select(func.max(PrcTemplateVersion.version_number)).where(
+                PrcTemplateVersion.template_key == normalized_key,
+                PrcTemplateVersion.content_type == normalized_content_type,
+            )
+        )
+        template = PrcTemplateVersion(
+            id=str(uuid4()),
+            template_key=normalized_key,
+            version_number=(latest_version or 0) + 1,
+            content_type=normalized_content_type,
+            name=normalized_name,
+            description=description.strip() if description and description.strip() else None,
+            html_template=html_template,
+            config_schema=config_schema,
+            default_field_values=default_field_values,
+            status=normalized_status,
+            created_by=identity.user_id,
+            created_at=now,
+            updated_at=now,
+            deleted_at=None,
+        )
+        session.add(template)
+        try:
+            session.commit()
+        except IntegrityError as exc:
+            session.rollback()
+            raise ToolError(
+                "conflict: another PRC template version was created concurrently; "
+                "retry to append the next version"
+            ) from exc
+
+    return {
+        "id": template.id,
+        "template_key": template.template_key,
+        "version_number": template.version_number,
+        "content_type": template.content_type,
+        "name": template.name,
+        "description": template.description,
+        "config_schema": template.config_schema,
+        "default_field_values": template.default_field_values,
+        "template_status": template.status,
+        "created_at": _iso(template.created_at),
+        "html_size_bytes": html_size_bytes,
+        "brand_selection_updated": False,
+    }
 
 
 def _brand_id_for_project(session, project_id: str) -> str | None:

@@ -114,6 +114,16 @@ Only for users the server recognizes as Solstice staff on the asset's brand; the
 
 For "what's pending / what's on my plate today" and dismissing invalid requests, follow [Request triage](request-triage.md). Reads cover the whole workspace queue for staff; dismissal needs staff on the request's own brand and a mandatory reason the user supplies.
 
+## Staff: append a PRC template version
+
+Use the `prc-template-recreation` skill. Show the final HTML preview, then ask
+the user to confirm the tenant, brand, template key, exact content type, display
+name, description/configuration, and draft vs. published status. Only then call
+`solstice_create_prc_template_version(..., confirmed=true)`. The tool appends a
+row and does not update brand or operation selections.
+
 ## Unsupported changes
 
-Apart from creating an asset in a folder and adding a document version, do not attempt writes through another tool or imply success. Say: "That change is not supported by this Solstice connection, so I did not make it."
+Do not attempt writes outside the supported actions in the main skill or imply
+success. Say: "That change is not supported by this Solstice connection, so I
+did not make it."

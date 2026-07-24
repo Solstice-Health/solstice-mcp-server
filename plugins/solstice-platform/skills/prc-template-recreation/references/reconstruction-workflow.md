@@ -261,7 +261,11 @@ After approval:
 
 - land the creative through the append-only `solstice-platform` flow, following
   its create-vs-edit routing and explicit content type requirement;
-- publish the PRC template through Solstice Studio or Template Settings;
-- do not claim MCP publication succeeded because the current MCP exposes no
-  `prc_template_versions` write tool.
+- ask the user to confirm the tenant, brand, template key, exact content type,
+  display name, description/configuration, draft vs. published status, and the
+  final HTML preview;
+- call `solstice_create_prc_template_version(..., confirmed=true)`;
+- explain that this appends `prc_template_versions` without changing any brand
+  or operation selection. A published auto-resolving key may become effective
+  immediately; other templates still require selection in Template Settings.
 

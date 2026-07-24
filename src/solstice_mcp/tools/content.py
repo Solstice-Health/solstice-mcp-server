@@ -16,6 +16,7 @@ from solstice_mcp.operations import (
     commit_operation_version,
     create_edit_operation,
     create_operation,
+    create_prc_template_version,
     get_operation_html,
     get_operation_info,
     get_project_info,
@@ -198,6 +199,58 @@ def register_content_tools(
             raise ToolError(
                 f"not_found: no PRC template for content_type {content_type.strip().lower()!r}"
             )
+        return {
+            "status": "ok",
+            "tenant_slug": tenant_slug,
+            "brand_id": brand_id,
+            **template,
+        }
+
+    @append_only_tool
+    def solstice_create_prc_template_version(
+        tenant_slug: str,
+        brand_id: str,
+        template_key: str,
+        content_type: str,
+        name: str,
+        html_template: str,
+        status: str,
+        confirmed: bool,
+        description: str | None = None,
+        config_schema: dict[str, Any] | None = None,
+        default_field_values: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Append one reusable PRC proof-template version.
+
+        Before calling, show the user the exact HTML preview and ask them to
+        confirm the tenant, brand, template key, content type (email/banner/
+        social), display name, optional description/configuration, and status
+        (draft/published). Pass ``confirmed=true`` only after explicit approval.
+
+        This inserts a new ``prc_template_versions`` row and derives its id,
+        next version number, creator, and timestamps server-side. It never
+        updates or deletes an existing version and never changes brand or
+        operation template selections. A published row under an auto-resolving
+        brand/environment/platform key may immediately become the effective
+        latest version. Requires SOLSTICE_STAFF on the selected brand.
+        """
+        template = create_prc_template_version(
+            require_subject(),
+            tenant_slug,
+            brand_id,
+            template_key,
+            content_type,
+            name,
+            html_template,
+            status,
+            confirmed,
+            description,
+            config_schema,
+            default_field_values,
+            max_inline_bytes=max_inline_bytes,
+            registry=registry,
+            session_factory=session_factory,
+        )
         return {
             "status": "ok",
             "tenant_slug": tenant_slug,

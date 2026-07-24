@@ -67,7 +67,7 @@ codex plugin add solstice-platform@solstice-tools
 codex mcp login solstice-platform
 ```
 
-The fixed callback-port setting from **Codex local** is required for both local and marketplace installs. Codex prompts before the two append-only version-write tools because the bundled MCP policy uses `writes` approval mode.
+The fixed callback-port setting from **Codex local** is required for both local and marketplace installs. Codex prompts before write tools because the bundled MCP policy uses `writes` approval mode.
 
 ## Update or uninstall
 
