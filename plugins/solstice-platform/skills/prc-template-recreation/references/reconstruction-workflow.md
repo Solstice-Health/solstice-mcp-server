@@ -162,6 +162,39 @@ For the proof shell:
    The tool applies operation, brand, environment, then platform precedence and
    does not cross content types. A brand opt-out returns no template instead of
    silently falling through to a default.
+
+   Structural means seams only: renderer selectors, `data-sol-prc-*` wiring,
+   page-builder and readiness mechanics, ISI/callout hosts. Never copy the
+   exemplar's visual layout, palette, typography, or page composition — those
+   come from the source design. If the resolved exemplar predates the current
+   canonical seed's mechanics (e.g. lacks storyboard/per-frame support the
+   source design requires), base the shell on the current same-type seed and
+   restyle it; note the substitution to the user.
+
+### Digest exemplars via subagent
+
+Exemplar HTML runs tens of KB to multiple MB; loading it wholesale into the
+main context wastes budget and biases the recreation toward the exemplar's
+visuals. Instead:
+
+1. Save the fetched exemplar to a local file without reading it.
+2. Dispatch one small subagent (quick/medium exploration) with the file path,
+   the renderer-contract profile for the content type, and this return
+   contract:
+   - skeleton: required IDs, template-element ids, `data-slot` names,
+     `data-sol-prc-*` attributes, cover-field IDs, and the script section map
+     (what each script block builds);
+   - deltas only: any seam, selector, field, or behavior that differs from the
+     renderer contract and the current canonical same-type seed — verbatim
+     snippets for those deltas, nothing else;
+   - a one-line verdict on whether the exemplar is current or predates the
+     canonical seed's mechanics.
+3. Author from the canonical seed plus the digest. Pull verbatim code from the
+   exemplar file surgically (grep by the digest's markers) only when a delta
+   requires it.
+
+The same applies to validating an authored template: hand the file pair to a
+subagent to check the skeleton list instead of re-reading full documents.
 3. If no row resolves, use a user-provided same-type template, then the current
    canonical same-type seed when available locally, then the structural
    contract in `renderer-contract.md`.
@@ -201,6 +234,10 @@ Produce `creative.html` as a complete standalone document.
   expects multiple variants.
 - Preserve `data-platform`, ratio, distribution, and scene semantics from the
   same-type exemplar.
+- Mark every scene of an animated/multi-scene creative with `data-scene` so the
+  proof can freeze per-frame stills; the proof layout must break frames out
+  individually when the source design does (one animated cell is never the
+  only rendering).
 - Keep platform chrome/content in the creative boundary expected by the current
   social shell. Do not add PRC page borders or proof labels.
 
@@ -221,6 +258,34 @@ Produce `prc-template.html` from the matching profile in
 - Do not emit generated annotation DOM or persisted annotation-position JSON.
 - Preserve functional template scripts and text/plain adapters from the
   canonical profile. Visual similarity does not replace their behavior.
+
+### Proof-sheet fidelity checklist
+
+Learned failure modes; check each against the source design:
+
+- **Static display.** Proof pages never autoplay. Freeze animated creative at a
+  deterministic scene on every proof surface: platform mocks at scene 1, frame
+  stills at their own scene. With the `__SOCIAL_INITIAL_SCENE__` handshake, the
+  creative bakes `window.__SOCIAL_INITIAL_SCENE__=0` (autoplay when viewed
+  standalone) and the template's page builder rewrites `=0` to the frozen scene
+  number when composing each proof surface.
+- **Corner treatment comes from the source design.** Exemplar/brand card
+  styling often adds `border-radius` to page cards, frame wraps, or post
+  chrome; a square source design (most proof sheets) means squaring all of
+  them. Audit `border-radius` in the authored template AND creative chrome
+  before shipping.
+- **Fit after settle.** Variant mocks embed multi-MB nested creative iframes;
+  measuring width/height on first `load` under-reports and clips the mock.
+  Refit when the nested `.sol-media iframe` fires `load`, plus one late
+  timeout pass, in addition to the initial fit.
+- **The frame fits the content, never the reverse.** Scale a platform mock by
+  its embedded creative's width so the creative displays at the same width as
+  the frame stills; let the frame container grow slightly beyond the column to
+  fit the chrome around it. Do not shrink the creative to force the mock into
+  a fixed column width.
+- **One label style.** Lead-mock labels and frame-still labels use identical
+  typography (the source design's frame labels), not the seed's two different
+  label styles.
 
 ## 7. Compose and verify
 
