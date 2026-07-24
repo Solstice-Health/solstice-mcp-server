@@ -144,6 +144,29 @@ jobs:
             --force-new-deployment
           aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
 
+      - name: Diagnose failed deployment
+        if: failure()
+        run: |
+          aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].events[:10].[createdAt,message]' \
+            --output table
+          TASKS=$(aws ecs list-tasks \
+            --cluster "$ECS_CLUSTER" \
+            --service-name "$ECS_SERVICE" \
+            --desired-status STOPPED \
+            --max-items 10 \
+            --query 'taskArns' \
+            --output text)
+          if [ -n "$TASKS" ] && [ "$TASKS" != "None" ]; then
+            aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --tasks $TASKS \
+              --query 'tasks[].{task:taskArn,reason:stoppedReason,containers:containers[].{name:name,reason:reason,exitCode:exitCode}}' \
+              --output json
+          fi
+
       - name: Smoke test
         id: smoke
         env:
