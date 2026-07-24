@@ -117,10 +117,11 @@ For "what's pending / what's on my plate today" and dismissing invalid requests,
 ## Staff: append a PRC template version
 
 Use the `prc-template-recreation` skill. Show the final HTML preview, then ask
-the user to confirm the tenant, brand, template key, exact content type, display
-name, description/configuration, and draft vs. published status. Only then call
-`solstice_create_prc_template_version(..., confirmed=true)`. The tool appends a
-row and does not update brand or operation selections.
+the user separately whether to publish the PRC template and whether to publish
+the creative content. If they choose the template, ask separately for its name
+and key, then call `solstice_create_prc_template_version(..., confirmed=true)`.
+Status defaults to published; do not ask for it. The tool appends a row and does
+not update brand or operation selections.
 
 ## Unsupported changes
 

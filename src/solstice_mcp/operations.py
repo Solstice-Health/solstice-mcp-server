@@ -500,11 +500,11 @@ def create_prc_template_version(
     content_type: str,
     name: str,
     html_template: str,
-    status: str,
     confirmed: bool,
     description: str | None = None,
     config_schema: dict[str, Any] | None = None,
     default_field_values: dict[str, Any] | None = None,
+    status: str = "published",
     *,
     max_inline_bytes: int,
     registry: TenantRegistry,
@@ -522,7 +522,7 @@ def create_prc_template_version(
     if not confirmed:
         raise ToolError(
             "confirmation_required: show the user the template key, content type, "
-            "name, status, and HTML preview before retrying with confirmed=true"
+            "name, and HTML preview before retrying with confirmed=true"
         )
 
     normalized_key = template_key.strip()

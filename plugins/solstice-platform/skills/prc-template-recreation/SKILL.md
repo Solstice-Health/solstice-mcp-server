@@ -69,14 +69,18 @@ creative into one document.
    field editing, iframe hydration, and annotation geometry.
 6. **Preview and iterate.** Show the user the local composed result and explain
    any source region that could not be mapped.
-7. **Land only after approval.** Use the `figma-to-solstice` /
-   `solstice-platform` append-only flow for creative HTML. Before creating the
-   PRC version, ask the user to confirm the tenant, brand, template key, exact
-   content type, display name, description/configuration, draft vs. published
-   status, and final HTML preview. Then call
-   `solstice_create_prc_template_version(..., confirmed=true)`. The tool appends
-   a row but does not select it for a brand or operation; explain that a
-   published auto-resolving key may immediately become effective.
+7. **Offer each publish separately.** After conversion and preview are done,
+   ask two simple questions, never one composite question:
+   - "Would you like to publish the PRC template?"
+   - "Would you like to publish the creative content?"
+8. **Land only what the user accepts.** If they choose the PRC template, ask
+   "What template name should I use?" and then "What template key should I use?"
+   as separate questions. Call
+   `solstice_create_prc_template_version(..., confirmed=true)`; status defaults
+   to published, so do not ask for it. The tool appends a row but does not
+   select it for a brand or operation; explain that an auto-resolving key may
+   immediately become effective. If they choose the creative content, use the
+   `figma-to-solstice` / `solstice-platform` append-only flow.
 
 ## Output contract
 

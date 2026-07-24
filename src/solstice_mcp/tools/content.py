@@ -214,18 +214,19 @@ def register_content_tools(
         content_type: str,
         name: str,
         html_template: str,
-        status: str,
         confirmed: bool,
         description: str | None = None,
         config_schema: dict[str, Any] | None = None,
         default_field_values: dict[str, Any] | None = None,
+        status: str = "published",
     ) -> dict[str, Any]:
         """Append one reusable PRC proof-template version.
 
-        Before calling, show the user the exact HTML preview and ask them to
-        confirm the tenant, brand, template key, content type (email/banner/
-        social), display name, optional description/configuration, and status
-        (draft/published). Pass ``confirmed=true`` only after explicit approval.
+        After the user approves the exact HTML preview and chooses to publish
+        the PRC template, ask separately for its display name and template key.
+        Use the tenant, brand, and content type already established during
+        conversion, then pass ``confirmed=true``. Status defaults to
+        ``published``; do not ask the user to choose it.
 
         This inserts a new ``prc_template_versions`` row and derives its id,
         next version number, creator, and timestamps server-side. It never
@@ -242,11 +243,11 @@ def register_content_tools(
             content_type,
             name,
             html_template,
-            status,
-            confirmed,
-            description,
-            config_schema,
-            default_field_values,
+            confirmed=confirmed,
+            description=description,
+            config_schema=config_schema,
+            default_field_values=default_field_values,
+            status=status,
             max_inline_bytes=max_inline_bytes,
             registry=registry,
             session_factory=session_factory,

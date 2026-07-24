@@ -177,6 +177,11 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "solstice_brand_claims",
         "solstice_create_prc_template_version",
         "confirmed=true",
+        "would you like to publish the prc template?",
+        "would you like to publish the creative content?",
+        "what template name should i use?",
+        "what template key should i use?",
+        "status defaults",
     ):
         assert phrase in body_lower
 
@@ -198,6 +203,10 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "solstice_operation_html(..., fetch=true)",
         "solstice_prc_template(..., fetch=true)",
         "solstice_create_prc_template_version(..., confirmed=true)",
+        "never combine those choices into one question",
+        "what template name should i use?",
+        "what template key should i use?",
+        "defaults to published",
         "operation, brand, environment, then platform precedence",
         "returned `prc_template_versions` html",
     ):

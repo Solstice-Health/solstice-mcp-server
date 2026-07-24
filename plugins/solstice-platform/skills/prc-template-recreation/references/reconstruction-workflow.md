@@ -255,17 +255,21 @@ Show the user:
 - same-type exemplar used;
 - validation failures or uncertain mappings.
 
-Do not write to Solstice until the user approves.
+Do not write to Solstice until the user approves. Once conversion and preview
+are complete, ask these as separate yes/no questions:
 
-After approval:
+1. "Would you like to publish the PRC template?"
+2. "Would you like to publish the creative content?"
 
-- land the creative through the append-only `solstice-platform` flow, following
-  its create-vs-edit routing and explicit content type requirement;
-- ask the user to confirm the tenant, brand, template key, exact content type,
-  display name, description/configuration, draft vs. published status, and the
-  final HTML preview;
-- call `solstice_create_prc_template_version(..., confirmed=true)`;
-- explain that this appends `prc_template_versions` without changing any brand
-  or operation selection. A published auto-resolving key may become effective
-  immediately; other templates still require selection in Template Settings.
+Never combine those choices into one question. For each accepted artifact:
+
+- PRC template: ask "What template name should I use?" and then
+  "What template key should I use?" as separate questions. Call
+  `solstice_create_prc_template_version(..., confirmed=true)` without a status;
+  it defaults to published. Explain that this appends `prc_template_versions`
+  without changing any brand or operation selection. An auto-resolving key may
+  become effective immediately; other templates still require selection in
+  Template Settings.
+- Creative content: land it through the append-only `solstice-platform` flow,
+  following its create-vs-edit routing and explicit content type requirement.
 

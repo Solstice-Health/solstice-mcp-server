@@ -367,7 +367,6 @@ def test_create_prc_template_version_appends_and_preserves_prior_version(
         "name": "Custom Email",
         "description": "First version",
         "html_template": "\n<!doctype html><html>v1</html>\n",
-        "status": "draft",
         "confirmed": True,
         "config_schema": {"fields": [{"id": "jobCode"}]},
         "default_field_values": {"jobCode": "ABC-123"},
@@ -375,6 +374,7 @@ def test_create_prc_template_version_appends_and_preserves_prior_version(
     first = tool_payload(_create_call(app_harness, mint_token, **arguments))
 
     assert first["version_number"] == 1
+    assert first["template_status"] == "published"
     assert first["brand_selection_updated"] is False
     assert first["html_size_bytes"] == len(arguments["html_template"].encode())
 
@@ -398,7 +398,7 @@ def test_create_prc_template_version_appends_and_preserves_prior_version(
                 **arguments,
                 "description": "Second version",
                 "html_template": "<!doctype html><html>v2</html>",
-                "status": "published",
+                "status": "draft",
             },
         )
     )
