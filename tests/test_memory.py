@@ -38,7 +38,6 @@ from solstice_mcp.memory_client import (
 
 TENANT = "tenant_a"
 TENANT_B = "tenant_b"
-OBSERVATION_ID = "00000000-0000-0000-0000-000000000901"
 FACT_ID = "00000000-0000-0000-0000-000000000902"
 
 
@@ -73,10 +72,10 @@ def _set_recall_response(
     opener.responses[("GET", "/api/internal/agent-memory")] = (200, body)
 
 
-def _set_remember_response(opener, memory_id: str = "mem-1", mutation_id: str = "mut-1") -> None:
+def _set_remember_response(opener, memory_id: str = "mem-1") -> None:
     opener.responses[("POST", "/api/internal/agent-memory")] = (
         200,
-        json.dumps({"memory_id": memory_id, "mutation_id": mutation_id, "status": "active"}).encode("utf-8"),
+        json.dumps({"fact": {"memory_id": memory_id, "status": "active"}}).encode("utf-8"),
     )
 
 
@@ -84,7 +83,10 @@ def _set_replace_response(opener, memory_id: str = "mem-2") -> None:
     opener.responses[("POST", "/api/internal/agent-memory/mem-1/supersede")] = (
         200,
         json.dumps(
-            {"memory_id": memory_id, "superseded_id": "mem-1", "mutation_id": "mut-2", "status": "active"}
+            {
+                "fact": {"memory_id": memory_id, "status": "active"},
+                "superseded": {"memory_id": "mem-1", "status": "superseded"},
+            }
         ).encode("utf-8"),
     )
 
@@ -92,37 +94,30 @@ def _set_replace_response(opener, memory_id: str = "mem-2") -> None:
 def _set_forget_response(opener) -> None:
     opener.responses[("POST", "/api/internal/agent-memory/mem-1/forget")] = (
         200,
-        json.dumps({"memory_id": "mem-1", "mutation_id": "mut-3", "status": "forgotten"}).encode("utf-8"),
+        json.dumps({"forgotten": {"memory_id": "mem-1", "status": "forgotten"}}).encode("utf-8"),
     )
+
+
+_OBSERVED_FACT = {
+    "memory_id": FACT_ID,
+    "actor_user_id": USER_A_SHARED,
+    "scope": "personal",
+    "brand_id": BRAND_A1,
+    "fact_type": "preference",
+    "statement": "Prefers concise review summaries.",
+    "status": "active",
+}
 
 
 def _set_observation_response(
     opener,
     *,
-    observation_id: str = OBSERVATION_ID,
-    scope: str = "personal",
-    brand_id: str | None = BRAND_A1,
-    processing_state: str = "pending",
-    outcome: str | None = None,
-    fact_id: str | None = None,
+    outcome: str = "activated",
+    fact: dict[str, Any] | None = _OBSERVED_FACT,
 ) -> None:
     opener.responses[("POST", "/api/internal/agent-memory/observations")] = (
-        201,
-        json.dumps(
-            {
-                "id": observation_id,
-                "actor_user_id": USER_A_SHARED,
-                "scope": scope,
-                "brand_id": brand_id,
-                "occurred_at": "2026-07-23T12:00:00Z",
-                "host_correlation_id": "turn-7",
-                "idempotency_key": "observe-7",
-                "processing_state": processing_state,
-                "outcome": outcome,
-                "fact_id": fact_id,
-                "processed_at": "2026-07-23T12:00:01Z" if processing_state == "processed" else None,
-            }
-        ).encode("utf-8"),
+        200,
+        json.dumps({"outcome": outcome, "fact": fact}).encode("utf-8"),
     )
 
 
@@ -154,9 +149,11 @@ def test_observation_tool_contract_excludes_authority_fields(app_harness: AppHar
     observe = next(tool for tool in tools if tool["name"] == "solstice_memory_observe")
     properties = observe["inputSchema"]["properties"]
 
-    assert {"tenant_slug", "scope", "observation"} <= properties.keys()
+    assert {"tenant_slug", "scope", "statement", "fact_type", "semantic_subject"} <= properties.keys()
     assert {"brand_id", "entity_refs", "source_refs", "occurred_at",
-            "host_correlation_id", "idempotency_key"} <= properties.keys()
+            "host_correlation_id"} <= properties.keys()
+    assert "observation" not in properties
+    assert "idempotency_key" not in properties
     assert "user_id" not in properties
     assert "role" not in properties
 
@@ -199,7 +196,8 @@ def test_personal_write_succeeds_for_member(app_harness: AppHarness, mint_token)
                      "fact_type": "preference", "statement": "prefer short emails"})
     payload = _ok(response)
     assert payload["scope"] == "personal"
-    assert payload["memory_id"] == "mem-1"
+    assert payload["fact"]["memory_id"] == "mem-1"
+    assert "mutation_id" not in payload
 
 
 def test_tenant_personal_write_omits_partition_brand(app_harness: AppHarness, mint_token):
@@ -265,6 +263,19 @@ def test_invalid_scope_rejected(app_harness: AppHarness, mint_token):
 # ---------------------------------------------------------------------------
 
 
+def _observe_args(**overrides: Any) -> dict[str, Any]:
+    args = {
+        "tenant_slug": TENANT,
+        "scope": "personal",
+        "brand_id": BRAND_A1,
+        "statement": "Prefers concise review summaries.",
+        "fact_type": "preference",
+        "semantic_subject": "review summary style",
+        **overrides,
+    }
+    return {key: value for key, value in args.items() if value is not None}
+
+
 def test_personal_observation_emits_bounded_backend_contract(app_harness: AppHarness, mint_token):
     _set_observation_response(app_harness.backend_opener)
     token = mint_token(sub=SHARED_SUB)
@@ -272,32 +283,24 @@ def test_personal_observation_emits_bounded_backend_contract(app_harness: AppHar
         app_harness,
         token,
         "solstice_memory_observe",
-        {
-            "tenant_slug": TENANT,
-            "scope": "personal",
-            "brand_id": BRAND_A1,
-            "observation": "The user prefers concise review summaries.",
-            "entity_refs": [{"entity_type": "brand", "entity_id": BRAND_A1}],
-            "source_refs": [{"source_type": "operation", "source_id": "op-1"}],
-            "occurred_at": "2026-07-23T12:00:00Z",
-            "host_correlation_id": "turn-7",
-            "idempotency_key": "observe-7",
-        },
+        _observe_args(
+            entity_refs=[{"entity_type": "brand", "entity_id": BRAND_A1}],
+            source_refs=[{"source_type": "operation", "source_id": "op-1"}],
+            occurred_at="2026-07-23T12:00:00Z",
+            host_correlation_id="turn-7",
+        ),
     )
 
     payload = _ok(response)
     assert payload == {
-        "observation_id": OBSERVATION_ID,
-        "status": "pending",
-        "outcome": None,
-        "fact_id": None,
+        "outcome": "activated",
+        "fact": _OBSERVED_FACT,
         "tenant_slug": TENANT,
         "brand_id": BRAND_A1,
         "scope": "personal",
     }
-    assert "id" not in payload
-    assert "actor_user_id" not in payload
-    assert "processing_state" not in payload
+    assert "observation_id" not in payload
+    assert "status" not in payload
     call = app_harness.backend_opener.calls[-1]
     assert call["method"] == "POST"
     assert call["path"] == "/api/internal/agent-memory/observations"
@@ -308,33 +311,32 @@ def test_personal_observation_emits_bounded_backend_contract(app_harness: AppHar
         "tenant_slug": TENANT,
         "scope": "personal",
         "brand_id": BRAND_A1,
-        "observation": "The user prefers concise review summaries.",
+        "statement": "Prefers concise review summaries.",
+        "fact_type": "preference",
+        "semantic_subject": "review summary style",
         "entity_refs": [{"entity_type": "brand", "entity_id": BRAND_A1}],
         "source_refs": [{"source_type": "operation", "source_id": "op-1"}],
         "occurred_at": "2026-07-23T12:00:00+00:00",
         "host_correlation_id": "turn-7",
-        "idempotency_key": "observe-7",
     }
+    assert "observation" not in body
+    assert "idempotency_key" not in body
     assert "user_id" not in body
     assert "role" not in body
 
 
 def test_tenant_personal_observation_uses_tenant_membership(app_harness: AppHarness, mint_token):
-    _set_observation_response(
-        app_harness.backend_opener,
-        scope="tenant_personal",
-        brand_id=None,
-    )
+    _set_observation_response(app_harness.backend_opener)
     response = _call(
         app_harness,
         mint_token(sub=SHARED_SUB),
         "solstice_memory_observe",
-        {
-            "tenant_slug": TENANT,
-            "scope": "tenant_personal",
-            "observation": "The user prefers concise answers in every brand.",
-            "idempotency_key": "tenant-pref-1",
-        },
+        _observe_args(
+            scope="tenant_personal",
+            brand_id=None,
+            statement="Prefers concise answers in every brand.",
+            semantic_subject="answer length",
+        ),
     )
 
     assert _ok(response)["brand_id"] is None
@@ -350,11 +352,7 @@ def test_tenant_personal_observation_denies_non_member(app_harness: AppHarness, 
         app_harness,
         mint_token(sub=OTHER_SUB),
         "solstice_memory_observe",
-        {
-            "tenant_slug": TENANT_B,
-            "scope": "tenant_personal",
-            "observation": "The user prefers concise answers.",
-        },
+        _observe_args(tenant_slug=TENANT_B, scope="tenant_personal", brand_id=None),
     )
 
     assert "not_authorized" in _tool_error_text(response)
@@ -366,12 +364,8 @@ def test_brand_observation_rejected_with_explicit_memory_guidance(app_harness: A
         app_harness,
         mint_token(sub=SHARED_SUB),
         "solstice_memory_observe",
-        {
-            "tenant_slug": TENANT,
-            "scope": "brand",
-            "brand_id": BRAND_A1,
-            "observation": "Use sentence case for this brand.",
-        },
+        _observe_args(scope="brand", statement="Use sentence case for this brand.",
+                      fact_type="convention", semantic_subject="casing"),
     )
 
     text = _tool_error_text(response)
@@ -380,58 +374,41 @@ def test_brand_observation_rejected_with_explicit_memory_guidance(app_harness: A
     assert app_harness.backend_opener.calls == []
 
 
-def test_observation_preserves_idempotency_key_on_retry(app_harness: AppHarness, mint_token):
-    _set_observation_response(app_harness.backend_opener)
-    args = {
-        "tenant_slug": TENANT,
-        "scope": "personal",
-        "brand_id": BRAND_A1,
-        "observation": "The user prefers concise summaries.",
-        "occurred_at": "2026-07-23T12:00:00Z",
-        "idempotency_key": "stable-retry-key",
-    }
-    token = mint_token(sub=SHARED_SUB)
-
-    assert _ok(_call(app_harness, token, "solstice_memory_observe", args))["observation_id"] == OBSERVATION_ID
-    assert _ok(_call(app_harness, token, "solstice_memory_observe", args))["observation_id"] == OBSERVATION_ID
-    bodies = [json.loads(call["body"]) for call in app_harness.backend_opener.calls]
-    assert len(bodies) == 2
-    assert bodies[0] == bodies[1]
-    assert bodies[0]["idempotency_key"] == "stable-retry-key"
-
-
-def test_observation_response_remaps_processed_backend_fields(app_harness: AppHarness, mint_token):
-    _set_observation_response(
-        app_harness.backend_opener,
-        processing_state="processed",
-        outcome="activated",
-        fact_id=FACT_ID,
-    )
-    response = _call(
-        app_harness,
-        mint_token(sub=SHARED_SUB),
-        "solstice_memory_observe",
-        {
-            "tenant_slug": TENANT,
-            "scope": "personal",
-            "brand_id": BRAND_A1,
-            "observation": "The user prefers concise summaries.",
-        },
-    )
+@pytest.mark.parametrize(
+    ("outcome", "fact"),
+    [
+        ("reinforced", _OBSERVED_FACT),
+        ("suppressed", None),
+        ("ineligible", None),
+    ],
+)
+def test_observation_surfaces_final_outcome(app_harness: AppHarness, mint_token, outcome, fact):
+    _set_observation_response(app_harness.backend_opener, outcome=outcome, fact=fact)
+    response = _call(app_harness, mint_token(sub=SHARED_SUB), "solstice_memory_observe", _observe_args())
 
     payload = _ok(response)
-    assert payload["observation_id"] == OBSERVATION_ID
-    assert payload["status"] == "processed"
-    assert payload["outcome"] == "activated"
-    assert payload["fact_id"] == FACT_ID
+    assert payload["outcome"] == outcome
+    assert payload["fact"] == fact
+
+
+def test_observation_rejects_unexpected_backend_outcome(app_harness: AppHarness, mint_token):
+    # Legacy classifier outcomes (e.g. "no_memory") must not leak through the stable contract.
+    _set_observation_response(app_harness.backend_opener, outcome="no_memory", fact=None)
+    response = _call(app_harness, mint_token(sub=SHARED_SUB), "solstice_memory_observe", _observe_args())
+
+    assert "internal_error" in _tool_error_text(response)
 
 
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"observation": "x" * 1001},
-        {"observation": "\n".join("line" for _ in range(13))},
-        {"observation": "api_key=super-secret-value"},
+        {"statement": "x" * 1001},
+        {"statement": "\n".join("line" for _ in range(13))},
+        {"statement": "api_key=super-secret-value"},
+        {"fact_type": "decision"},
+        {"fact_type": "finding_disposition"},
+        {"semantic_subject": "   "},
+        {"semantic_subject": "x" * 257},
         {"brand_id": "not-a-uuid"},
         {"source_refs": [{"source_type": "operation", "source_id": f"op-{index}"} for index in range(51)]},
         {"entity_refs": [{"entity_type": "brand", "entity_id": f"brand-{index}"} for index in range(51)]},
@@ -439,7 +416,6 @@ def test_observation_response_remaps_processed_backend_fields(app_harness: AppHa
         {"entity_refs": [{"entity_type": "brand", "entity_id": BRAND_A1, "name": "not canonical"}]},
         {"occurred_at": "2026-07-23T12:00:00"},
         {"host_correlation_id": "x" * 129},
-        {"idempotency_key": "x" * 129},
     ],
 )
 def test_observation_rejects_unbounded_or_noncanonical_fields(
@@ -447,14 +423,8 @@ def test_observation_rejects_unbounded_or_noncanonical_fields(
     mint_token,
     overrides,
 ):
-    args = {
-        "tenant_slug": TENANT,
-        "scope": "personal",
-        "brand_id": BRAND_A1,
-        "observation": "The user prefers concise summaries.",
-        **overrides,
-    }
-    response = _call(app_harness, mint_token(sub=SHARED_SUB), "solstice_memory_observe", args)
+    response = _call(app_harness, mint_token(sub=SHARED_SUB), "solstice_memory_observe",
+                     _observe_args(**overrides))
 
     assert "invalid_argument" in _tool_error_text(response)
     assert app_harness.backend_opener.calls == []
@@ -469,17 +439,7 @@ def test_observation_maps_backend_errors(app_harness: AppHarness, mint_token, st
         status,
         b'{"detail":"sensitive backend detail"}',
     )
-    response = _call(
-        app_harness,
-        mint_token(sub=SHARED_SUB),
-        "solstice_memory_observe",
-        {
-            "tenant_slug": TENANT,
-            "scope": "personal",
-            "brand_id": BRAND_A1,
-            "observation": "The user prefers concise summaries.",
-        },
-    )
+    response = _call(app_harness, mint_token(sub=SHARED_SUB), "solstice_memory_observe", _observe_args())
 
     text = _tool_error_text(response)
     assert expected in text
@@ -518,12 +478,18 @@ def _headers(call: dict[str, Any]) -> dict[str, Any]:
 
 
 def test_recall_request_schema_matches_backend_contract(app_harness: AppHarness, mint_token):
-    _set_recall_response(app_harness.backend_opener)
+    # Searched recalls carry a similarity score on each fact; it must pass through untouched.
+    _set_recall_response(
+        app_harness.backend_opener,
+        personal=[{"memory_id": "p1", "similarity": 0.87}],
+    )
     token = mint_token(sub=SHARED_SUB)  # ADMIN on BRAND_A1, user_id USER_A_SHARED
     response = _call(app_harness, token, "solstice_memory_recall",
                     {"tenant_slug": TENANT, "brand_id": BRAND_A1,
                      "fact_type": "preference", "q": "email", "limit": 5})
-    assert _ok(response)["status"] == "ok"
+    payload = _ok(response)
+    assert payload["status"] == "ok"
+    assert payload["personal"] == [{"memory_id": "p1", "similarity": 0.87}]
 
     call = app_harness.backend_opener.calls[-1]
     assert call["method"] == "GET"
@@ -556,7 +522,10 @@ def test_remember_request_schema_matches_backend_contract(app_harness: AppHarnes
                      "entity_refs": [{"entity_type": "brand", "entity_id": BRAND_A1}],
                      "expires_at": "2027-01-01T00:00:00Z",
                      "reason": "user confirmed"})
-    assert _ok(response)["scope"] == "personal"
+    payload = _ok(response)
+    assert payload["scope"] == "personal"
+    assert payload["fact"]["memory_id"] == "mem-1"
+    assert "mutation_id" not in payload
 
     call = app_harness.backend_opener.calls[-1]
     assert call["method"] == "POST"
@@ -589,7 +558,9 @@ def test_replace_request_schema(app_harness: AppHarness, mint_token):
                      "scope": "brand", "fact_type": "decision",
                      "statement": "ship Q4 instead", "reason": "replan"})
     payload = _ok(response)
-    assert payload["superseded_id"] == "mem-1"
+    assert payload["fact"]["memory_id"] == "mem-2"
+    assert payload["superseded"]["memory_id"] == "mem-1"
+    assert "mutation_id" not in payload
 
     call = app_harness.backend_opener.calls[-1]
     assert call["method"] == "POST"
@@ -616,7 +587,8 @@ def test_forget_request_schema(app_harness: AppHarness, mint_token):
                     {"tenant_slug": TENANT, "brand_id": BRAND_A1, "memory_id": "mem-1",
                      "scope": "brand", "reason": "obsolete"})
     payload = _ok(response)
-    assert payload["status"] == "forgotten"
+    assert payload["forgotten"]["status"] == "forgotten"
+    assert "mutation_id" not in payload
 
     call = app_harness.backend_opener.calls[-1]
     assert call["method"] == "POST"
@@ -775,7 +747,7 @@ def test_audit_omits_statement_and_results(app_harness: AppHarness, mint_token,
                      "fact_type": "preference", "statement": statement_text,
                      "reason": "REASON_NEEDLE"})
     payload = _ok(response)
-    assert payload["memory_id"] == "mem-1"
+    assert payload["fact"]["memory_id"] == "mem-1"
     assert payload["scope"] == "personal"
 
     events = [

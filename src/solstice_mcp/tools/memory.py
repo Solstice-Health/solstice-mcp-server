@@ -17,8 +17,9 @@ Audit events carry selectors and IDs only (``tenant_slug``, ``brand_id``,
 ``memory_id``, ``scope``). Statements, source/entity refs, query text, and
 returned memory never enter audit logs.
 
-The host may submit one bounded personal preference or convention for Backend
-classification. Brand memory remains explicit-only.
+The host may record structured personal preferences or conventions; Backend
+gates them deterministically (no classifier) and returns the final outcome in
+the same call. Brand memory remains explicit-only.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -109,29 +110,37 @@ class _SourceRef(BaseModel):
 
 
 class _ObservationRequest(BaseModel):
-    """Bounded host observation; Backend still revalidates the trust boundary."""
+    """Bounded structured observation; Backend still revalidates the trust boundary."""
 
     model_config = ConfigDict(extra="forbid")
 
     tenant_slug: str = Field(min_length=1, max_length=128)
     scope: Literal["personal", "tenant_personal"]
-    observation: str = Field(min_length=1, max_length=1000)
+    statement: str = Field(min_length=1, max_length=1000)
+    fact_type: Literal["preference", "convention"]
+    semantic_subject: str = Field(min_length=1, max_length=256)
     brand_id: UUID | None = None
     entity_refs: list[_EntityRef] = Field(default_factory=list, max_length=50)
     source_refs: list[_SourceRef] = Field(default_factory=list, max_length=50)
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     host_correlation_id: str | None = Field(default=None, min_length=1, max_length=128)
-    idempotency_key: str = Field(default_factory=lambda: str(uuid4()), min_length=1, max_length=128)
 
-    @field_validator("observation")
+    @field_validator("statement")
     @classmethod
-    def validate_observation(cls, value: str) -> str:
+    def validate_statement(cls, value: str) -> str:
         if not value.strip():
-            raise ValueError("observation must not be empty")
+            raise ValueError("statement must not be empty")
         if len(value.splitlines()) > 12:
-            raise ValueError("observation must be at most 12 lines")
+            raise ValueError("statement must be at most 12 lines")
         if any(pattern.search(value) for pattern in _SECRET_PATTERNS):
-            raise ValueError("observation must not contain credentials or secret keys")
+            raise ValueError("statement must not contain credentials or secret keys")
+        return value
+
+    @field_validator("semantic_subject")
+    @classmethod
+    def validate_semantic_subject(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("semantic_subject must not be blank")
         return value
 
     @field_validator("occurred_at")
@@ -158,35 +167,21 @@ def _observation_request(**values: Any) -> _ObservationRequest:
         raise ToolError(f"invalid_argument: {message}") from exc
 
 
-class _BackendObservation(BaseModel):
-    """Backend ObservationOut fields used to define the stable MCP response."""
+class _BackendObserveResult(BaseModel):
+    """Backend observe response fields used to define the stable MCP response."""
 
     model_config = ConfigDict(extra="ignore")
 
-    id: UUID
-    actor_user_id: UUID
-    scope: Literal["personal", "tenant_personal"]
-    brand_id: UUID | None
-    occurred_at: datetime
-    host_correlation_id: str | None
-    idempotency_key: str
-    processing_state: Literal["pending", "processed"]
-    outcome: Literal["activated", "reinforced", "contradicted", "suppressed", "ineligible", "no_memory"] | None
-    fact_id: UUID | None
-    processed_at: datetime | None
+    outcome: Literal["activated", "reinforced", "suppressed", "ineligible"]
+    fact: dict[str, Any] | None
 
 
 def _tool_observation_response(result: dict[str, Any]) -> dict[str, Any]:
     try:
-        observation = _BackendObservation.model_validate(result)
+        observed = _BackendObserveResult.model_validate(result)
     except ValidationError as exc:
         raise ToolError("internal_error: memory backend returned an unexpected observation result") from exc
-    return {
-        "observation_id": str(observation.id),
-        "status": observation.processing_state,
-        "outcome": observation.outcome,
-        "fact_id": None if observation.fact_id is None else str(observation.fact_id),
-    }
+    return {"outcome": observed.outcome, "fact": observed.fact}
 
 
 def _require_scope(scope: str) -> str:
@@ -284,7 +279,8 @@ def register_memory_tools(
 
         Optional filters: ``fact_type`` (preference | convention | decision |
         finding_disposition), an ``entity_id`` (matches any entity ref on the
-        fact), a text query ``q``, and a capped ``limit`` (1-200; default 50).
+        fact), a text query ``q`` (semantic search; results then carry a
+        ``similarity`` score), and a capped ``limit`` (1-200; default 50).
         The server derives the partition from your token;
         ``tenant_slug``/``brand_id`` only select.
         """
@@ -322,9 +318,22 @@ def register_memory_tools(
             str,
             Field(description="Personal scope: personal or tenant_personal."),
         ],
-        observation: Annotated[
+        statement: Annotated[
             str,
-            Field(description="Durable preference or convention evidence; maximum 1000 characters and 12 lines."),
+            Field(description="One normalized bounded fact; maximum 1000 characters and 12 lines."),
+        ],
+        fact_type: Annotated[
+            str,
+            Field(description="preference or convention only; other fact types are explicit-write only."),
+        ],
+        semantic_subject: Annotated[
+            str,
+            Field(
+                description=(
+                    "Short stable topic name (maximum 256 characters) so repeat "
+                    "observations of the same topic dedupe and reinforce."
+                )
+            ),
         ],
         brand_id: Annotated[
             str | None,
@@ -346,25 +355,24 @@ def register_memory_tools(
             str | None,
             Field(description="Optional host turn correlation ID, maximum 128 characters."),
         ] = None,
-        idempotency_key: Annotated[
-            str | None,
-            Field(description="Stable retry key, maximum 128 characters; defaults to a UUID."),
-        ] = None,
     ) -> dict[str, Any]:
-        """Submit one durable personal observation for asynchronous classification.
+        """Save one durable personal preference or convention; the outcome is immediate.
 
-        Cooperative host finalizer: call once when a durable user preference or
-        convention is observed. Never send document bodies, claims, prompts,
-        copied content, arbitrary tool results, credentials, ``user_id``, or
-        ``role``. References contain canonical IDs only.
+        Use proactively: call whenever the user states a durable preference or
+        convention, or corrects an assumption about how they work. You are the
+        sole judge — no backend classifier reviews the text. Only save what is
+        durable, user-stated or user-confirmed, and applies beyond the current
+        task; never task ephemera or one-off instructions.
 
-        Automatic brand memory is unsupported. Use the explicit brand-memory
-        tools when the user asks to save a brand convention or decision. Backend
-        re-resolves the actor, validates references, and decides whether the
-        observation activates; do not claim this call saved active memory.
-        Returns stable tool fields ``observation_id``, ``status`` (``pending`` or
-        ``processed``), ``outcome``, and ``fact_id`` rather than Backend-internal
-        response names.
+        Never send document bodies, claims, prompts, copied content, arbitrary
+        tool results, credentials, ``user_id``, or ``role``. References contain
+        canonical IDs only. Automatic brand memory is unsupported; use
+        solstice_memory_remember for explicit brand memory.
+
+        Returns the final ``outcome`` — ``activated`` | ``reinforced`` |
+        ``suppressed`` | ``ineligible`` — and the stored ``fact`` (or null) in
+        the same call; there is no pending state. ``suppressed`` means the user
+        previously forgot this memory: do not resubmit or rephrase it.
         """
         if scope == MEMORY_SCOPE_BRAND:
             raise ToolError(
@@ -374,13 +382,14 @@ def register_memory_tools(
         request = _observation_request(
             tenant_slug=tenant_slug,
             scope=scope,
-            observation=observation,
+            statement=statement,
+            fact_type=fact_type,
+            semantic_subject=semantic_subject,
             brand_id=brand_id,
             entity_refs=[] if entity_refs is None else entity_refs,
             source_refs=[] if source_refs is None else source_refs,
             **({} if occurred_at is None else {"occurred_at": occurred_at}),
             host_correlation_id=host_correlation_id,
-            **({} if idempotency_key is None else {"idempotency_key": idempotency_key}),
         )
 
         subject = require_subject()
@@ -410,12 +419,13 @@ def register_memory_tools(
                 tenant_slug=request.tenant_slug,
                 scope=request.scope,
                 brand_id=brand_id_value,
-                observation=request.observation,
+                statement=request.statement,
+                fact_type=request.fact_type,
+                semantic_subject=request.semantic_subject,
                 entity_refs=[ref.model_dump(exclude_none=True) for ref in request.entity_refs],
                 source_refs=[ref.model_dump(exclude_none=True) for ref in request.source_refs],
                 occurred_at=request.occurred_at.isoformat(),
                 host_correlation_id=request.host_correlation_id,
-                idempotency_key=request.idempotency_key,
             )
         except MemoryClientError as exc:
             raise _map_backend_error(exc, scope=request.scope) from exc
