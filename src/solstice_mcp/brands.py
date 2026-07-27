@@ -75,6 +75,9 @@ class Brand(Base):
 
     id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)
     name: Mapped[str] = mapped_column(String)
+    # NOT NULL in prod; nullable here so existing fixtures stay unchanged.
+    # user_admin reads it to resolve the company for new user rows.
+    company_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), nullable=True)
     design_bible: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     isi: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     drug_info: Mapped[Any | None] = mapped_column(JSON, nullable=True)

@@ -27,6 +27,12 @@ from solstice_mcp.tools.content import register_content_tools
 from solstice_mcp.tools.discovery import register_discovery_tools
 from solstice_mcp.tools.memory import register_memory_tools
 from solstice_mcp.tools.requests import register_request_tools
+from solstice_mcp.tools.user_admin import register_user_admin_tools
+from solstice_mcp.user_admin import (
+    Auth0UserAdmin,
+    CentralSessionFactory,
+    central_session_factory_from_url,
+)
 
 MCP_REQUIRED_SCOPE = "mcp:connect"
 MCP_SERVER_NAME = "solstice-mcp"
@@ -100,6 +106,18 @@ MCP_INSTRUCTIONS = (
     "candidates with solstice_list_brand_users). "
     "solstice_approve_operation_version flips one draft html/pdf version to "
     "final; already-final versions are an idempotent no-op.\n"
+    "User administration (staff-only): solstice_reset_password(tenant_slug, "
+    "email, mode) resets a user's password — mode='email' sends the Auth0 "
+    "reset email; mode='temp_password' overwrites the password and returns "
+    "the new one, which you must deliver to the user verbatim (use it only "
+    "when the reset email did not arrive). solstice_change_brand_role sets "
+    "an existing member's role on one brand; granting SOLSTICE_STAFF is an "
+    "escalation — confirm with the user first. solstice_add_user onboards a "
+    "person into a tenant (Auth0 + central auth + tenant DB, optional brand "
+    "attach + reset email); every step is an upsert, so it is also the way "
+    "to give an existing user access to another tenant or brand. Never call "
+    "these tools unprompted, and never invent an email address — use exactly "
+    "the one the user gave you.\n"
     "Requests (staff triage queue): admin_requests rows track user-initiated "
     "requests (initial_save, change_request_complex, change_request_review, "
     "approval_request) with status pending/completed/dismissed. "
@@ -148,6 +166,8 @@ def build_mcp_app(
     jwks_cache: JWKSCache | None = None,
     s3: S3Reader | None = None,
     backend_memory: BackendMemoryClient | None = None,
+    user_admin_auth0: Auth0UserAdmin | None = None,
+    central_session_factory: CentralSessionFactory | None = None,
 ) -> FastMCP:
     resource = runtime_settings.MCP_RESOURCE_URL
     issuer = runtime_settings.issuer_url
@@ -275,6 +295,29 @@ def build_mcp_app(
             registry=tenant_registry,
             session_factory=open_session,
             backend=backend_client,
+        )
+
+    # User-admin tools need Auth0 Management credentials and the central auth
+    # DB. Injected in tests; in deployment they are registered only when both
+    # AUTH0_CLIENT_ID/SECRET and CENTRAL_AUTH_DB are configured — otherwise
+    # the tools are simply not exposed (same pattern as memory tools).
+    if user_admin_auth0 is None and runtime_settings.AUTH0_CLIENT_ID and runtime_settings.AUTH0_CLIENT_SECRET:
+        user_admin_auth0 = Auth0UserAdmin(
+            domain=runtime_settings.AUTH0_DOMAIN,
+            client_id=runtime_settings.AUTH0_CLIENT_ID,
+            client_secret=runtime_settings.AUTH0_CLIENT_SECRET,
+        )
+    if central_session_factory is None and runtime_settings.CENTRAL_AUTH_DB:
+        central_session_factory = central_session_factory_from_url(runtime_settings.CENTRAL_AUTH_DB)
+    if user_admin_auth0 is not None and central_session_factory is not None:
+        register_user_admin_tools(
+            mcp,
+            require_subject=require_subject,
+            require_access_token=require_access_token,
+            registry=tenant_registry,
+            session_factory=open_session,
+            auth0=user_admin_auth0,
+            central_session_factory=central_session_factory,
         )
 
     @mcp.custom_route("/health", methods=["GET"])

@@ -40,6 +40,11 @@ AUDIT_RESOURCE_FIELDS = {
     "fetch",
     "memory_id",
     "scope",
+    # User-admin tools: audit the password-reset variant and the granted role
+    # (argument values only — tool inputs/outputs stay unlogged).
+    "mode",
+    "new_role",
+    "role",
 }
 
 logger = logging.getLogger(AUDIT_LOGGER_NAME)

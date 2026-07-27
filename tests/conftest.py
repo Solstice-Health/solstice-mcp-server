@@ -30,6 +30,7 @@ from solstice_mcp.operations import CgOperation, CgOperationMessage, Project
 from solstice_mcp.requests import AdminRequest
 from solstice_mcp.settings import Settings
 from solstice_mcp.tenants import Base, TenantMembershipCache, TenantRegistry, User
+from solstice_mcp.user_admin import Auth0UserAdmin
 
 TEST_ISSUER = "https://test.auth0.local/"
 TEST_RESOURCE = "https://mcp.test.local/mcp"
@@ -44,6 +45,9 @@ USER_A_SHARED = "00000000-0000-0000-0000-000000000001"
 USER_A_OTHER = "00000000-0000-0000-0000-000000000002"
 USER_B_SHARED = "00000000-0000-0000-0000-000000000004"
 USER_A_STAFF = "00000000-0000-0000-0000-000000000010"
+
+COMPANY_A = "00000000-0000-0000-0000-000000001001"
+CENTRAL_USER_SHARED = "00000000-0000-0000-0000-000000009001"
 
 BRAND_A1 = "00000000-0000-0000-0000-000000000101"
 BRAND_A2 = "00000000-0000-0000-0000-000000000102"
@@ -137,6 +141,8 @@ class AppHarness:
     backend: BackendMemoryClient
     backend_opener: FakeBackendOpener
     token_acquirer: FakeM2MTokenAcquirer
+    auth0_opener: FakeBackendOpener
+    central_session_factory: Callable[[], Session]
 
 
 class FakeM2MTokenAcquirer:
@@ -173,15 +179,19 @@ class FakeHTTPResponse:
 class FakeBackendOpener:
     """Records Backend HTTP requests and returns canned responses by (method, path).
 
-    ``responses`` maps ``(method, path_without_query)`` to ``(status, body_bytes)``.
-    Unmatched calls default to a 200 recall-style empty payload. Non-2xx statuses
-    raise ``urllib.error.HTTPError`` to mirror real ``urllib`` behavior.
+    ``responses`` maps ``(method, path_without_query)`` to ``(status, body_bytes)``
+    or to a list of such tuples consumed in order (the last one repeats) for
+    call-sequence scenarios. Unmatched calls default to a 200 recall-style empty
+    payload. Non-2xx statuses raise ``urllib.error.HTTPError`` to mirror real
+    ``urllib`` behavior.
     """
 
     def __init__(self, base_url: str = "https://backend.test") -> None:
         self.base_url = base_url.rstrip("/")
         self.calls: list[dict[str, Any]] = []
-        self.responses: dict[tuple[str, str], tuple[int, bytes]] = {}
+        self.responses: dict[
+            tuple[str, str], tuple[int, bytes] | list[tuple[int, bytes]]
+        ] = {}
 
     def open(self, request: Any, timeout: float | None = None) -> FakeHTTPResponse:
         method = request.get_method()
@@ -198,7 +208,11 @@ class FakeBackendOpener:
                 "body": data,
             }
         )
-        status, body = self.responses.get((method, path), (200, b'{"brand": [], "personal": []}'))
+        entry = self.responses.get((method, path), (200, b'{"brand": [], "personal": []}'))
+        if isinstance(entry, list):
+            status, body = entry.pop(0) if len(entry) > 1 else entry[0]
+        else:
+            status, body = entry
         if status >= 400:
             raise urllib.error.HTTPError(url, status, "Backend Error", {}, io.BytesIO(body))
         return FakeHTTPResponse(body, status)
@@ -353,14 +367,14 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
     brand_rows = {
         "tenant_a": [
             Brand(
-                id=BRAND_A1, name="Brand A1", deleted_at=None,
+                id=BRAND_A1, name="Brand A1", deleted_at=None, company_id=COMPANY_A,
                 design_bible={"palette": "blue"}, isi={"text": "See ISI"},
                 drug_info={"name": "Drug A"},
             ),
-            Brand(id=BRAND_A2, name="Brand A2", deleted_at=None),
-            Brand(id=BRAND_A3, name="Brand A3", deleted_at=None),
-            Brand(id=BRAND_A4, name="Brand A4", deleted_at=None),
-            Brand(id=BRAND_A5, name="Brand A5", deleted_at=now),
+            Brand(id=BRAND_A2, name="Brand A2", deleted_at=None, company_id=COMPANY_A),
+            Brand(id=BRAND_A3, name="Brand A3", deleted_at=None, company_id=COMPANY_A),
+            Brand(id=BRAND_A4, name="Brand A4", deleted_at=None, company_id=COMPANY_A),
+            Brand(id=BRAND_A5, name="Brand A5", deleted_at=now, company_id=COMPANY_A),
             GuidelineAndRule(
                 id="00000000-0000-0000-0000-000000000601",
                 name="No unapproved claims",
@@ -564,6 +578,42 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
         timeout=5.0,
         opener=backend_opener,
     )
+
+    # Central auth DB (canonical user rows) + fake Auth0 for user-admin tools.
+    # The Auth0 opener's default response is a JSON object, which the client
+    # treats as "no user found" for users-by-email — tests override per call.
+    central_engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(central_engine)
+    central_factory = sessionmaker(central_engine, expire_on_commit=False)
+    with central_factory() as session:
+        session.add(
+            User(
+                id=CENTRAL_USER_SHARED,
+                auth0_id=SHARED_SUB,
+                name="Alice",
+                email="alice@a.test",
+                company_id=COMPANY_A,
+                deleted_at=None,
+            )
+        )
+        session.commit()
+
+    def open_central_session() -> Session:
+        return central_factory()
+
+    auth0_opener = FakeBackendOpener("https://test.auth0.local")
+    user_admin_auth0 = Auth0UserAdmin(
+        domain="test.auth0.local",
+        client_id="test-mgmt-client",
+        client_secret="test-mgmt-secret",
+        opener=auth0_opener,
+        token_acquirer=FakeM2MTokenAcquirer("mgmt-bearer"),
+    )
+
     mcp = build_mcp_app(
         runtime_settings=settings,
         registry=registry,
@@ -572,6 +622,11 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
         jwks_cache=JWKSCache(f"{TEST_ISSUER}.well-known/jwks.json", initial=jwks),
         s3=fake_s3,
         backend_memory=backend_client,
+        user_admin_auth0=user_admin_auth0,
+        central_session_factory=open_central_session,
     )
     with TestClient(mcp.streamable_http_app(), base_url="https://mcp.test.local") as client:
-        yield AppHarness(client, registry, open_session, calls, fake_s3, backend_client, backend_opener, token_acquirer)
+        yield AppHarness(
+            client, registry, open_session, calls, fake_s3, backend_client,
+            backend_opener, token_acquirer, auth0_opener, open_central_session,
+        )

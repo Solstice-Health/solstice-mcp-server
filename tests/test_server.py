@@ -155,6 +155,9 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
         "solstice_approve_operation_version",
         "solstice_list_requests",
         "solstice_dismiss_request",
+        "solstice_reset_password",
+        "solstice_change_brand_role",
+        "solstice_add_user",
         "solstice_memory_recall",
         "solstice_memory_observe",
         "solstice_memory_remember",
@@ -180,15 +183,22 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
         "solstice_memory_remember",
         "solstice_memory_replace",
         "solstice_memory_forget",
+        "solstice_add_user",
     }
     updates_in_place = {
         "solstice_update_operation",
         "solstice_approve_operation_version",
         "solstice_dismiss_request",
+        "solstice_reset_password",
+        "solstice_change_brand_role",
     }
     # Dismiss is a one-way status flip: retrying is rejected, so unlike the
-    # other in-place updates it is not idempotent.
-    non_idempotent_updates = {"solstice_dismiss_request"}
+    # other in-place updates it is not idempotent. Password reset mints a new
+    # credential / sends a new email per call; add_user may send an email per
+    # call.
+    non_idempotent_updates = {"solstice_dismiss_request", "solstice_reset_password"}
+    # Tools that call out to Auth0 (an external system).
+    open_world = {"solstice_reset_password", "solstice_add_user"}
     for tool in listed_tools:
         is_write = tool["name"] in non_destructive_writes
         is_update = tool["name"] in updates_in_place
@@ -196,7 +206,7 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
             "readOnlyHint": not (is_write or is_update),
             "destructiveHint": is_update,
             "idempotentHint": not (is_write or tool["name"] in non_idempotent_updates),
-            "openWorldHint": False,
+            "openWorldHint": tool["name"] in open_world,
         }
 
 

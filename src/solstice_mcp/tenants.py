@@ -28,7 +28,14 @@ class Base(DeclarativeBase):
 
 
 class User(Base):
-    """Minimal read-only mapping for the existing tenant users table."""
+    """Minimal mapping for the existing tenant (and central auth) users table.
+
+    Reads everywhere; the user-admin tools also insert/update rows. Columns the
+    server never touches are unmapped. ``company_id``/``created_at`` are
+    nullable here even though prod has NOT NULL + server defaults, so existing
+    read paths and fixtures stay unchanged; user_admin sets both explicitly on
+    insert.
+    """
 
     __tablename__ = "users"
 
@@ -36,6 +43,8 @@ class User(Base):
     auth0_id: Mapped[str] = mapped_column(String)
     name: Mapped[str] = mapped_column(String)
     email: Mapped[str] = mapped_column(String)
+    company_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 

@@ -10,6 +10,14 @@ from dataclasses import dataclass
 class Settings:
     ENV: str = "development"
     AUTH0_DOMAIN: str = ""
+    # Management-capable Auth0 application (create:users/read:users/update:users
+    # on the /api/v2/ audience). Mirrors the Backend-Server env names. Empty
+    # values disable the user-admin tools.
+    AUTH0_CLIENT_ID: str = ""
+    AUTH0_CLIENT_SECRET: str = ""
+    # Central auth database URL (canonical users rows). Empty disables the
+    # user-admin tools.
+    CENTRAL_AUTH_DB: str = ""
     MCP_RESOURCE_URL: str = ""
     TENANT_CONFIG_PATH: str = "config/tenants.json"
     ALLOWED_EMAIL_DOMAIN: str = "@solsticehealth.co"
