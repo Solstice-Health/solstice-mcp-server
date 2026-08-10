@@ -220,10 +220,10 @@ jobs:
           RESOURCE_URL: ${{ env.RESOURCE_URL }}
         run: |
           ORIGIN="${RESOURCE_URL%/mcp}"
-          # /health exposes the live registered tool inventory (names only) so
-          # env-gated tools cannot silently stay off after a green deploy.
-          HEALTH=$(curl --fail --silent --show-error "$ORIGIN/health")
-          echo "$HEALTH" | jq -e '.status == "ok"'
+          # Public ALB routes only /mcp* to this service — ORIGIN/health is the
+          # Backend. Tool inventory lives on /mcp/health (TG still uses /health).
+          HEALTH=$(curl --fail --silent --show-error "$ORIGIN/mcp/health")
+          echo "$HEALTH" | jq -e '.status == "ok" and .service == "solstice-mcp"'
           echo "$HEALTH" | jq -e '
             (.tools | index("solstice_whoami"))
             and (.tools | index("solstice_reset_password"))

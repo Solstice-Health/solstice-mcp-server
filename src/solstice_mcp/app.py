@@ -321,21 +321,26 @@ def build_mcp_app(
             central_session_factory=central_session_factory,
         )
 
-    @mcp.custom_route("/health", methods=["GET"])
-    async def health(_request: Request) -> Response:
+    def _health_payload() -> dict[str, Any]:
         # Public tool-name inventory for deploy CI (no secrets). Names only —
         # same set tools/list would return after auth.
         tool_names = sorted(tool.name for tool in mcp._tool_manager.list_tools())
-        return JSONResponse(
-            {
-                "status": "ok",
-                "service": MCP_SERVER_NAME,
-                "version": MCP_SERVER_VERSION,
-                "tools": tool_names,
-                "tool_count": len(tool_names),
-            },
-            headers={"Cache-Control": "no-store"},
-        )
+        return {
+            "status": "ok",
+            "service": MCP_SERVER_NAME,
+            "version": MCP_SERVER_VERSION,
+            "tools": tool_names,
+            "tool_count": len(tool_names),
+        }
+
+    async def health(_request: Request) -> Response:
+        return JSONResponse(_health_payload(), headers={"Cache-Control": "no-store"})
+
+    # Target-group checks hit the task on /health. Public ALB only forwards
+    # /mcp* to this service (api.solsticehealth.co/health is the Backend), so
+    # deploy smoke must use /mcp/health.
+    mcp.custom_route("/health", methods=["GET"])(health)
+    mcp.custom_route("/mcp/health", methods=["GET"])(health)
 
     return mcp
 

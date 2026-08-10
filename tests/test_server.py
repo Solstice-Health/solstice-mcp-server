@@ -77,16 +77,17 @@ def audit_events(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
 
 
 def test_health_and_protected_resource_metadata_are_public(app_harness: AppHarness):
-    health = app_harness.client.get("/health")
-    assert health.status_code == 200
-    body = health.json()
-    assert body["status"] == "ok"
-    assert body["service"] == "solstice-mcp"
-    assert body["version"] == "1.0.0"
-    assert "solstice_whoami" in body["tools"]
-    assert "solstice_add_user" in body["tools"]
-    assert "solstice_memory_recall" in body["tools"]
-    assert body["tool_count"] == len(body["tools"])
+    for path in ("/health", "/mcp/health"):
+        health = app_harness.client.get(path)
+        assert health.status_code == 200, path
+        body = health.json()
+        assert body["status"] == "ok"
+        assert body["service"] == "solstice-mcp"
+        assert body["version"] == "1.0.0"
+        assert "solstice_whoami" in body["tools"]
+        assert "solstice_add_user" in body["tools"]
+        assert "solstice_memory_recall" in body["tools"]
+        assert body["tool_count"] == len(body["tools"])
 
     metadata = app_harness.client.get("/.well-known/oauth-protected-resource/mcp")
     assert metadata.status_code == 200
