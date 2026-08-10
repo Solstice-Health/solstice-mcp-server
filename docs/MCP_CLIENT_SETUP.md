@@ -4,32 +4,38 @@ The Solstice server uses Streamable HTTP, OAuth 2.1 Authorization Code with PKCE
 
 ## Endpoints and token contract
 
-- Production: `https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp`
+Production is dual-pointed by host:
+
+- Cursor / Claude Code: `https://api.solsticehealth.co/mcp` (ECS direct)
+- Codex (and AgentCore fallback): `https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp`
 - Staging: `https://api-staging.solsticehealth.co/mcp`
 - Platform testing: `https://api-platform-testing.solsticehealth.co/mcp`
 - Dev: `https://api-dev.solsticehealth.co/mcp`
 
 Each MCP URL is also its Auth0 audience. The issuer is `https://login-solstice.us.auth0.com/`. Clients request `mcp:connect openid email`.
 
-For production, AgentCore validates the RS256 token against Auth0 JWKS, issuer, the AgentCore endpoint audience, and expiry. It then exchanges that token through Auth0 for a user token scoped to `https://api.solsticehealth.co/mcp`. The MCP server validates the exchanged token and enforces tenant membership, brand membership, roles, and draft visibility from server-side data. The `email` claim supports the internal sibling-MCP access gate; see [AUTH0_EMAIL_CLAIM.md](AUTH0_EMAIL_CLAIM.md).
+**ECS path (Cursor / Claude):** the client obtains an Auth0 access token whose audience is `https://api.solsticehealth.co/mcp` and calls ECS directly. The MCP server validates the RS256 token (JWKS, issuer, audience, expiry, `mcp:connect`) and enforces tenant membership, brand membership, roles, and draft visibility. No AgentCore OBO hop or Cedar PromptAttack on this path.
+
+**AgentCore path (Codex):** AgentCore validates the RS256 token against Auth0 JWKS, issuer, the AgentCore endpoint audience, and expiry. It then exchanges that token through Auth0 for a user token scoped to `https://api.solsticehealth.co/mcp`, applies Cedar guardrails, and forwards to ECS. The MCP server validates the exchanged token the same way.
+
+The `email` claim supports the internal sibling-MCP access gate; see [AUTH0_EMAIL_CLAIM.md](AUTH0_EMAIL_CLAIM.md).
 
 Clients discover authorization metadata from the RFC 9728 URL advertised in a 401 response. Direct Auth0 endpoints are `/authorize`, `/oauth/token`, and `/.well-known/jwks.json` under the issuer.
 
 ## Cursor authentication round trip
 
-The Cursor adapter is `plugins/solstice-platform/mcp.json`. It uses the existing public Cursor Auth0 client and the production MCP URL. Auth0 allows these callbacks:
+The Cursor adapter is `plugins/solstice-platform/mcp.json` (Cursor prefers `.mcp.json` when both ship). It uses the existing public Cursor Auth0 client and the ECS production URL. Auth0 allows these callbacks:
 
 - `https://www.cursor.com/agents/mcp/oauth/callback`
 - `http://localhost:8787/callback`
 
 The round trip is:
 
-1. Cursor connects to the production MCP URL and receives protected-resource metadata.
-2. Cursor starts Authorization Code with PKCE for the configured public client, production audience, and scopes `mcp:connect openid email`.
+1. Cursor connects to `https://api.solsticehealth.co/mcp` and receives protected-resource metadata.
+2. Cursor starts Authorization Code with PKCE for the configured public client, ECS audience, and scopes `mcp:connect openid email`.
 3. Auth0 redirects to an allowed Cursor callback and Cursor exchanges the code plus PKCE verifier for an RS256 access token.
-4. Cursor sends the access token as a Bearer credential to AgentCore.
-5. AgentCore applies Cedar and semantic guardrails, exchanges the token for the private MCP audience, and forwards the tool call.
-6. The MCP server validates the exchanged token, then applies tenant and brand authorization.
+4. Cursor sends the access token as a Bearer credential to ECS.
+5. The MCP server validates the token, then applies tenant and brand authorization.
 
 If validation fails, the server returns 401 for a missing, malformed, expired, wrong-issuer, or wrong-audience token. A valid token without `mcp:connect` receives 403. Reconnect OAuth rather than editing credentials.
 
@@ -41,29 +47,29 @@ For the local pilot, the adapter temporarily uses the existing public Cursor cli
 
 The round trip is:
 
-1. Claude Code loads the plugin and connects to the production MCP URL.
-2. Claude Code starts Authorization Code with PKCE for the configured public client, production audience, and scopes `mcp:connect openid email`.
+1. Claude Code loads the plugin and connects to `https://api.solsticehealth.co/mcp` (same ECS URL as Cursor; shared `.mcp.json`).
+2. Claude Code starts Authorization Code with PKCE for the configured public client, ECS audience, and scopes `mcp:connect openid email`.
 3. Auth0 redirects to `http://localhost:8787/callback`, then Claude Code exchanges the code plus PKCE verifier for an RS256 access token.
-4. Claude Code stores the user's token in its credential flow and sends it as a Bearer credential to the MCP endpoint.
+4. Claude Code stores the user's token in its credential flow and sends it as a Bearer credential to ECS.
 5. The MCP server performs the same token, tenant, brand, role, and draft-visibility checks used for Cursor.
 
 Authenticate from `/mcp`, or use `claude mcp login solstice-platform` when available in the installed Claude Code version. OAuth tokens are per user and are never included in the plugin.
 
 ## Codex authentication round trip
 
-The Codex adapter is `plugins/solstice-platform/codex.mcp.json`. It uses Streamable HTTP, a pre-registered public client ID, the production audience, and scopes `mcp:connect openid email`. Codex 0.142.0 or newer is required for static MCP OAuth client IDs.
+The Codex adapter is `plugins/solstice-platform/codex.mcp.json`. It uses Streamable HTTP, a pre-registered public client ID, the **AgentCore** gateway URL as both endpoint and `oauth_resource` audience, and scopes `mcp:connect openid email`. Codex 0.142.0 or newer is required for static MCP OAuth client IDs.
 
-Set `mcp_oauth_callback_port = 8788` at the top level of `~/.codex/config.toml`. For the production MCP URL, Codex derives the callback `http://127.0.0.1:8788/callback/TL-8G9qfe5UK`; Auth0 must contain that exact value.
+Set `mcp_oauth_callback_port = 8788` at the top level of `~/.codex/config.toml`. For the AgentCore production URL, Codex derives the callback `http://127.0.0.1:8788/callback/TL-8G9qfe5UK`; Auth0 must contain that exact value.
 
 For the local pilot, the adapter temporarily uses the existing public Cursor client ID after Terraform adds the Codex callback to its allowlist. Terraform also provisions a dedicated Codex client. After apply, retrieve `codex_client_id` and update `codex.mcp.json` through a reviewed pull request.
 
 The round trip is:
 
-1. Codex loads the plugin's MCP server and connects to the production URL.
-2. `codex mcp login solstice-platform` starts Authorization Code with PKCE using the configured public client ID, production audience, and scopes.
+1. Codex loads the plugin's MCP server and connects to the AgentCore gateway URL.
+2. `codex mcp login solstice-platform` starts Authorization Code with PKCE using the configured public client ID, gateway audience, and scopes.
 3. Auth0 redirects to the fixed loopback callback and Codex exchanges the code plus PKCE verifier for an RS256 access token.
-4. Codex stores the token in its configured credential store and sends it as a Bearer credential to the MCP endpoint.
-5. The MCP server performs the same token, tenant, brand, role, and draft-visibility checks used for Cursor and Claude Code.
+4. Codex stores the token in its configured credential store and sends it as a Bearer credential to AgentCore.
+5. AgentCore applies Cedar guardrails, exchanges the token for the ECS audience, and forwards to the MCP server, which then applies tenant and brand authorization.
 
 Codex's plugin policy uses `writes` approval mode, so read-only tools follow normal policy while the prepare and commit version-write tools prompt for approval.
 
