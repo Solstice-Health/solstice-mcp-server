@@ -146,10 +146,12 @@ def test_reset_password_audit_records_mode_but_never_the_password(
     ))
     event = audit_events(caplog)[-1]
     assert event["tool"] == "solstice_reset_password"
+    assert event["mode"] == "temp_password"
     assert event["resources"]["mode"] == "temp_password"
     assert event["outcome"] == "success"
     dumped = json.dumps(event)
     assert payload["temp_password"] not in dumped
+    # Target user's email is a tool arg — never audited (caller identity may be).
     assert "other@a.test" not in dumped
 
 

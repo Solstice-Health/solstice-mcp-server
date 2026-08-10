@@ -248,9 +248,13 @@ def test_tool_audit_logs_identity_resources_and_outcome_without_payloads(
     assert event["subject"] == SHARED_SUB
     assert event["client_id"] == "cursor-test-client"
     assert event["tool"] == "solstice_whoami"
+    assert event["service"] == "solstice-mcp"
+    assert event["tenant_slug"] == "tenant_a"
     assert event["resources"] == {"tenant_slug": "tenant_a"}
+    assert event["user_email"] == "private@example.com"
+    assert event["request_id"]
+    assert event["event_id"] == event["request_id"]
     assert event["outcome"] == "success"
-    assert "private@example.com" not in json.dumps(event)
 
 
 def test_tool_audit_classifies_authorization_denials(
@@ -274,6 +278,8 @@ def test_tool_audit_classifies_authorization_denials(
     assert event["tool"] == "solstice_brand_info"
     assert event["outcome"] == "denied"
     assert event["error_code"] == "not_authorized"
+    assert event["tenant_slug"] == "tenant_a"
+    assert event["brand_id"] == BRAND_A3
     assert event["resources"] == {"tenant_slug": "tenant_a", "brand_id": BRAND_A3}
 
 
@@ -305,6 +311,10 @@ def test_tool_audit_classifies_tool_errors(
     assert event["tool"] == "solstice_operation_html"
     assert event["outcome"] == "error"
     assert event["error_code"] == "not_found"
+    assert event["tenant_slug"] == "tenant_a"
+    assert event["operation_id"] == OP_A1
+    assert event["message_id"] == "no-such-message"
+    assert event["fetch"] is False
     assert event["resources"] == {
         "tenant_slug": "tenant_a",
         "operation_id": OP_A1,

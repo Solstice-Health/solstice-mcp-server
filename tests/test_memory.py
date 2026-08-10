@@ -762,6 +762,9 @@ def test_audit_omits_statement_and_results(app_harness: AppHarness, mint_token,
     blob = json.dumps(event)
     assert statement_text not in blob
     assert "REASON_NEEDLE" not in blob
+    assert event["tenant_slug"] == TENANT
+    assert event["brand_id"] == BRAND_A1
+    assert event["scope"] == "personal"
     assert event["resources"] == {"tenant_slug": TENANT, "brand_id": BRAND_A1, "scope": "personal"}
     assert event["outcome"] == "success"
 
@@ -782,6 +785,9 @@ def test_audit_records_denied_brand_write(app_harness: AppHarness, mint_token,
     event = [e for e in events if e["tool"] == "solstice_memory_remember"][-1]
     assert event["outcome"] == "denied"
     assert event["error_code"] == "not_authorized"
+    assert event["tenant_slug"] == TENANT
+    assert event["brand_id"] == BRAND_A2
+    assert event["scope"] == "brand"
     assert event["resources"] == {"tenant_slug": TENANT, "brand_id": BRAND_A2, "scope": "brand"}
 
 

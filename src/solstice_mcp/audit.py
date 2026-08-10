@@ -2,6 +2,14 @@
 
 Events identify the Auth0 subject, OAuth client, tool, outcome, duration, and
 non-content resource selectors. Tool inputs and outputs are never logged.
+
+Field names align with Backend Datadog Logs facets (service, env, tenant_slug,
+user_email, user_id, request_id) so MCP usage is browsable in Logs Explorer
+alongside ``service:solstice-backend``.
+
+Performance: identity comes only from the already-verified access token
+(claims in memory). No DB, HTTP, or Datadog API calls are made on the audit
+path — one JSON line to stdout.
 """
 
 from __future__ import annotations
@@ -9,6 +17,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import os
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -25,6 +34,7 @@ R = TypeVar("R")
 
 AUDIT_LOGGER_NAME = "solstice_mcp.audit"
 AUDIT_EVENT_NAME = "mcp_tool_audit"
+# Tool-argument keys that are safe identity/resource selectors (never payloads).
 AUDIT_RESOURCE_FIELDS = {
     "tenant_slug",
     "brand_id",
@@ -59,6 +69,69 @@ def configure_audit_logging() -> None:
     logger.propagate = False
 
 
+def _claim_str(claims: dict[str, Any] | None, *keys: str) -> str:
+    if not isinstance(claims, dict):
+        return ""
+    for key in keys:
+        value = claims.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _audit_env() -> str:
+    explicit = os.getenv("DD_ENV", "").strip()
+    if explicit:
+        return explicit
+    runtime = os.getenv("ENV", "").strip().lower()
+    return "prod" if runtime in {"prod", "production"} else "dev"
+
+
+def _build_audit_event(
+    *,
+    token: Any,
+    tool_name: str,
+    bound_arguments: dict[str, Any],
+) -> dict[str, Any]:
+    request_id = str(uuid4())
+    claims = getattr(token, "claims", None)
+    if not isinstance(claims, dict):
+        claims = {}
+
+    # Flatten safe selectors to top-level (Backend-style facets). Nested
+    # ``resources`` is kept for CloudWatch Insights queries that still use it.
+    resources = {
+        name: value
+        for name, value in bound_arguments.items()
+        if name in AUDIT_RESOURCE_FIELDS and isinstance(value, (str, bool))
+    }
+
+    event: dict[str, Any] = {
+        "service": os.getenv("DD_SERVICE", "solstice-mcp").strip() or "solstice-mcp",
+        "env": _audit_env(),
+        "event": AUDIT_EVENT_NAME,
+        "event_id": request_id,
+        "request_id": request_id,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "subject": token.subject,
+        "client_id": token.client_id,
+        # Token claims only — never resolve users from DB on the audit path.
+        "user_id": _claim_str(claims, "https://solsticehealth.co/user_id", "user_id"),
+        "user_email": _claim_str(claims, "email"),
+        "user_name": _claim_str(claims, "name", "nickname"),
+        "tool": tool_name,
+        "resources": resources,
+    }
+    # Promote resource selectors for Datadog tag remappers (tenant_slug, etc.).
+    for key, value in resources.items():
+        if key == "request_id":
+            # Tool-arg request_id (admin requests) must not overwrite audit request_id.
+            event["admin_request_id"] = value
+            continue
+        event[key] = value
+    return event
+
+
 def audited_tool(
     mcp: FastMCP,
     require_access_token: Callable[[], Any],
@@ -75,20 +148,11 @@ def audited_tool(
             started_at = time.monotonic()
             token = require_access_token()
             bound = signature.bind_partial(*args, **kwargs)
-            resources = {
-                name: value
-                for name, value in bound.arguments.items()
-                if name in AUDIT_RESOURCE_FIELDS and isinstance(value, (str, bool))
-            }
-            event = {
-                "event": AUDIT_EVENT_NAME,
-                "event_id": str(uuid4()),
-                "timestamp": datetime.now(UTC).isoformat(),
-                "subject": token.subject,
-                "client_id": token.client_id,
-                "tool": function.__name__,
-                "resources": resources,
-            }
+            event = _build_audit_event(
+                token=token,
+                tool_name=function.__name__,
+                bound_arguments=bound.arguments,
+            )
 
             try:
                 # Tool bodies do blocking I/O (SQLAlchemy, boto3). The MCP SDK
