@@ -6,6 +6,17 @@ import os
 from dataclasses import dataclass
 
 
+def _env_configured(value: str) -> bool:
+    """True when a setting is present and not a Terraform/deploy stub.
+
+    ECS task defs historically inject ``unused`` for required-but-irrelevant
+    keys so the process can boot; treat that the same as empty so env-gated
+    tools (user-admin) never half-register on a stub secret.
+    """
+    cleaned = value.strip()
+    return bool(cleaned) and cleaned.lower() != "unused"
+
+
 @dataclass(frozen=True)
 class Settings:
     ENV: str = "development"
@@ -46,6 +57,14 @@ class Settings:
         token_timeout_key = "SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS"
         values[token_timeout_key] = int(values[token_timeout_key])
         return cls(**values)
+
+    @property
+    def user_admin_auth0_configured(self) -> bool:
+        return _env_configured(self.AUTH0_CLIENT_ID) and _env_configured(self.AUTH0_CLIENT_SECRET)
+
+    @property
+    def central_auth_db_configured(self) -> bool:
+        return _env_configured(self.CENTRAL_AUTH_DB)
 
     @property
     def tenant_environment(self) -> str:

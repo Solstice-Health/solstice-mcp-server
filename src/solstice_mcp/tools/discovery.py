@@ -77,6 +77,9 @@ def register_discovery_tools(
     @read_only_tool
     def solstice_server_info() -> dict[str, Any]:
         """Return public server and tool metadata, including the RBAC model."""
+        # List at call time so env-gated registrations (memory, user-admin) are
+        # reflected; a hardcoded array drifts the moment a tool is added.
+        registered = sorted(tool.name for tool in mcp._tool_manager.list_tools())
         return {
             "name": server_name,
             "version": server_version,
@@ -98,29 +101,8 @@ def register_discovery_tools(
                 "solstice_operation_html with tenant_slug + operation_id. No brand "
                 "argument needed; the server resolves the brand and enforces RBAC.",
             },
-            "tools": [
-                "solstice_server_info",
-                "solstice_list_tenants",
-                "solstice_whoami",
-                "solstice_check_access",
-                "solstice_list_sibling_mcps",
-                "solstice_list_brands",
-                "solstice_brand_info",
-                "solstice_brand_rules",
-                "solstice_brand_design_assets",
-                "solstice_brand_claims",
-                "solstice_list_projects",
-                "solstice_project_info",
-                "solstice_list_operations",
-                "solstice_operation_info",
-                "solstice_operation_messages",
-                "solstice_operation_html",
-                "solstice_prc_template",
-                "solstice_create_prc_template_version",
-                "solstice_create_operation",
-                "solstice_prepare_operation_version",
-                "solstice_commit_operation_version",
-            ],
+            "tools": registered,
+            "tool_count": len(registered),
         }
 
     @read_only_tool

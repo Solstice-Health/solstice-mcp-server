@@ -79,7 +79,14 @@ def audit_events(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
 def test_health_and_protected_resource_metadata_are_public(app_harness: AppHarness):
     health = app_harness.client.get("/health")
     assert health.status_code == 200
-    assert health.json() == {"status": "ok", "service": "solstice-mcp", "version": "1.0.0"}
+    body = health.json()
+    assert body["status"] == "ok"
+    assert body["service"] == "solstice-mcp"
+    assert body["version"] == "1.0.0"
+    assert "solstice_whoami" in body["tools"]
+    assert "solstice_add_user" in body["tools"]
+    assert "solstice_memory_recall" in body["tools"]
+    assert body["tool_count"] == len(body["tools"])
 
     metadata = app_harness.client.get("/.well-known/oauth-protected-resource/mcp")
     assert metadata.status_code == 200
@@ -87,6 +94,17 @@ def test_health_and_protected_resource_metadata_are_public(app_harness: AppHarne
     assert TEST_ISSUER in metadata.json()["authorization_servers"]
     assert "mcp:connect" in metadata.json()["scopes_supported"]
     assert set(app_harness.registry.slugs) == {"tenant_a", "tenant_b", "tenant_prod"}
+
+
+def test_settings_treats_unused_auth_stubs_as_unset(monkeypatch):
+    monkeypatch.setenv("AUTH0_CLIENT_ID", "real-mgmt-client")
+    monkeypatch.setenv("AUTH0_CLIENT_SECRET", "unused")
+    monkeypatch.setenv("CENTRAL_AUTH_DB", "unused")
+
+    parsed = Settings.from_env()
+
+    assert parsed.user_admin_auth0_configured is False
+    assert parsed.central_auth_db_configured is False
 
 
 @pytest.mark.parametrize(

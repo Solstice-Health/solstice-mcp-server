@@ -85,14 +85,32 @@ jobs:
             --services "$BACKEND_ECS_SERVICE" \
             --query 'services[0].taskDefinition' \
             --output text)
-          BACKEND_AUTH0_SECRET_ARN=$(aws ecs describe-task-definition \
+          aws ecs describe-task-definition \
             --task-definition "$BACKEND_TASK_DEFINITION" \
-            --query 'taskDefinition.containerDefinitions[].secrets[?name == `AUTH0_CLIENT_SECRET`].valueFrom | [0]' \
-            --output text)
-          if [ -z "$BACKEND_AUTH0_SECRET_ARN" ] || [ "$BACKEND_AUTH0_SECRET_ARN" = "None" ]; then
+            --query taskDefinition > backend-task-definition.json
+          BACKEND_AUTH0_SECRET_ARN=$(jq -r '
+            .containerDefinitions[]
+            | .secrets // []
+            | map(select(.name == "AUTH0_CLIENT_SECRET"))
+            | .[0].valueFrom // empty
+          ' backend-task-definition.json)
+          CENTRAL_AUTH_DB_ARN=$(jq -r '
+            .containerDefinitions[]
+            | .secrets // []
+            | map(select(.name == "CENTRAL_AUTH_DB"))
+            | .[0].valueFrom // empty
+          ' backend-task-definition.json)
+          if [ -z "$BACKEND_AUTH0_SECRET_ARN" ]; then
             echo "Production Backend task does not expose AUTH0_CLIENT_SECRET through ECS secrets"
             exit 1
           fi
+          if [ -z "$CENTRAL_AUTH_DB_ARN" ]; then
+            echo "Production Backend task does not expose CENTRAL_AUTH_DB through ECS secrets"
+            exit 1
+          fi
+          # Memory tools: SOLSTICE_BACKEND_* + M2M secret.
+          # User-admin tools: AUTH0_CLIENT_ID (mgmt app) + AUTH0_CLIENT_SECRET + CENTRAL_AUTH_DB.
+          # Drop the Terraform stub AUTH0_CLIENT_SECRET=unused from env when promoting the real secret.
           jq \
             --arg image "$IMAGE" \
             --arg backend_base_url "$BACKEND_BASE_URL" \
@@ -100,6 +118,7 @@ jobs:
             --arg backend_audience "$BACKEND_AUTH0_AUDIENCE" \
             --arg backend_scope "$BACKEND_AUTH0_SCOPE" \
             --arg backend_secret_arn "$BACKEND_AUTH0_SECRET_ARN" \
+            --arg central_auth_db_arn "$CENTRAL_AUTH_DB_ARN" \
             '
             (.containerDefinitions[] | select(.name == "mcp-server")) |= (
               .image = $image
@@ -109,8 +128,11 @@ jobs:
                     and .name != "SOLSTICE_BACKEND_AUTH0_CLIENT_ID"
                     and .name != "SOLSTICE_BACKEND_AUTH0_AUDIENCE"
                     and .name != "SOLSTICE_BACKEND_AUTH0_SCOPE"
+                    and .name != "AUTH0_CLIENT_ID"
+                    and .name != "AUTH0_CLIENT_SECRET"
                   )))
                   + [
+                      {name: "AUTH0_CLIENT_ID", value: $backend_client_id},
                       {name: "SOLSTICE_BACKEND_BASE_URL", value: $backend_base_url},
                       {name: "SOLSTICE_BACKEND_AUTH0_CLIENT_ID", value: $backend_client_id},
                       {name: "SOLSTICE_BACKEND_AUTH0_AUDIENCE", value: $backend_audience},
@@ -118,8 +140,16 @@ jobs:
                     ]
                 )
               | .secrets = (
-                  ((.secrets // []) | map(select(.name != "SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET")))
-                  + [{name: "SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET", valueFrom: $backend_secret_arn}]
+                  ((.secrets // []) | map(select(
+                    .name != "SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET"
+                    and .name != "AUTH0_CLIENT_SECRET"
+                    and .name != "CENTRAL_AUTH_DB"
+                  )))
+                  + [
+                      {name: "SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET", valueFrom: $backend_secret_arn},
+                      {name: "AUTH0_CLIENT_SECRET", valueFrom: $backend_secret_arn},
+                      {name: "CENTRAL_AUTH_DB", valueFrom: $central_auth_db_arn}
+                    ]
                 )
             )
             | del(
@@ -132,12 +162,16 @@ jobs:
                 .registeredBy
               )
           ' task-definition.json > next-task-definition.json
-          jq -e --arg image "$IMAGE" \
+          jq -e --arg image "$IMAGE" --arg backend_client_id "$BACKEND_AUTH0_CLIENT_ID" \
             '.containerDefinitions | any(
               .name == "mcp-server"
               and .image == $image
               and (.environment | any(.name == "SOLSTICE_BACKEND_BASE_URL"))
+              and (.environment | any(.name == "AUTH0_CLIENT_ID" and .value == $backend_client_id))
+              and (.environment | all(.name != "AUTH0_CLIENT_SECRET"))
               and (.secrets | any(.name == "SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET"))
+              and (.secrets | any(.name == "AUTH0_CLIENT_SECRET"))
+              and (.secrets | any(.name == "CENTRAL_AUTH_DB"))
             )' \
             next-task-definition.json > /dev/null
           TASK_ARN=$(aws ecs register-task-definition \
@@ -186,7 +220,22 @@ jobs:
           RESOURCE_URL: ${{ env.RESOURCE_URL }}
         run: |
           ORIGIN="${RESOURCE_URL%/mcp}"
-          curl --fail --silent --show-error "$ORIGIN/health" | jq -e '.status == "ok"'
+          # /health exposes the live registered tool inventory (names only) so
+          # env-gated tools cannot silently stay off after a green deploy.
+          HEALTH=$(curl --fail --silent --show-error "$ORIGIN/health")
+          echo "$HEALTH" | jq -e '.status == "ok"'
+          echo "$HEALTH" | jq -e '
+            (.tools | index("solstice_whoami"))
+            and (.tools | index("solstice_reset_password"))
+            and (.tools | index("solstice_change_brand_role"))
+            and (.tools | index("solstice_add_user"))
+            and (.tools | index("solstice_memory_recall"))
+            and (.tools | index("solstice_memory_observe"))
+            and (.tools | index("solstice_memory_remember"))
+            and (.tools | index("solstice_memory_replace"))
+            and (.tools | index("solstice_memory_forget"))
+          '
+          echo "$HEALTH" | jq -r '"registered_tools=\(.tool_count): \(.tools | join(", "))"'
           curl --fail --silent --show-error \
             "$ORIGIN/.well-known/oauth-protected-resource/mcp" \
             | jq -e --arg resource "$RESOURCE_URL" \
@@ -195,6 +244,7 @@ jobs:
           test "$STATUS" = "401"
 
       - name: Sync AgentCore gateway tool schema
+        id: gateway_sync
         run: |
           aws bedrock-agentcore-control synchronize-gateway-targets \
             --gateway-identifier "$GATEWAY_ID" \
@@ -218,6 +268,34 @@ jobs:
           done
           echo "Timed out waiting for gateway target sync"
           exit 1
+
+      # Optional authenticated tools/list against the gateway when a CI bearer
+      # is provisioned (mcp:connect). Health already asserted ECS registration;
+      # this catches a stale gateway snapshot that sync claimed READY for.
+      - name: Assert gateway tools/list
+        env:
+          MCP_CI_ACCESS_TOKEN: ${{ secrets.MCP_CI_ACCESS_TOKEN }}
+          GATEWAY_URL: https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp
+        run: |
+          if [ -z "$MCP_CI_ACCESS_TOKEN" ]; then
+            echo "MCP_CI_ACCESS_TOKEN unset; skipping gateway tools/list (ECS /health already asserted registration)"
+            exit 0
+          fi
+          RESP=$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $MCP_CI_ACCESS_TOKEN" \
+            -H "Accept: application/json, text/event-stream" \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+            "$GATEWAY_URL")
+          echo "$RESP" | jq -e '
+            [.result.tools[].name]
+            | map(sub("^solstice-mcp-private___"; ""))
+            | index("solstice_whoami")
+            and index("solstice_add_user")
+            and index("solstice_reset_password")
+            and index("solstice_change_brand_role")
+            and index("solstice_memory_recall")
+          '
 
       # Only a smoke-test failure rolls back the service; a gateway sync failure
       # leaves the (healthy) deploy in place and just fails the workflow.

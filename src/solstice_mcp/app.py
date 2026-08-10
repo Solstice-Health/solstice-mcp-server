@@ -301,13 +301,14 @@ def build_mcp_app(
     # DB. Injected in tests; in deployment they are registered only when both
     # AUTH0_CLIENT_ID/SECRET and CENTRAL_AUTH_DB are configured — otherwise
     # the tools are simply not exposed (same pattern as memory tools).
-    if user_admin_auth0 is None and runtime_settings.AUTH0_CLIENT_ID and runtime_settings.AUTH0_CLIENT_SECRET:
+    # ``unused`` stubs (Terraform placeholders) count as unset.
+    if user_admin_auth0 is None and runtime_settings.user_admin_auth0_configured:
         user_admin_auth0 = Auth0UserAdmin(
             domain=runtime_settings.AUTH0_DOMAIN,
             client_id=runtime_settings.AUTH0_CLIENT_ID,
             client_secret=runtime_settings.AUTH0_CLIENT_SECRET,
         )
-    if central_session_factory is None and runtime_settings.CENTRAL_AUTH_DB:
+    if central_session_factory is None and runtime_settings.central_auth_db_configured:
         central_session_factory = central_session_factory_from_url(runtime_settings.CENTRAL_AUTH_DB)
     if user_admin_auth0 is not None and central_session_factory is not None:
         register_user_admin_tools(
@@ -322,8 +323,17 @@ def build_mcp_app(
 
     @mcp.custom_route("/health", methods=["GET"])
     async def health(_request: Request) -> Response:
+        # Public tool-name inventory for deploy CI (no secrets). Names only —
+        # same set tools/list would return after auth.
+        tool_names = sorted(tool.name for tool in mcp._tool_manager.list_tools())
         return JSONResponse(
-            {"status": "ok", "service": MCP_SERVER_NAME, "version": MCP_SERVER_VERSION},
+            {
+                "status": "ok",
+                "service": MCP_SERVER_NAME,
+                "version": MCP_SERVER_VERSION,
+                "tools": tool_names,
+                "tool_count": len(tool_names),
+            },
             headers={"Cache-Control": "no-store"},
         )
 
