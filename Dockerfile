@@ -24,6 +24,8 @@ RUN groupadd --system --gid 10001 mcp \
 COPY mcp_main.py .
 COPY config/ config/
 COPY src/ src/
+COPY plugins/solstice-platform/skills/prc-template-recreation/references/renderer-contract.md \
+    plugins/solstice-platform/skills/prc-template-recreation/references/renderer-contract.md
 
 USER mcp
 EXPOSE 8000

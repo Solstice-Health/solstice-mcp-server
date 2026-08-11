@@ -1,382 +1,305 @@
-# Solstice PRC renderer contract
+# Solstice PRC Template Contract v2
 
-This is the authoring contract for HTML passed as `templateHtml` to
-`buildPrcTemplateHtmlFromStoredTemplate`. The frontend parses the template with
-`DOMParser`, injects `creativeHtml`, adds its runtime bridge, and returns a full
-doctype HTML document.
+Contract version: `v2`
 
-The canonical implementations are:
+This is the authoring contract for every stored PRC proof template: email,
+banner, social, and website. A template declares its profile, lays out pages,
+provides creative slots, seeds presentation config, and marks editable fields.
+The platform hydrates values, injects creative and runtime behavior, paints
+everything around the pages, and draws every annotation.
 
-- `Solstice-Frontend/components/content-workspace/prc-template/prc-template-renderer.ts`
-- `Solstice-Frontend/components/content-workspace/prc-template/prc-bridge-callouts.ts`
-- `Backend-Server/migrations/seeds/prc_templates/`
+## Mental model
 
-The bridge generates runtime annotation DOM. Template authors provide only the
-structural hosts and CSS.
+A template owns six layers and nothing outside them. It draws the inside of each
+page and stops at the page edge: the backdrop behind the pages, the spacing
+between them, their centering, and their drop shadow all belong to the platform,
+which paints them differently in the workspace and in an export. Each page rect
+is its annotation boundary: the runtime places a callout at a fixed inset from
+the page border nearest its anchor, clamps it inside that page, and
+collision-stacks callouts in anchor order. A manual drag is the only placement
+override; it is operation draft data, never template markup. If an edit preserves layers L0-L5
+and does not author anything in the reserved namespace, the proof can render and
+export through the same contract.
 
-## Shared document rules
+## The six layers
 
-- Produce one complete HTML document per template.
-- Keep template HTML and creative HTML separate. Never paste the operation
-  creative into the stored template.
-- Prefer inline CSS and self-contained assets. This is a portability rule, not a
-  renderer selector.
-- Do not use Handlebars, Jinja, or Mustache. The host hydrates JSON config
-  scripts, data attributes, and iframe `srcdoc`.
-- Mark editable fields with `data-sol-prc-field="FIELD_ID"`. The bridge makes
-  existing `input` and `textarea` elements read-only/editable and upgrades
-  tagged display elements when needed.
-- `data-sol-prc-mirror="FIELD_ID"` mirrors an editable field across repeated
-  banner dimensions. `data-sol-prc-derived="frame_cumulative_INDEX"` receives the
-  running duration sum.
-- The page-container lookup order is
-  `[data-sol-prc-pages]`, `.prc-pages`, then `.pages`.
-- Manual-callout page lookup uses the first non-empty tier:
-  1. `[data-sol-prc-page], .prc-page`
-  2. `[data-banner-section] .page`
-  3. `main.pages > .page, .prc-pages > .page, .pages > .page`
-  4. every `.page`
+| Layer | Responsibility | Required vocabulary |
+|---|---|---|
+| **L0 Declaration** | Contract version and profile | `<meta name="sol-prc-contract" content="v2" data-profile="...">` and the instruction comment |
+| **L1 Profile** | Selects exactly one compose branch | `body[data-sol-prc-proof="email\|banner\|social\|website"]` |
+| **L2 Pages** | Defines page rectangles and annotation boundaries | `main[data-sol-prc-pages]` containing `[data-sol-prc-page="ID"][data-sol-prc-page-type="cover\|render\|storyboard"]` |
+| **L3 Creative slots** | Marks only the iframes the platform hydrates | `iframe[data-sol-prc-creative="desktop\|mobile\|social\|banner"]` |
+| **L4 Config seed** | Supplies presentation-only JSON | one `script#sol-prc-config[type="application/json"]` |
+| **L5 Fields** | Marks editable, mirrored, and derived values | `data-sol-prc-field`, `data-sol-prc-mirror`, `data-sol-prc-derived`, and stable cover IDs |
+| **Reserved** | Runtime-owned and forbidden in templates | the namespace listed below |
 
-## Creative injection
+### L0 — Declaration
 
-The renderer selects:
-
-```text
-iframe.prc-render-frame, iframe[data-width], iframe[data-prc-frame]
-```
-
-If none exist, it injects the creative into every iframe in the document. Avoid
-that fallback. Mark only the intended source/render frames.
-
-For every selected frame the renderer:
-
-- removes `src`;
-- sets `srcdoc` to the creative;
-- sets `scrolling="no"` and `loading="eager"`;
-- strips `.email-topper` elements from the injected creative;
-- for `desktop` or `mobile`, rewrites viewport metadata and pins the frame to
-  `600px` or `375px`.
-
-Viewport detection checks, in order:
-
-1. closest ancestor `[data-viewport]`;
-2. iframe `data-width`;
-3. iframe `data-sol-prc-creative`.
-
-## Template classification
-
-A template is treated as banner when any one is present:
-
-- `#banner-template-data`;
-- `#banner-scene-adapter`;
-- document text containing `__BANNER_TEMPLATE_SRCDOC__`.
-
-Banner detection wins over other seams. Do not mix banner markers into email or
-social templates.
-
-Email and social use `#prc-cover-data`; distinguish them with:
+Every template starts with one declaration whose profile matches L1:
 
 ```html
-body class `prc-doc` with `data-sol-prc-proof="email"`
-body class `prc-doc` with `data-sol-prc-proof="social"`
+<meta name="sol-prc-contract" content="v2" data-profile="email">
+<!-- SOLSTICE PRC TEMPLATE - CONTRACT v2 (profile: email)
+  Editing this file outside Solstice (Cursor, etc.):
+  - NEVER remove/rename anything carrying data-sol-prc-*
+  - NEVER add annotation/callout markup, CSS, or JS - the platform
+    draws all annotations bounded within each page
+  - NEVER declare --prc-* CSS variables - runtime-owned
+  - NEVER style outside the page box (backdrop, page gaps,
+    centering, shadow, @page) - the platform paints those
+  - NEVER link external fonts - platform-listed fonts only
+  - Keep operation creative out of this file - it is injected
+  Full rules: solstice_prc_template_rules via the Solstice MCP -->
 ```
 
-## Email profile
+The meta element is machine-readable. The adjacent comment protects the same
+seams when a human or agent edits a downloaded file without MCP context.
 
-### Cover config
+### L1 — Profile
 
-```html
-script `type="application/json" id="prc-cover-data" data-sol-prc-config`
-{
-  "filename": "",
-  "to": "",
-  "from": "",
-  "toStyle": {},
-  "fromStyle": {},
-  "sectionTitle": "Subject Line/Preheaders",
-  "options": [{ "subject": "", "preview": "" }]
-}
-end script
-```
+The body has exactly one explicit `data-sol-prc-proof` value. This applies to
+banner too; v1's banner detection by config or script contents is only a
+migration alias. Cross-profile markers are invalid because banner detection
+historically won and silently selected the wrong compose branch.
 
-The renderer updates `filename`, `to`, `from`, and `options` from field values
-and draft values while preserving extra seed keys.
+### L2 — Pages
 
-Stable cover IDs and fields:
+- One `main[data-sol-prc-pages]` wraps the proof pages.
+- Every page has a stable `data-sol-prc-page` ID and
+  `data-sol-prc-page-type="cover|render|storyboard"`.
+- Email and website render pages carrying creative also have
+  `data-viewport="desktop|mobile"`.
+- The rendered page rect is the annotation boundary. Page CSS may use padding,
+  borders, and brand chrome, but the template provides no annotation gutters,
+  connector SVG, stages, or reserved whitespace.
+- A template styles the inside of a page only. The canvas behind the pages, the
+  gap between them, their horizontal centering, their drop shadow, and all
+  `@page` / `@media print` geometry belong to the platform, which paints a gray
+  canvas with gaps in the workspace and a flush white sheet on export.
 
-```html
-section `.prc-page.prc-cover`
-  `[data-page="cover"][data-prc-page="cover"]`
-  `[data-sol-prc-page="page_cover"][data-sol-prc-page-type="cover"]`
-input `id="prc-filename" data-sol-prc-field="file_name"`
-input `id="prc-to" data-sol-prc-field="to_line"`
-input `id="prc-from" data-sol-prc-field="from_line"`
-heading `id="prc-section-title" data-sol-prc-page-header`
-container `id="prc-options"`
-```
+### L3 — Creative slots
 
-Option rows use `#prc-option-tpl`, cloned into `#prc-options`:
+Only `iframe[data-sol-prc-creative]` elements receive creative. The platform
+sets `srcdoc`, `scrolling`, `loading`, viewport metadata, and slot width
+(600px desktop, 375px mobile). The v1 fallback that injected into every iframe
+is not part of v2.
 
-```html
-template `id="prc-option-tpl"`
-  container class `prc-option`
-    label slot `data-slot="label"`
-    subject input `data-slot="subject" data-sol-prc-field=""`
-    preview input `data-slot="preview" data-sol-prc-field=""`
-```
+Banner keeps one authored `[data-banner-section]`; the platform clones it for
+multiple dimensions. Banner slot iframes can live in `#frame-template` and
+`#isi-region-template`, but they still carry
+`data-sol-prc-creative="banner"`.
 
-The host assigns `subject_INDEX` and `preheader_INDEX`, zero-based. Optional
-brand-tier targets are `#prc-from-secondary` and `#prc-section-list`.
-Seed-only config may also use `fromSecondary`, `enumeration: "letter"`,
-`sectionList`, and `pink` tokens.
+### L4 — Config seed
 
-### Render pages and annotations
+Exactly one `script#sol-prc-config[type="application/json"]` contains a JSON
+object. It is presentation data, not operation or platform state.
 
-Provide one desktop and one mobile page. Change all viewport-specific values
-together.
+| Profile | Template-owned keys | Platform-owned keys that must not be seeded |
+|---|---|---|
+| email | `sectionTitle`, `enumeration`, `toStyle`, `fromStyle`, `fromSecondary`, `sectionList` | `filename`, `to`, `from`, `options[]` values |
+| website | email layout keys plus `url`, `pageTitle`, `description` layout hints | `filename` and operation field values |
+| banner | `frames_per_row`, `show_focus_page`, `inline_isi_columns`, `dim_layouts`, `banner_scale`, `isi_eyebrow_html`, `isi_columns`, `footer` | `title`, `dimensions`, `scenes`, `expand_endpoint`, `expand_model`, tenant/auth values |
+| social | `sectionTitle` | `filename` and platform/variant grouping |
 
-```html
-main `.prc-pages#prc-pages[data-sol-prc-pages]`
-  section `.prc-page.prc-render-page`
-    `data-prc-page="desktop"`
-    `data-viewport="desktop"`
-    `data-sol-prc-page="page_desktop"`
-    `data-sol-prc-page-type="render"`
-    `data-sol-prc-page-variant="desktop"`
-    paragraph `[data-slot="page-header"][data-sol-prc-page-header]`
-    stage `.prc-render-stage[data-stage="desktop"][data-sol-prc-stage]`
-      left gutter `.prc-callout-gutter.prc-gutter-left[data-side="left"]`
-        `[data-sol-prc-callout-gutter="left"]`
-      frame wrapper `.prc-render-frame-wrap`
-        iframe `.prc-render-frame[data-width="desktop"]`
-          `[data-sol-prc-creative="desktop"][scrolling="no"][loading="eager"]`
-        error container `.prc-frame-error`
-      right gutter `.prc-callout-gutter.prc-gutter-right[data-side="right"]`
-        `[data-sol-prc-callout-gutter="right"]`
-      SVG `.prc-connector-svg[data-sol-prc-connector-svg]`
-```
+Banner retains the executable behavior seams `#banner-scene-adapter`,
+`#banner-placeholder-srcdoc`, `[data-banner-section]`, `#frame-template`, and
+`#isi-region-template`. Social retains `#prc-platform-page-tpl`,
+`#prc-variant-cell-tpl`, `#prc-storyboard-page-tpl`, and
+`#prc-frame-cell-tpl`. Those seams build profile pages; they do not draw
+annotations.
 
-The mobile page uses `mobile`, `page_mobile`, and the `375px` slot. Desktop uses
-`600px`.
+### L5 — Fields
 
-The callout bridge requires, inside each `.prc-render-stage`:
+- Editable values use `data-sol-prc-field="FIELD_ID"`.
+- Repeated banner dimensions mirror the first section with
+  `data-sol-prc-mirror="FIELD_ID"`.
+- Computed values use `data-sol-prc-derived`; banner cumulative durations are
+  `frame_cumulative_INDEX`.
+- Stable email cover IDs are `#prc-filename`, `#prc-to`, `#prc-from`,
+  `#prc-options`, and `#prc-option-tpl`. Option rows become `subject_INDEX` and
+  `preheader_INDEX`.
+- Stable banner fields include `file_name`, `frame_label_INDEX`,
+  `frame_duration_INDEX`, `frame_time_label_INDEX`,
+  `frame_cumulative_label_INDEX`, `frame_note_label_INDEX`, and
+  `animation_note_INDEX`.
+- New field IDs may use the generic path. Renaming or deleting an existing ID
+  is a breaking edit.
 
-- one `.prc-render-frame`;
-- one `.prc-connector-svg`;
-- `.prc-callout-gutter[data-side="left"]`;
-- `.prc-callout-gutter[data-side="right"]`.
+## Reserved runtime-owned namespace
 
-If any are missing, that stage gets no generated annotations.
+A v2 template must never author:
 
-The bridge enumerates same-origin `a[href]` elements inside the creative. It
-ignores missing/empty hrefs, `#`, `javascript:` URLs, and zero-size anchors.
-Generated text is `Links to: URL`.
+- any `--prc-*` CSS custom property, including `--prc-desktop-width`,
+  `--prc-mobile-width`, `--prc-fit-scale`, `--prc-user-zoom`, and
+  `--prc-total-scale`;
+- annotation DOM, CSS, or JavaScript, including `.prc-callout`,
+  `.prc-connector-line`, `.callout-dot`, `.prc-callout-gutter`,
+  `.prc-connector-svg`, `.prc-render-stage`, `.callout-overlay`,
+  `.callout-box`, `.callout-line`, `data-sol-prc-annotation-key`, or any
+  script that computes callout geometry;
+- `__prc_annotation_positions`, which belongs to operation draft data;
+- `window.__BANNER_TEMPLATE_*`, `#sol-prc-template-runtime*`, or
+  `#sol-prc-banner-template-data`, which compose injects;
+- the canvas outside the pages: a backdrop on `html` or `body`, the gap or
+  margin between pages, page centering, or a page drop shadow;
+- `@page` or `@media print` rules, which set export pagination and geometry;
+- external font links such as `fonts.googleapis.com`. Use platform-listed or
+  inlined fonts.
 
-The current stable annotation key is:
+Templates never author callout chrome. This prohibition includes visually
+similar custom classes: if markup, CSS, or JavaScript hosts, styles, places, or
+connects annotations, it belongs to the runtime.
 
-```text
-VIEWPORT|Links to: TRUNCATED_URL|VERTICAL_INDEX
-```
+## Page-bound annotation model
 
-Coordinates are deliberately absent so saved overrides survive reflow. Do not
-precompute this key in template HTML. The bridge adds matching
-`data-sol-prc-annotation-key` values to its callout, polyline, and drag dots.
+1. **Anchors:** the runtime discovers creative `a[href]`, cover fields, and
+   manual points. Generated identity remains
+   `VIEWPORT|Links to: URL|INDEX`; coordinates are absent so overrides survive
+   reflow.
+2. **Default placement:** the callout is placed at a fixed inset from the page
+   border on the side nearest its anchor and aligned vertically to that anchor.
+3. **Bounding:** at rest the runtime clamps the full callout inside a page rect,
+   so a callout never comes to rest in the canvas between or outside pages.
+   During a manual drag it is lifted above the pages and may cross the gap; on
+   release it re-homes into the page under the pointer, or the nearest page if
+   released over the canvas, keeping its identity and text.
+4. **Collision:** callouts on the same side stack vertically in anchor order;
+   connectors route to the stacked positions.
+5. **Override:** manual drag is the only placement override. The runtime
+   persists it under `draftValues.__prc_annotation_positions` as a page ID plus
+   page-space coordinates, so a callout moved to another page records that page.
+6. **Rendering:** the runtime paints boxes, connectors, and dots on one overlay
+   per page. Templates do not host, style, or script that overlay.
 
-The bridge owns `.prc-callout`, `.prc-connector-line`, `.callout-dot`, and
-`.sol-prc-manual-callout` elements. Supply CSS for them, not static instances.
-A script containing all three strings `layoutStage`, `prc-callout-gutter`, and
-`prc-connector-svg` is treated as the legacy annotation engine and removed.
+The model is identical for email, banner, social, and website. There is no
+profile-specific annotation stage.
 
-### Persisted annotation positions
+## Per-profile normative rules
 
-Positions are draft data, not template markup. The host passes a JSON string in
-`draftValues.__prc_annotation_positions`; invalid or non-object JSON becomes an
-empty map. Legacy five-part generated keys are migrated to the current
-three-part `VIEWPORT|Links to: URL|INDEX` form. `manual|...` keys pass through.
+The block below is both the human rule list and the source parsed by
+`solstice_prc_template_rules`. Keep each rule on one bullet line with a stable
+backticked ID. Changing this block changes the MCP payload on its next call;
+there is no Python copy of these rules.
 
-Generated entries may contain:
+<!-- PRC_RULES_START -->
+### All profiles
 
-- `top`, `left`;
-- `coordinateSpace: "offsetParent"` for gutter positions or `"stage"` after a
-  callout is dragged over the creative;
-- `anchor: {x, y}` with `anchorCoordinateSpace: "stage"` after anchor drag;
-- `text`, `textEdited`, and `hidden`.
+#### MUST
+- `common.complete_html`: Produce one complete HTML document with a doctype, html, head, and body.
+- `common.declaration`: Declare exactly one `<meta name="sol-prc-contract" content="v2">` whose `data-profile` equals the requested profile and include the adjacent Contract v2 instruction comment.
+- `common.profile`: Put exactly one matching `data-sol-prc-proof` value on body and include no cross-profile markers.
+- `common.pages`: Wrap pages in one `main[data-sol-prc-pages]` and give every page a stable `data-sol-prc-page` plus `data-sol-prc-page-type`.
+- `common.creative_slots`: Mark every intended creative iframe with one valid `data-sol-prc-creative` value; only marked iframes are creative slots.
+- `common.config`: Include exactly one parseable JSON object in `script#sol-prc-config[type="application/json"]`.
+- `common.fields`: Preserve existing stable field IDs and use `data-sol-prc-field`, `data-sol-prc-mirror`, or `data-sol-prc-derived` according to ownership.
+- `common.layer_separation`: Keep reusable proof-template chrome separate from operation creative, values, and draft data.
 
-Manual entries use:
+#### SHOULD
+- `common.self_contained`: Keep CSS and portable assets inline and use only platform-listed or inlined fonts.
+- `common.compose_check`: Validate both interactive and export composition through the real frontend composer before publishing.
+- `common.minimal_shell`: Author only layers L0-L5; let the platform supply values, creative, behavior, sizing, and annotations.
 
-- `manual: true`;
-- `coordinateSpace: "page"`;
-- `pageId`, resolved from `data-sol-prc-page`, `banner_INDEX`, or the
-  `__idx_INDEX` fallback;
-- page-relative `anchor: {x, y}` and `callout: {x, y}`;
-- optional `text`, `textEdited`, and `hidden`.
+#### MUST NOT
+- `common.reserved_namespace`: Author any reserved `--prc-*`, annotation, banner-global, template-runtime, or operation-draft namespace.
+- `common.callout_chrome`: Author callout boxes, connector lines or SVG, dots, gutters, stages, overlays, callout CSS, or callout geometry JavaScript.
+- `common.canvas_chrome`: Author the canvas outside the pages, including an html or body backdrop, the gap or margin between pages, page centering, or a page drop shadow.
+- `common.print_rules`: Author `@page` or `@media print` rules; the platform owns export pagination and print geometry.
+- `common.external_fonts`: Link external font services; use platform-listed or inlined fonts.
+- `common.platform_values`: Seed platform-owned config keys or operation-specific values.
+- `common.template_language`: Add Handlebars, Jinja, Mustache, or another host-unrecognized template language.
+- `common.unmarked_fallback`: Depend on injection into unmarked iframes.
 
-Do not seed these values while recreating a template. They belong to a specific
-operation/version and the bridge publishes them with the
-`sol-prc-annotation-positions` message.
+### Email
 
-## Banner profile
+#### MUST
+- `email.profile`: Use `body[data-sol-prc-proof="email"]` and `data-profile="email"` in the v2 declaration.
+- `email.cover`: Provide a cover page with stable `#prc-filename`, `#prc-to`, `#prc-from`, and `#prc-options` hosts.
+- `email.options`: Provide `template#prc-option-tpl`; generated rows use `subject_INDEX` and `preheader_INDEX`.
+- `email.render_pages`: Provide at least one render page with `data-viewport="desktop|mobile"` and a matching `iframe[data-sol-prc-creative]`.
 
-Use:
+#### SHOULD
+- `email.dual_viewport`: Provide both a 600px desktop slot and a 375px mobile slot unless the approved proof is intentionally single-viewport.
+- `email.presentation_seed`: Keep only email presentation keys such as section labels, enumeration, styles, and section lists in the config seed.
 
-```html
-body class `banner-proof-doc`
-```
+#### MUST NOT
+- `email.cross_profile`: Include banner adapters or sections, social builder templates, or a non-email creative slot.
+- `email.operation_seed`: Seed filename, to, from, subject, preheader, or other operation values in `#sol-prc-config`.
 
-### Config and adapters
+### Banner
 
-```html
-script `id="banner-template-data" type="application/json"`
-{
-  "title": "",
-  "dimensions": null,
-  "frames_per_row": null,
-  "scenes": [],
-  "show_focus_page": true,
-  "expand_endpoint": "/api/content-generation-new/isi-tool/banner-expand-isi",
-  "expand_model": "anthropic/claude-opus-4.7"
-}
-end script
+#### MUST
+- `banner.profile`: Use `body[data-sol-prc-proof="banner"]` and `data-profile="banner"` in the v2 declaration.
+- `banner.section`: Author exactly one `[data-banner-section]` under `main[data-sol-prc-pages]`; the platform owns multi-dimension cloning.
+- `banner.page`: Give the banner section a stable page marker with `data-sol-prc-page-type="storyboard"`.
+- `banner.behavior_seams`: Preserve `#banner-scene-adapter` and `#banner-placeholder-srcdoc` as executable behavior seams.
+- `banner.clone_templates`: Provide `#frame-template` and `#isi-region-template` with their required slots and `iframe[data-sol-prc-creative="banner"]`.
+- `banner.fields`: Put editable banner fields on the first section, mirrors on clones, and cumulative duration in `data-sol-prc-derived`.
 
-script `id="banner-placeholder-srcdoc" type="text/plain"`
-doctype HTML placeholder
-end script
+#### SHOULD
+- `banner.standard_shape`: Start from the annotation-free v2 form of the banner-standard-srcdoc-shell exemplar and preserve its section, adapter, clone-template, and slot shape.
+- `banner.hollow_seed`: Keep the config presentation-only; let the platform inject title, dimensions, scenes, expansion settings, and tenant/auth data.
 
-script `id="banner-scene-adapter" type="text/plain"`
-adapter IIFE
-end script
-```
+#### MUST NOT
+- `banner.authored_clones`: Author multiple dimension sections or per-operation banner documents in the template.
+- `banner.platform_seed`: Seed title, dimensions, scenes, expand_endpoint, expand_model, tenant, or auth values.
+- `banner.annotation_engine`: Retain or create the exemplar's compatibility callout overlay, callout CSS, annotation position store, or geometry engine.
 
-The placeholder and adapter bodies are executable behavior contracts. Start
-from the current same-content-type canonical seed or supplied banner template;
-do not replace them with visual approximations.
+### Social
 
-The creative should be a complete banner document with one of:
+#### MUST
+- `social.profile`: Use `body[data-sol-prc-proof="social"]` and `data-profile="social"` in the v2 declaration.
+- `social.source_slot`: Provide one source `iframe[data-sol-prc-creative="social"]` that receives the full social creative.
+- `social.builders`: Preserve `#prc-platform-page-tpl`, `#prc-variant-cell-tpl`, `#prc-storyboard-page-tpl`, and `#prc-frame-cell-tpl` with their canonical slots.
+- `social.pages`: Provide `main[data-sol-prc-pages]`; the social builder may populate its page children at runtime.
 
-```html
-`.banner[data-ad-size="300x250"]`
-`.banner[data-dim="300x250"]`
-`.banner-root[data-ad-size="300x250"]`
-`.banner-root[data-dim="300x250"]`
-```
+#### SHOULD
+- `social.minimal_seed`: Keep the config seed to presentation labels such as `sectionTitle`.
+- `social.platform_grouping`: Let the builder derive platform and variant grouping from the injected creative.
 
-A wrapper is also accepted when the real banner is in `.scene-viewer
-iframe[srcdoc]` or `iframe#bannerIframe[srcdoc]`. The raw `#bannerIframe`
-attribute is preferred.
+#### MUST NOT
+- `social.operation_seed`: Seed filename, platform groups, variants, or ad copy in `#sol-prc-config`.
+- `social.cross_profile`: Include email viewport stages or banner sections and adapters.
 
-Authored dimension resolution checks `data-ad-size`, then `data-dim`, then
-known viewport/body inline sizes, then `.banner` CSS. The title's `WxH` is used
-only when authored dimensions are absent or when the authored width and height
-are both exactly 2x the title dimensions. In that 2x case the nominal title
-size wins.
+### Website
 
-Multi-size creative is a concatenation of complete documents, each beginning
-with a doctype HTML declaration. The renderer splits on those boundaries.
+#### MUST
+- `website.profile`: Use `body[data-sol-prc-proof="website"]` and `data-profile="website"` in the v2 declaration.
+- `website.cover`: Provide stable fields for `file_name`, `url`, `page_title`, and `meta_description`.
+- `website.render_pages`: Provide at least one render page with `data-viewport="desktop|mobile"` and a matching `iframe[data-sol-prc-creative]`.
 
-### Multi-banner host
+#### SHOULD
+- `website.dual_viewport`: Provide both desktop and mobile render pages when the approved proof covers both viewports.
+- `website.presentation_seed`: Keep only website presentation hints such as labels, url, pageTitle, and description layout in the config seed.
 
-The template must have:
+#### MUST NOT
+- `website.cross_profile`: Include banner adapters or sections, social builder templates, or a non-website render shape.
+- `website.operation_seed`: Seed operation-specific filename, URL, title, description, or other field values in `#sol-prc-config`.
+<!-- PRC_RULES_END -->
 
-```html
-main `.pages`
-  section `[data-banner-section][data-banner-index="0"]`
-    article `.page[data-page="storyboard"]`
-      title slot `[data-slot="title"]`
-      dimensions slot `[data-slot="dimensions"]`
-      frames slot `[data-slot="frames"]`
-      ISI slot `[data-slot="isi"]`
-```
+## Baked proofs
 
-For multiple creative documents, the renderer clones the first
-`[data-banner-section]` under `main.pages`, assigns sequential
-`data-banner-index` values, and inserts one
-`script[type="application/json"][data-banner-config]` per section. If
-`main.pages` or the seed section is absent, it falls back to the first banner
-and drops the remaining dimensions.
+A baked proof is a frontend compose freeze, not another renderer. New bakes are
+stamped `<meta name="sol-prc-contract-baked" content="v2">`; live composition,
+non-interactive export, and baked-view adaptation use the same annotation
+runtime. Historical v1 bakes are immutable snapshots. Their legacy annotation
+chrome is neutralized during adaptation, and a bake without usable page markers
+falls back to recomposition from its pinned template version.
 
-Required clone sources:
+## Validation and migration
 
-- `template#frame-template` with `[data-slot="frame-label-left"]`,
-  `[data-slot="frame-label-right"]`, a `.banner-frame` iframe, and
-  `[data-slot="frame-description"]`;
-- `template#isi-region-template` with a `.banner-frame` iframe and optional
-  focus-spinner slots.
+The target accept-time prepass rejects non-HTML, missing or duplicate L0/L1,
+cross-profile markers, absent marked creative slots, invalid config JSON,
+reserved namespace use, and removed core field IDs. Platform-owned seed keys,
+legacy v1 annotation hosts, and unavailable fonts warn during migration.
 
-The renderer publishes these globals; the template consumes them:
+Migration aliases may map v1 seams to v2 during compose:
 
-- `window.__BANNER_TEMPLATE_SRCDOC__`
-- `window.__BANNER_TEMPLATE_SRCDOCS__`
-- `window.__BANNER_TEMPLATE_SRCDOC_ADCHOICES__`
-- `window.__BANNER_TEMPLATE_SRCDOCS_ADCHOICES__`
-- `window.__BANNER_TEMPLATE_EXPANDED_SRCDOC__`
-- `window.__BANNER_TEMPLATE_EXPANDED_SRCDOCS__`
-- `window.__SOL_PRC_GLOBAL_ANNOTATIONS__`
+- `iframe.prc-render-frame`, `data-viewport`, `data-width`, and
+  `data-prc-frame` to `data-sol-prc-creative`;
+- `#prc-cover-data` and `#banner-template-data` to `#sol-prc-config`;
+- `.prc-page`, `main.pages`, and `.prc-pages` to v2 page markers;
+- the v1 banner detection triad to the explicit banner profile.
 
-Banner field IDs:
-
-- `file_name`
-- `frame_label_INDEX`
-- `frame_duration_INDEX`
-- `frame_time_label_INDEX`
-- `frame_cumulative_label_INDEX`
-- `frame_note_label_INDEX`
-- `animation_note_INDEX`
-- `frame_cumulative_INDEX` is derived, not a persisted input
-
-The first banner section owns `data-sol-prc-field`; cloned dimensions use
-`data-sol-prc-mirror` for the same IDs.
-
-## Social profile
-
-Use:
-
-```html
-body `.prc-doc[data-sol-prc-proof="social"]`
-script `type="application/json" id="prc-cover-data" data-sol-prc-config`
-  `{ "filename": "", "sectionTitle": "Social Media Post" }`
-end script
-main `.prc-pages#prc-pages[data-sol-prc-pages]`
-iframe `.prc-render-frame.prc-source-frame`
-  `[data-prc-frame="social"][data-sol-prc-creative="social"]`
-  `[scrolling="no"][loading="eager"]`
-```
-
-The source frame receives the full social creative. Preserve these canonical
-template IDs and slots:
-
-- `#prc-platform-page-tpl` with `[data-slot="title"]`,
-  `[data-slot="grid"]`, and `[data-slot="isi"]`;
-- `#prc-variant-cell-tpl` with `[data-slot="label"]` and
-  `.prc-variant-frame`;
-- `#prc-storyboard-page-tpl` with `[data-slot="title"]`,
-  `[data-slot="frames"]`, and `[data-slot="isi"]`;
-- `#prc-frame-cell-tpl` with `[data-slot="label"]` and `.prc-frame-frame`.
-
-The social seed's page-builder script is part of the contract. It splits
-concatenated doctype HTML creative documents and discovers variant containers
-with `.social-container`, `.carousel-container`, `.medupdate-container`, or
-`[data-platform]`. It groups by `data-platform`, defaulting class-only
-containers to `OTHER`, clones the templates, and assigns runtime page IDs such
-as `data-prc-page="facebook"` and `data-sol-prc-page="page_facebook"`.
-
-## Minimum validation
-
-Static checks:
-
-- profile detector selects only the intended branch;
-- all profile IDs, classes, slots, and data attributes above are present;
-- JSON config scripts parse;
-- intended creative frames are explicitly marked;
-- banner multi-size templates contain a `[data-banner-section]` descendant of
-  `main.pages`;
-- no authored bridge output or removable legacy callout engine remains.
-
-Runtime checks through the actual frontend composer:
-
-- creative hydrates in every viewport/dimension/platform;
-- email links generate correctly paired callouts and connector lines;
-- cover fields toggle editable/read-only and persist exact field IDs;
-- banner mirrors and cumulative values update across dimensions;
-- interactive and `interactive: false` export builds both settle;
-- no source page is missing, clipped, duplicated, or silently dropped.
-
+Aliases are compatibility inputs, not authoring guidance. New or edited
+templates use the v2 vocabulary, and the composer neutralizes legacy stages,
+gutters, connector SVG, and annotation engines.

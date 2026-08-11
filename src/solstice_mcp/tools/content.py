@@ -1,8 +1,9 @@
-"""Register Solstice project, operation, message, and HTML tools."""
+"""Register Solstice content, PRC template, and document tools."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -52,6 +53,77 @@ UPDATE_IN_PLACE = ToolAnnotations(
     idempotentHint=True,
     openWorldHint=False,
 )
+
+PRC_TEMPLATE_PROFILES = ("email", "banner", "social", "website")
+PRC_TEMPLATE_CONTRACT_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "plugins/solstice-platform/skills/prc-template-recreation/references/renderer-contract.md"
+)
+PRC_RULES_START = "<!-- PRC_RULES_START -->"
+PRC_RULES_END = "<!-- PRC_RULES_END -->"
+
+
+def _load_prc_template_rules(profile: str) -> dict[str, Any]:
+    """Parse one profile's rules from the shipped renderer contract."""
+    normalized_profile = profile.strip().lower()
+    if normalized_profile not in PRC_TEMPLATE_PROFILES:
+        allowed = ", ".join(PRC_TEMPLATE_PROFILES)
+        raise ToolError(f"invalid_argument: profile must be one of {allowed}")
+
+    try:
+        contract = PRC_TEMPLATE_CONTRACT_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        # The contract ships as a plugin file (Dockerfile COPY), so a deployment
+        # that drops it must fail loudly here rather than serve stale rules.
+        raise ToolError("contract_error: renderer contract is not readable") from exc
+    version_line = next(
+        (line for line in contract.splitlines() if line.startswith("Contract version: `")),
+        "",
+    )
+    contract_version = version_line.removeprefix("Contract version: `").removesuffix("`")
+    rules_block = contract.partition(PRC_RULES_START)[2].partition(PRC_RULES_END)[0]
+    if not contract_version or not rules_block:
+        raise ToolError("contract_error: renderer contract is missing its version or rules block")
+
+    parsed: dict[str, dict[str, list[dict[str, str]]]] = {}
+    scope = ""
+    rule_type = ""
+    rule_headings = {"MUST": "must", "SHOULD": "should", "MUST NOT": "must_not"}
+
+    for line in rules_block.splitlines():
+        if line.startswith("### "):
+            scope = line.removeprefix("### ").strip().lower()
+            parsed.setdefault(scope, {key: [] for key in rule_headings.values()})
+            rule_type = ""
+        elif line.startswith("#### "):
+            rule_type = rule_headings.get(line.removeprefix("#### ").strip(), "")
+        elif line.startswith("- `") and scope and rule_type:
+            rule_id, separator, text = line.removeprefix("- `").partition("`: ")
+            if not separator or not rule_id or not text:
+                raise ToolError("contract_error: malformed rule bullet in renderer contract")
+            parsed[scope][rule_type].append({"id": rule_id, "text": text})
+
+    scopes = ("all profiles", normalized_profile)
+    if any(scope_name not in parsed for scope_name in scopes):
+        raise ToolError(f"contract_error: renderer contract has no rules for {normalized_profile}")
+
+    rules = {
+        rule_type: [
+            rule
+            for scope_name in scopes
+            for rule in parsed[scope_name][rule_type]
+        ]
+        for rule_type in rule_headings.values()
+    }
+    if any(not entries for entries in rules.values()):
+        raise ToolError(f"contract_error: incomplete renderer contract rules for {normalized_profile}")
+
+    return {
+        "contract_version": contract_version,
+        "profile": normalized_profile,
+        "rules": rules,
+        "source": "prc-template-recreation/references/renderer-contract.md",
+    }
 
 
 def register_content_tools(
@@ -163,6 +235,16 @@ def register_content_tools(
         }
 
     @read_only_tool
+    def solstice_prc_template_rules(profile: str) -> dict[str, Any]:
+        """Return Contract v2 authoring rules for email, banner, social, or website.
+
+        The payload is parsed from the shipped renderer-contract.md on every
+        call, so this tool cannot drift from the contract document. Read-only;
+        pass exactly one profile.
+        """
+        return {"status": "ok", **_load_prc_template_rules(profile)}
+
+    @read_only_tool
     def solstice_prc_template(
         tenant_slug: str,
         brand_id: str,
@@ -221,6 +303,11 @@ def register_content_tools(
         status: str = "published",
     ) -> dict[str, Any]:
         """Append one reusable PRC proof-template version.
+
+        The HTML must follow Solstice PRC Template Contract v2. Call
+        ``solstice_prc_template_rules(profile)`` for the exact MUST, SHOULD, and
+        MUST-NOT rules generated from the versioned renderer contract before
+        authoring or publishing the template.
 
         After the user approves the exact HTML preview and chooses to publish
         the PRC template, ask separately for its display name and template key.

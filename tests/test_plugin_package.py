@@ -285,8 +285,11 @@ def test_codex_callback_contract_stays_aligned() -> None:
 
 
 def test_package_has_no_secrets_placeholders_or_duplicate_skill() -> None:
+    # Unfilled placeholders are uppercase by convention (<CLIENT_ID>), so that
+    # alternative stays case-sensitive: the renderer contract is a markup spec
+    # and legitimately contains lowercase HTML tags.
     forbidden = re.compile(
-        r"<[^>]+>|client[_-]?secret|api[_-]?key|BEGIN (?:RSA |EC )?PRIVATE KEY|\$\{[^}]+\}",
+        r"(?-i:<[A-Z][A-Z0-9_ -]*>)|client[_-]?secret|api[_-]?key|BEGIN (?:RSA |EC )?PRIVATE KEY|\$\{[^}]+\}",
         re.IGNORECASE,
     )
     package_paths = [

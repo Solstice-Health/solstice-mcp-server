@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -530,3 +532,78 @@ def test_create_prc_template_version_returns_typed_concurrent_conflict(
                 PrcTemplateVersion.template_key == "concurrent_email"
             )
         ) is None
+
+
+def _doc_rule_ids(profile: str) -> set[str]:
+    """Collect a profile's rule IDs straight from the shipped contract markdown.
+
+    Derived independently of the tool's parser so a hardcoded Python rule list,
+    or a doc edit the payload never picks up, fails this test.
+    """
+    text = (
+        Path(__file__).parents[1]
+        / "plugins/solstice-platform/skills/prc-template-recreation/references/renderer-contract.md"
+    ).read_text()
+    block = text.split("<!-- PRC_RULES_START -->")[1].split("<!-- PRC_RULES_END -->")[0]
+    sections = re.split(r"^### ", block, flags=re.MULTILINE)[1:]
+    wanted = {"all profiles", profile}
+    return {
+        match
+        for section in sections
+        if section.splitlines()[0].strip().lower() in wanted
+        for match in re.findall(r"^- `([^`]+)`: \S", section, flags=re.MULTILINE)
+    }
+
+
+@pytest.mark.parametrize("profile", ["email", "banner", "social", "website"])
+def test_prc_template_rules_serves_contract_v2_per_profile(
+    app_harness: AppHarness,
+    mint_token,
+    profile: str,
+):
+    payload = tool_payload(
+        rpc(
+            app_harness,
+            "tools/call",
+            token=mint_token(sub=SHARED_SUB),
+            params={"name": "solstice_prc_template_rules", "arguments": {"profile": profile}},
+        )
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["contract_version"] == "v2"
+    assert payload["profile"] == profile
+    assert set(payload["rules"]) == {"must", "should", "must_not"}
+    assert all(payload["rules"][bucket] for bucket in payload["rules"])
+
+    served = {rule["id"] for bucket in payload["rules"].values() for rule in bucket}
+    assert served == _doc_rule_ids(profile)
+    assert all(rule_id.startswith(("common.", f"{profile}.")) for rule_id in served)
+    assert all(
+        rule["text"].strip() and rule["text"][0].isupper()
+        for bucket in payload["rules"].values()
+        for rule in bucket
+    )
+    # Templates never draw annotations: the prohibition must reach every profile.
+    assert "common.callout_chrome" in {rule["id"] for rule in payload["rules"]["must_not"]}
+
+
+def test_prc_template_rules_rejects_an_unknown_profile(app_harness: AppHarness, mint_token):
+    response = rpc(
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_prc_template_rules", "arguments": {"profile": "pdf"}},
+    )
+
+    assert "invalid_argument: profile must be one of" in _tool_error_text(response)
+
+
+def test_create_prc_template_version_points_authors_at_the_contract(app_harness: AppHarness, mint_token):
+    tools = rpc(app_harness, "tools/list", token=mint_token()).json()["result"]["tools"]
+    description = next(
+        tool for tool in tools if tool["name"] == "solstice_create_prc_template_version"
+    )["description"]
+
+    assert "Contract v2" in description
+    assert "solstice_prc_template_rules" in description
