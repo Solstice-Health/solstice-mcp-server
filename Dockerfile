@@ -24,9 +24,9 @@ RUN groupadd --system --gid 10001 mcp \
 COPY mcp_main.py .
 COPY config/ config/
 COPY src/ src/
-# Shipped skill docs, not just client-facing: solstice_prc_template_rules parses
-# its payload out of the plugin's renderer contract at request time.
-COPY plugins/ plugins/
+# Skill docs only: clients install the plugin from the repo, but
+# solstice_prc_template_rules parses the renderer contract at request time.
+COPY plugins/solstice-platform/skills/ plugins/solstice-platform/skills/
 
 USER mcp
 EXPOSE 8000
