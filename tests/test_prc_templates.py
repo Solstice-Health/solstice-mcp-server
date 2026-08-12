@@ -534,8 +534,8 @@ def test_create_prc_template_version_returns_typed_concurrent_conflict(
         ) is None
 
 
-def _doc_rule_ids(profile: str) -> set[str]:
-    """Collect a profile's rule IDs straight from the shipped contract markdown.
+def _doc_rules(profile: str) -> dict[str, dict[str, str]]:
+    """Collect a profile's rules straight from the shipped contract markdown.
 
     Derived independently of the tool's parser so a hardcoded Python rule list,
     or a doc edit the payload never picks up, fails this test.
@@ -547,12 +547,19 @@ def _doc_rule_ids(profile: str) -> set[str]:
     block = text.split("<!-- PRC_RULES_START -->")[1].split("<!-- PRC_RULES_END -->")[0]
     sections = re.split(r"^### ", block, flags=re.MULTILINE)[1:]
     wanted = {"all profiles", profile}
-    return {
-        match
-        for section in sections
-        if section.splitlines()[0].strip().lower() in wanted
-        for match in re.findall(r"^- `([^`]+)`: \S", section, flags=re.MULTILINE)
-    }
+    rules = {"must": {}, "should": {}, "must_not": {}}
+    bucket_names = {"MUST": "must", "SHOULD": "should", "MUST NOT": "must_not"}
+    for section in sections:
+        if section.splitlines()[0].strip().lower() not in wanted:
+            continue
+        for heading, contents in re.findall(
+            r"^#### (MUST|SHOULD|MUST NOT)\n(.*?)(?=^#### |\Z)",
+            section,
+            flags=re.MULTILINE | re.DOTALL,
+        ):
+            bucket = rules[bucket_names[heading]]
+            bucket.update(re.findall(r"^- `([^`]+)`: (.+)$", contents, flags=re.MULTILINE))
+    return rules
 
 
 @pytest.mark.parametrize("profile", ["email", "banner", "social", "website"])
@@ -576,8 +583,12 @@ def test_prc_template_rules_serves_contract_v2_per_profile(
     assert set(payload["rules"]) == {"must", "should", "must_not"}
     assert all(payload["rules"][bucket] for bucket in payload["rules"])
 
-    served = {rule["id"] for bucket in payload["rules"].values() for rule in bucket}
-    assert served == _doc_rule_ids(profile)
+    served_rules = {
+        bucket: {rule["id"]: rule["text"] for rule in rules}
+        for bucket, rules in payload["rules"].items()
+    }
+    served = {rule_id for rules in served_rules.values() for rule_id in rules}
+    assert served_rules == _doc_rules(profile)
     assert all(rule_id.startswith(("common.", f"{profile}.")) for rule_id in served)
     assert all(
         rule["text"].strip() and rule["text"][0].isupper()

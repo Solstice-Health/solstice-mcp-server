@@ -96,7 +96,7 @@ Before coding, write a compact map:
 
 ```text
 Source region/page       Layer       Destination
-Cover metadata           template    #prc-cover-data + cover fields
+Cover metadata           template    #sol-prc-config + marked cover fields
 Desktop email body       creative    creative.html
 Pink URL callouts        annotation  generated from creative anchors with href
 Banner frame labels      template    #frame-template slots
@@ -164,7 +164,7 @@ For the proof shell:
    silently falling through to a default.
 
    Structural means seams only: renderer selectors, `data-sol-prc-*` wiring,
-   page-builder and readiness mechanics, ISI/callout hosts. Never copy the
+   page-builder and readiness mechanics, and ISI hosts. Never copy the
    exemplar's visual layout, palette, typography, or page composition — those
    come from the source design. If the resolved exemplar predates the current
    canonical seed's mechanics (e.g. lacks storyboard/per-frame support the
@@ -254,6 +254,15 @@ Produce `prc-template.html` from the matching profile in
   template.
 - Change presentation CSS and static labels only after all required IDs,
   classes, templates, slots, and data attributes are present.
+- Mark every visible value exposed to field editing with exactly one normalized
+  `data-sol-prc-field`, `data-sol-prc-mirror`, or `data-sol-prc-derived` role.
+  Reuse the same canonical field ID for the same logical value on every
+  rendered page; only primary fields own editable values.
+- Keep operation field layout/style edits out of the template. The runtime
+  persists and applies `__prc_field_overrides`; mirrors and derived values stay
+  value-locked.
+- Give authored pages stable IDs and verify runtime-created page instances have
+  unique `data-sol-prc-page` IDs in the composed document.
 - Keep placeholder/source iframe seams empty of the actual creative.
 - Do not emit generated annotation DOM or persisted annotation-position JSON.
 - Preserve functional template scripts and text/plain adapters from the
@@ -298,13 +307,15 @@ Verify:
 1. template classification;
 2. creative injection into only intended frames;
 3. all pages/variants/dimensions present;
-4. cover-edit fields and exact field IDs;
+4. every visible editable value has one normalized field role, exact canonical
+   IDs repeat across page instances, and only primary values are editable;
 5. email callouts generated from real links;
 6. banner per-dimension configs, mirrors, and scene data;
 7. social platform/frame page generation;
-8. interactive preview;
-9. non-interactive/export composition;
-10. visual comparison at source dimensions.
+8. unique composed page IDs and source-page-bound callout/arrow dragging;
+9. interactive preview;
+10. non-interactive/export composition;
+11. visual comparison at source dimensions.
 
 Use a screenshot comparison for geometry and a DOM check for contracts. A
 pixel-close screenshot with missing IDs is still invalid.

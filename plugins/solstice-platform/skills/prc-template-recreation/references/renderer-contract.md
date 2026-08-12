@@ -17,9 +17,12 @@ which paints them differently in the workspace and in an export. Each page rect
 is its annotation boundary: the runtime places a callout at a fixed inset from
 the page border nearest its anchor, clamps it inside that page, and
 collision-stacks callouts in anchor order. A manual drag is the only placement
-override; it is operation draft data, never template markup. If an edit preserves layers L0-L5
-and does not author anything in the reserved namespace, the proof can render and
-export through the same contract.
+override; the callout and arrow endpoint remain bound to their source page, and
+the result is operation draft data rather than template markup. Field geometry
+and style edits likewise live in operation draft data under
+`__prc_field_overrides`. If an edit preserves layers L0-L5 and does not author
+anything in the reserved namespace, the proof can render and export through the
+same contract.
 
 ## The six layers
 
@@ -67,6 +70,9 @@ historically won and silently selected the wrong compose branch.
 - One `main[data-sol-prc-pages]` wraps the proof pages.
 - Every page has a stable `data-sol-prc-page` ID and
   `data-sol-prc-page-type="cover|render|storyboard"`.
+- Page IDs are unique in the composed document. Runtime-cloned banner sections
+  are restamped with unique composed IDs (`page_banner_0`, `page_banner_1`, ...)
+  before annotation discovery; a template never authors duplicate page IDs.
 - Email and website render pages carrying creative also have
   `data-viewport="desktop|mobile"`.
 - The rendered page rect is the annotation boundary. Page CSS may use padding,
@@ -92,7 +98,8 @@ multiple dimensions. Banner slot iframes can live in `#frame-template` and
 ### L4 — Config seed
 
 Exactly one `script#sol-prc-config[type="application/json"]` contains a JSON
-object. It is presentation data, not operation or platform state.
+object. It is a presentation seed for layout chrome, not operation field
+values or platform state.
 
 | Profile | Template-owned keys | Platform-owned keys that must not be seeded |
 |---|---|---|
@@ -110,11 +117,25 @@ annotations.
 
 ### L5 — Fields
 
-- Editable values use `data-sol-prc-field="FIELD_ID"`.
-- Repeated banner dimensions mirror the first section with
-  `data-sol-prc-mirror="FIELD_ID"`.
-- Computed values use `data-sol-prc-derived`; banner cumulative durations are
-  `frame_cumulative_INDEX`.
+- Every visible template value exposed to field editing carries exactly one
+  role: `data-sol-prc-field="FIELD_ID"`,
+  `data-sol-prc-mirror="FIELD_ID"`, or
+  `data-sol-prc-derived="FIELD_ID"`.
+- IDs are normalized canonical IDs for logical values. The same logical value
+  uses the same exact `FIELD_ID` on every rendered page instance; page, clone,
+  or dimension suffixes do not create new field identities.
+- `data-sol-prc-field` is the primary value owner and the only value-editable
+  role. Mirrors repeat that primary value and derived fields display runtime
+  computations. Mirrors and derived fields may be selected for field layout
+  and style controls, but their values are locked.
+- Repeated banner dimensions mirror the first section with the same canonical
+  `data-sol-prc-mirror="FIELD_ID"`. Computed banner cumulative durations use
+  `data-sol-prc-derived="frame_cumulative_INDEX"`.
+- Templates own each field's baseline layout and presentation only.
+  Operation-specific `dx`, `dy`, `width`, `height`, and allowlisted text-style
+  overrides are runtime data in `draftValues.__prc_field_overrides`, keyed by
+  canonical field ID and applied to every matching rendered instance. Templates
+  never seed that object or emit generated override CSS.
 - Stable email cover IDs are `#prc-filename`, `#prc-to`, `#prc-from`,
   `#prc-options`, and `#prc-option-tpl`. Option rows become `subject_INDEX` and
   `preheader_INDEX`.
@@ -138,6 +159,8 @@ A v2 template must never author:
   `.callout-box`, `.callout-line`, `data-sol-prc-annotation-key`, or any
   script that computes callout geometry;
 - `__prc_annotation_positions`, which belongs to operation draft data;
+- `__prc_field_overrides` or operation-specific field geometry/style override
+  data or generated override CSS;
 - `window.__BANNER_TEMPLATE_*`, `#sol-prc-template-runtime*`, or
   `#sol-prc-banner-template-data`, which compose injects;
 - the canvas outside the pages: a backdrop on `html` or `body`, the gap or
@@ -153,23 +176,30 @@ connects annotations, it belongs to the runtime.
 ## Page-bound annotation model
 
 1. **Anchors:** the runtime discovers creative `a[href]`, cover fields, and
-   manual points. Generated identity remains
+   manual points. A creative anchor counts only when its center lies inside the
+   iframe viewport; clipped overflow does not produce an annotation. Generated identity remains
    `VIEWPORT|Links to: URL|INDEX`; coordinates are absent so overrides survive
    reflow.
 2. **Default placement:** the callout is placed at a fixed inset from the page
    border on the side nearest its anchor and aligned vertically to that anchor.
-3. **Bounding:** at rest the runtime clamps the full callout inside a page rect,
-   so a callout never comes to rest in the canvas between or outside pages.
-   During a manual drag it is lifted above the pages and may cross the gap; on
-   release it re-homes into the page under the pointer, or the nearest page if
-   released over the canvas, keeping its identity and text.
+3. **Bounding:** the runtime clamps the full callout and its arrow endpoint
+   inside their source page rect during and after drag. Neither endpoint changes
+   its assigned page.
 4. **Collision:** callouts on the same side stack vertically in anchor order;
    connectors route to the stacked positions.
-5. **Override:** manual drag is the only placement override. The runtime
-   persists it under `draftValues.__prc_annotation_positions` as a page ID plus
-   page-space coordinates, so a callout moved to another page records that page.
+5. **Override:** manual drag is the only placement override. Dragging the
+   callout moves the box while preserving its anchor. Dragging the arrowhead
+   moves only the anchor endpoint while pinning the box. The runtime persists
+   both as source-page ID plus page-space coordinates under
+   `draftValues.__prc_annotation_positions`.
 6. **Rendering:** the runtime paints boxes, connectors, and dots on one overlay
-   per page. Templates do not host, style, or script that overlay.
+   per page. Templates do not host or script that overlay. They may theme it
+   only through `--sol-prc-annotation-color`,
+   `--sol-prc-annotation-background`, `--sol-prc-annotation-text-color`,
+   `--sol-prc-annotation-font`, `--sol-prc-annotation-padding`,
+   `--sol-prc-annotation-radius`, `--sol-prc-annotation-border-width`, and
+   `--sol-prc-annotation-line-width` on `:root` or `body`; selector overrides
+   and any other annotation variables remain reserved.
 
 The model is identical for email, banner, social, and website. There is no
 profile-specific annotation stage.
@@ -188,19 +218,25 @@ there is no Python copy of these rules.
 - `common.complete_html`: Produce one complete HTML document with a doctype, html, head, and body.
 - `common.declaration`: Declare exactly one `<meta name="sol-prc-contract" content="v2">` whose `data-profile` equals the requested profile and include the adjacent Contract v2 instruction comment.
 - `common.profile`: Put exactly one matching `data-sol-prc-proof` value on body and include no cross-profile markers.
-- `common.pages`: Wrap pages in one `main[data-sol-prc-pages]` and give every page a stable `data-sol-prc-page` plus `data-sol-prc-page-type`.
+- `common.pages`: Wrap pages in one `main[data-sol-prc-pages]`, give every page a stable `data-sol-prc-page` plus `data-sol-prc-page-type`, and ensure every rendered page ID is unique in the composed document.
 - `common.creative_slots`: Mark every intended creative iframe with one valid `data-sol-prc-creative` value; only marked iframes are creative slots.
 - `common.config`: Include exactly one parseable JSON object in `script#sol-prc-config[type="application/json"]`.
-- `common.fields`: Preserve existing stable field IDs and use `data-sol-prc-field`, `data-sol-prc-mirror`, or `data-sol-prc-derived` according to ownership.
+- `common.fields`: Mark every visible template value exposed to field editing with exactly one normalized `data-sol-prc-field`, `data-sol-prc-mirror`, or `data-sol-prc-derived` role and preserve existing stable IDs.
+- `common.field_instances`: Use the same canonical field ID for the same logical value across every rendered page instance so one operation override applies to every match.
+- `common.field_value_ownership`: Make `data-sol-prc-field` the only value-editable role; keep mirrors and derived values locked while allowing their rendered instances to receive canonical layout and style overrides.
+- `common.annotation_pages`: Provide unique page boundaries and real anchors; the runtime ignores creative anchors clipped outside the iframe viewport and keeps each callout and arrow endpoint bound to its source page.
 - `common.layer_separation`: Keep reusable proof-template chrome separate from operation creative, values, and draft data.
 
 #### SHOULD
 - `common.self_contained`: Keep CSS and portable assets inline and use only platform-listed or inlined fonts.
 - `common.compose_check`: Validate both interactive and export composition through the real frontend composer before publishing.
 - `common.minimal_shell`: Author only layers L0-L5; let the platform supply values, creative, behavior, sizing, and annotations.
+- `common.annotation_theme`: If theming runtime annotations, use only the allowlisted `--sol-prc-annotation-color`, `--sol-prc-annotation-background`, `--sol-prc-annotation-text-color`, `--sol-prc-annotation-font`, `--sol-prc-annotation-padding`, `--sol-prc-annotation-radius`, `--sol-prc-annotation-border-width`, and `--sol-prc-annotation-line-width` variables; theming is optional.
 
 #### MUST NOT
 - `common.reserved_namespace`: Author any reserved `--prc-*`, annotation, banner-global, template-runtime, or operation-draft namespace.
+- `common.field_overrides`: Author `__prc_field_overrides`, operation-specific field geometry/style data, or generated field-override CSS in a reusable template.
+- `common.field_value_lock`: Make a mirror or derived role independently value-editable or assign a different field ID only because the value renders on another page, clone, or dimension.
 - `common.callout_chrome`: Author callout boxes, connector lines or SVG, dots, gutters, stages, overlays, callout CSS, or callout geometry JavaScript.
 - `common.canvas_chrome`: Author the canvas outside the pages, including an html or body backdrop, the gap or margin between pages, page centering, or a page drop shadow.
 - `common.print_rules`: Author `@page` or `@media print` rules; the platform owns export pagination and print geometry.
@@ -233,7 +269,7 @@ there is no Python copy of these rules.
 - `banner.page`: Give the banner section a stable page marker with `data-sol-prc-page-type="storyboard"`.
 - `banner.behavior_seams`: Preserve `#banner-scene-adapter` and `#banner-placeholder-srcdoc` as executable behavior seams.
 - `banner.clone_templates`: Provide `#frame-template` and `#isi-region-template` with their required slots and `iframe[data-sol-prc-creative="banner"]`.
-- `banner.fields`: Put editable banner fields on the first section, mirrors on clones, and cumulative duration in `data-sol-prc-derived`.
+- `banner.fields`: Put primary editable banner values on the first section, mirrors on clones, and cumulative duration in `data-sol-prc-derived`, using the same canonical field IDs across all rendered dimensions.
 
 #### SHOULD
 - `banner.standard_shape`: Start from the annotation-free v2 form of the banner-standard-srcdoc-shell exemplar and preserve its section, adapter, clone-template, and slot shape.

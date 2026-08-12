@@ -158,6 +158,9 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "what template key should i use?",
         "status defaults",
         "reserved brand/environment/platform",
+        "__prc_field_overrides",
+        "same canonical field id",
+        "source page",
     ):
         assert phrase in body_lower
 
@@ -187,12 +190,16 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "auto-resolving keys are rejected",
         "operation, brand, environment, then platform precedence",
         "returned `prc_template_versions` html",
+        "#sol-prc-config",
+        "__prc_field_overrides",
+        "unique `data-sol-prc-page` ids",
     ):
         assert phrase in workflow
+    assert "#prc-cover-data" not in workflow
 
     contract = (skill_dir / "references" / "renderer-contract.md").read_text()
     for seam in (
-        "#prc-cover-data",
+        "#sol-prc-config",
         ".prc-render-stage",
         ".prc-render-frame",
         ".prc-callout-gutter",
@@ -202,8 +209,16 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "[data-banner-section]",
         "#prc-platform-page-tpl",
         "VIEWPORT|Links to:",
+        "__prc_field_overrides",
+        "--sol-prc-annotation-line-width",
+        "`common.field_instances`",
+        "`common.field_overrides`",
     ):
         assert seam in contract
+
+    authoring_guidance = "\n".join((body, workflow, contract)).lower()
+    for stale_annotation_model in ("cross-page", "re-home", "nearest page"):
+        assert stale_annotation_model not in authoring_guidance
 
 
 def test_isi_replacement_skill_is_portable_and_human_in_loop() -> None:
