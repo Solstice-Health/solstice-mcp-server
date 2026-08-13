@@ -14,15 +14,13 @@ A template owns six layers and nothing outside them. It draws the inside of each
 page and stops at the page edge: the backdrop behind the pages, the spacing
 between them, their centering, and their drop shadow all belong to the platform,
 which paints them differently in the workspace and in an export. Each page rect
-is its annotation boundary: the runtime places a callout at a fixed inset from
-the page border nearest its anchor, clamps it inside that page, and
-collision-stacks callouts in anchor order. A manual drag is the only placement
-override; the callout and arrow endpoint remain bound to their source page, and
-the result is operation draft data rather than template markup. Field geometry
-and style edits likewise live in operation draft data under
-`__prc_field_overrides`. If an edit preserves layers L0-L5 and does not author
-anything in the reserved namespace, the proof can render and export through the
-same contract.
+is the geometry boundary: fields, mirrors, derived values, creative slots,
+callouts, and arrow endpoints stay clamped inside their assigned page. Cover-edit
+writes layout, inserted L5 nodes, slot boxes, and annotation pins into the next
+operation bake (`prc_template_s3_key`). Catalog templates stay annotation-free;
+the overlay is still injected at view time. If an edit preserves layers L0-L5
+and does not author anything in the reserved namespace, the proof can render and
+export through the same contract.
 
 ## The six layers
 
@@ -75,9 +73,10 @@ historically won and silently selected the wrong compose branch.
   before annotation discovery; a template never authors duplicate page IDs.
 - Email and website render pages carrying creative also have
   `data-viewport="desktop|mobile"`.
-- The rendered page rect is the annotation boundary. Page CSS may use padding,
-  borders, and brand chrome, but the template provides no annotation gutters,
-  connector SVG, stages, or reserved whitespace.
+- The rendered page rect is the geometry boundary for fields, slots, callouts,
+  and arrow endpoints. Page CSS may use padding, borders, and brand chrome, but
+  the catalog template provides no annotation gutters, connector SVG, stages, or
+  reserved whitespace.
 - A template styles the inside of a page only. The canvas behind the pages, the
   gap between them, their horizontal centering, their drop shadow, and all
   `@page` / `@media print` geometry belong to the platform, which paints a gray
@@ -93,7 +92,11 @@ is not part of v2.
 Banner keeps one authored `[data-banner-section]`; the platform clones it for
 multiple dimensions. Banner slot iframes can live in `#frame-template` and
 `#isi-region-template`, but they still carry
-`data-sol-prc-creative="banner"`.
+`data-sol-prc-creative="banner"`. The movable box is `[data-sol-prc-slot]`
+around that iframe — CSS classes are visual only. Cover-edit Next may
+reposition a slot inside its page; that box is written onto
+`[data-sol-prc-slot]` in the next bake, or onto the iframe when the marker is
+absent. Catalog templates still author the slot in place.
 
 ### L4 — Config seed
 
@@ -131,11 +134,18 @@ annotations.
 - Repeated banner dimensions mirror the first section with the same canonical
   `data-sol-prc-mirror="FIELD_ID"`. Computed banner cumulative durations use
   `data-sol-prc-derived="frame_cumulative_INDEX"`.
-- Templates own each field's baseline layout and presentation only.
-  Operation-specific `dx`, `dy`, `width`, `height`, and allowlisted text-style
-  overrides are runtime data in `draftValues.__prc_field_overrides`, keyed by
-  canonical field ID and applied to every matching rendered instance. Templates
-  never seed that object or emit generated override CSS.
+- Every node carrying a `data-sol-prc-*` editing marker — field, mirror,
+  derived, inserted, or slot — is selectable, movable, and deletable in
+  cover-edit with the standard engine chrome, on any content type's template.
+  Nodes stay authored in-flow until a layout gesture; the first drag/resize
+  pins that instance page-absolute (clamped to its page) and freezes into the
+  next bake. Deletion removes the node from the proof DOM and the next bake.
+- Allowlisted text-style changes still write onto matching instances. The next
+  bake freezes the proof HTML. Next-engine does not persist new
+  `__prc_field_overrides`.
+- Cover-edit Next may insert Text / Image / Button onto a page as
+  `data-sol-prc-field="inserted_{kind}_{n}"` plus `data-sol-prc-inserted`.
+  Inserts are page-local.
 - Stable email cover IDs are `#prc-filename`, `#prc-to`, `#prc-from`,
   `#prc-options`, and `#prc-option-tpl`. Option rows become `subject_INDEX` and
   `preheader_INDEX`.
@@ -158,9 +168,10 @@ A v2 template must never author:
   `.prc-connector-svg`, `.prc-render-stage`, `.callout-overlay`,
   `.callout-box`, `.callout-line`, `data-sol-prc-annotation-key`, or any
   script that computes callout geometry;
-- `__prc_annotation_positions`, which belongs to operation draft data;
-- `__prc_field_overrides` or operation-specific field geometry/style override
-  data or generated override CSS;
+- `__prc_annotation_positions`, which is legacy operation draft data;
+- `__prc_field_overrides` or generated field-override CSS, which are legacy;
+- `script#sol-prc-annotation-positions` in a **catalog** template (operation
+  bakes may carry it after a drag; overlay DOM is still injected);
 - `window.__BANNER_TEMPLATE_*`, `#sol-prc-template-runtime*`, or
   `#sol-prc-banner-template-data`, which compose injects;
 - the canvas outside the pages: a backdrop on `html` or `body`, the gap or
@@ -189,11 +200,16 @@ connects annotations, it belongs to the runtime.
    connectors route to the stacked positions.
 5. **Override:** manual drag is the only placement override. Dragging the
    callout moves the box while preserving its anchor. Dragging the arrowhead
-   moves only the anchor endpoint while pinning the box. The runtime persists
-   both as source-page ID plus page-space coordinates under
-   `draftValues.__prc_annotation_positions`.
+   moves only the anchor endpoint while pinning the box. A click (not a drag)
+   on the arrowhead selects the connector for marker / stroke width / dash.
+   Pins freeze into the operation bake as
+   `script#sol-prc-annotation-positions[type="application/json"]` with
+   source-page ID plus page-space coordinates. Catalog templates must not
+   include that script. Legacy `__prc_annotation_positions` draft extras fold
+   into the bake script on the next save.
 6. **Rendering:** the runtime paints boxes, connectors, and dots on one overlay
-   per page. Templates do not host or script that overlay. They may theme it
+   per page. Overlay DOM is stripped on bake and re-injected on adapt. Templates
+   do not host or script that overlay. They may theme it
    only through `--sol-prc-annotation-color`,
    `--sol-prc-annotation-background`, `--sol-prc-annotation-text-color`,
    `--sol-prc-annotation-font`, `--sol-prc-annotation-padding`,
@@ -220,12 +236,18 @@ there is no Python copy of these rules.
 - `common.profile`: Put exactly one matching `data-sol-prc-proof` value on body and include no cross-profile markers.
 - `common.pages`: Wrap pages in one `main[data-sol-prc-pages]`, give every page a stable `data-sol-prc-page` plus `data-sol-prc-page-type`, and ensure every rendered page ID is unique in the composed document.
 - `common.creative_slots`: Mark every intended creative iframe with one valid `data-sol-prc-creative` value; only marked iframes are creative slots.
+- `common.slot_marker`: Stamp the movable creative box with `data-sol-prc-slot` around the creative iframe; CSS class names are visual only and are not editor discovery.
 - `common.config`: Include exactly one parseable JSON object in `script#sol-prc-config[type="application/json"]`.
 - `common.fields`: Mark every visible template value exposed to field editing with exactly one normalized `data-sol-prc-field`, `data-sol-prc-mirror`, or `data-sol-prc-derived` role and preserve existing stable IDs.
-- `common.field_instances`: Use the same canonical field ID for the same logical value across every rendered page instance so one operation override applies to every match.
-- `common.field_value_ownership`: Make `data-sol-prc-field` the only value-editable role; keep mirrors and derived values locked while allowing their rendered instances to receive canonical layout and style overrides.
+- `common.field_instances`: Use the same canonical field ID for the same logical value across every rendered page instance so one cover-edit applies to every match.
+- `common.field_value_ownership`: Make `data-sol-prc-field` the only value-editable role; keep mirrors and derived values locked while allowing their rendered instances to receive layout and style edits.
+- `common.field_page_bound`: Keep every field, mirror, and derived instance clamped inside its assigned page rect during drag, resize, and rail geometry edits.
+- `common.field_editing`: Keep every marked field, mirror, derived, inserted, and slot instance selectable, movable, and deletable through the standard engine chrome in cover-edit; a layout gesture pins that instance page-absolute and the result freezes into the next bake.
+- `common.inserted_fields`: If inserting Text, Image, or Button during cover-edit, stamp `data-sol-prc-field="inserted_{kind}_{n}"` plus `data-sol-prc-inserted` on that page only; freeze the node in the next bake.
+- `common.slot_geometry_in_bake`: If a creative slot is moved or resized, keep it inside its page and write the box onto `[data-sol-prc-slot]` in the next bake, falling back to the iframe when that marker is absent.
 - `common.annotation_pages`: Provide unique page boundaries and real anchors; the runtime ignores creative anchors clipped outside the iframe viewport and keeps each callout and arrow endpoint bound to its source page.
-- `common.layer_separation`: Keep reusable proof-template chrome separate from operation creative, values, and draft data.
+- `common.annotation_positions_in_bake`: After a callout drag or arrow-style change, freeze page-space pins in `script#sol-prc-annotation-positions` inside the operation bake; catalog templates must not include that script.
+- `common.layer_separation`: Keep reusable proof-template chrome separate from operation creative, values, and bake-resident runtime data.
 
 #### SHOULD
 - `common.self_contained`: Keep CSS and portable assets inline and use only platform-listed or inlined fonts.
@@ -235,9 +257,10 @@ there is no Python copy of these rules.
 
 #### MUST NOT
 - `common.reserved_namespace`: Author any reserved `--prc-*`, annotation, banner-global, template-runtime, or operation-draft namespace.
-- `common.field_overrides`: Author `__prc_field_overrides`, operation-specific field geometry/style data, or generated field-override CSS in a reusable template.
+- `common.field_overrides`: Author `__prc_field_overrides`, generated field-override CSS, or a catalog-template `script#sol-prc-annotation-positions`.
 - `common.field_value_lock`: Make a mirror or derived role independently value-editable or assign a different field ID only because the value renders on another page, clone, or dimension.
 - `common.callout_chrome`: Author callout boxes, connector lines or SVG, dots, gutters, stages, overlays, callout CSS, or callout geometry JavaScript.
+- `common.catalog_positions`: Author `script#sol-prc-annotation-positions` in a reusable catalog template; only an operation bake may carry it after a drag.
 - `common.canvas_chrome`: Author the canvas outside the pages, including an html or body backdrop, the gap or margin between pages, page centering, or a page drop shadow.
 - `common.print_rules`: Author `@page` or `@media print` rules; the platform owns export pagination and print geometry.
 - `common.external_fonts`: Link external font services; use platform-listed or inlined fonts.
@@ -317,9 +340,12 @@ there is no Python copy of these rules.
 A baked proof is a frontend compose freeze, not another renderer. New bakes are
 stamped `<meta name="sol-prc-contract-baked" content="v2">`; live composition,
 non-interactive export, and baked-view adaptation use the same annotation
-runtime. Historical v1 bakes are immutable snapshots. Their legacy annotation
-chrome is neutralized during adaptation, and a bake without usable page markers
-falls back to recomposition from its pinned template version.
+runtime. Cover-edit freezes field/slot geometry, inserted L5 nodes, inner
+creative, and `script#sol-prc-annotation-positions` in that HTML. Overlay chrome
+is stripped on bake and re-injected on adapt. Catalog templates must not ship
+the positions script. Historical v1 bakes are immutable snapshots. Their legacy
+annotation chrome is neutralized during adaptation, and a bake without usable
+page markers falls back to recomposition from its pinned template version.
 
 ## Validation and migration
 
