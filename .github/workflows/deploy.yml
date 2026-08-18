@@ -33,6 +33,10 @@ jobs:
       # or clients keep seeing the previous deploy's tool list.
       GATEWAY_ID: solstice-mcp-l6apghhxpf
       GATEWAY_TARGET_ID: JB1A75WG68
+      # Auth0 token endpoint for the login-solstice tenant (the authorization
+      # server advertised by /.well-known/oauth-protected-resource/mcp). Used to
+      # mint a short-lived CI token for the tools/list registration asserts.
+      MCP_CI_AUTH0_TOKEN_URL: https://login-solstice.us.auth0.com/oauth/token
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -214,11 +218,44 @@ jobs:
               --output json
           fi
 
+      - name: Mint MCP CI token
+        id: mcp_token
+        env:
+          MCP_CI_AUTH0_CLIENT_ID: ${{ secrets.MCP_CI_AUTH0_CLIENT_ID }}
+          MCP_CI_AUTH0_CLIENT_SECRET: ${{ secrets.MCP_CI_AUTH0_CLIENT_SECRET }}
+          MCP_CI_AUTH0_TOKEN_URL: ${{ env.MCP_CI_AUTH0_TOKEN_URL }}
+          MCP_AUDIENCE: ${{ env.RESOURCE_URL }}
+        run: |
+          # The tools/list registration asserts (ECS smoke + gateway) need a
+          # bearer token with scope mcp:connect for audience $MCP_AUDIENCE. Mint a
+          # short-lived M2M token at deploy time via client-credentials instead of
+          # storing a static (expiring) access token. Fail closed: the gate is
+          # mandatory, so missing or rejected credentials must stop the deploy
+          # before it can ship an unverified tool inventory.
+          if [ -z "$MCP_CI_AUTH0_CLIENT_ID" ] || [ -z "$MCP_CI_AUTH0_CLIENT_SECRET" ]; then
+            echo "MCP_CI_AUTH0_CLIENT_ID/SECRET not set; cannot mint token for tools/list asserts" >&2
+            exit 1
+          fi
+          TOKEN=$(curl --fail --silent --show-error -X POST "$MCP_CI_AUTH0_TOKEN_URL" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -nc \
+              --arg id "$MCP_CI_AUTH0_CLIENT_ID" \
+              --arg secret "$MCP_CI_AUTH0_CLIENT_SECRET" \
+              --arg aud "$MCP_AUDIENCE" \
+              '{client_id:$id, client_secret:$secret, audience:$aud, grant_type:"client_credentials", scope:"mcp:connect"}')" \
+            | jq -r '.access_token // empty')
+          if [ -z "$TOKEN" ]; then
+            echo "Auth0 client-credentials grant returned no access_token" >&2
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Smoke test
         id: smoke
         env:
           RESOURCE_URL: ${{ env.RESOURCE_URL }}
-          MCP_CI_ACCESS_TOKEN: ${{ secrets.MCP_CI_ACCESS_TOKEN }}
+          MCP_CI_ACCESS_TOKEN: ${{ steps.mcp_token.outputs.token }}
         run: |
           ORIGIN="${RESOURCE_URL%/mcp}"
           # Public ALB routes only /mcp* to this service — ORIGIN/health is the
@@ -233,10 +270,10 @@ jobs:
           STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" "$RESOURCE_URL")
           test "$STATUS" = "401"
           # Tool registration: authenticated tools/list (avoids leaking inventory
-          # on public health). Fail closed — a missing secret must not ship
-          # without verifying env-gated tools are registered.
+          # on public health). Fail closed — the token is minted in the prior
+          # step, so an empty value here means the mint step regressed.
           if [ -z "$MCP_CI_ACCESS_TOKEN" ]; then
-            echo "MCP_CI_ACCESS_TOKEN unset; cannot assert tools/list registration" >&2
+            echo "Minted MCP CI token missing; cannot assert tools/list registration" >&2
             exit 1
           fi
           RESP=$(curl --fail --silent --show-error \
@@ -284,15 +321,15 @@ jobs:
           echo "Timed out waiting for gateway target sync"
           exit 1
 
-      # Mandatory when MCP_CI_ACCESS_TOKEN is provisioned (smoke already
-      # requires it). Catches a stale gateway snapshot after sync READY.
+      # Mandatory: reuses the token minted for the smoke step. Catches a stale
+      # gateway snapshot after sync READY.
       - name: Assert gateway tools/list
         env:
-          MCP_CI_ACCESS_TOKEN: ${{ secrets.MCP_CI_ACCESS_TOKEN }}
+          MCP_CI_ACCESS_TOKEN: ${{ steps.mcp_token.outputs.token }}
           GATEWAY_URL: https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp
         run: |
           if [ -z "$MCP_CI_ACCESS_TOKEN" ]; then
-            echo "MCP_CI_ACCESS_TOKEN unset; cannot assert gateway tools/list" >&2
+            echo "Minted MCP CI token missing; cannot assert gateway tools/list" >&2
             exit 1
           fi
           RESP=$(curl --fail --silent --show-error \
