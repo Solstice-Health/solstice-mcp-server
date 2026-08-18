@@ -60,6 +60,40 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64
 
+      - name: Mint MCP CI token
+        id: mcp_token
+        env:
+          MCP_CI_AUTH0_CLIENT_ID: ${{ secrets.MCP_CI_AUTH0_CLIENT_ID }}
+          MCP_CI_AUTH0_CLIENT_SECRET: ${{ secrets.MCP_CI_AUTH0_CLIENT_SECRET }}
+          MCP_CI_AUTH0_TOKEN_URL: ${{ env.MCP_CI_AUTH0_TOKEN_URL }}
+          MCP_AUDIENCE: ${{ env.RESOURCE_URL }}
+        run: |
+          # The ECS smoke tools/list assert needs a bearer token with scope
+          # mcp:connect for audience $MCP_AUDIENCE. Mint a short-lived M2M token
+          # via client-credentials instead of storing a static (expiring) token.
+          # Minted BEFORE build/register/deploy on purpose: a mint failure
+          # (missing secrets, Auth0 4xx, empty access_token) must abort the run
+          # before any new task definition goes live, so there is nothing
+          # unverified left running to roll back (fail-closed).
+          if [ -z "$MCP_CI_AUTH0_CLIENT_ID" ] || [ -z "$MCP_CI_AUTH0_CLIENT_SECRET" ]; then
+            echo "MCP_CI_AUTH0_CLIENT_ID/SECRET not set; cannot mint token for tools/list assert" >&2
+            exit 1
+          fi
+          TOKEN=$(curl --fail --silent --show-error -X POST "$MCP_CI_AUTH0_TOKEN_URL" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -nc \
+              --arg id "$MCP_CI_AUTH0_CLIENT_ID" \
+              --arg secret "$MCP_CI_AUTH0_CLIENT_SECRET" \
+              --arg aud "$MCP_AUDIENCE" \
+              '{client_id:$id, client_secret:$secret, audience:$aud, grant_type:"client_credentials", scope:"mcp:connect"}')" \
+            | jq -r '.access_token // empty')
+          if [ -z "$TOKEN" ]; then
+            echo "Auth0 client-credentials grant returned no access_token" >&2
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Build and push image
         id: image
         env:
@@ -218,39 +252,6 @@ jobs:
               --output json
           fi
 
-      - name: Mint MCP CI token
-        id: mcp_token
-        env:
-          MCP_CI_AUTH0_CLIENT_ID: ${{ secrets.MCP_CI_AUTH0_CLIENT_ID }}
-          MCP_CI_AUTH0_CLIENT_SECRET: ${{ secrets.MCP_CI_AUTH0_CLIENT_SECRET }}
-          MCP_CI_AUTH0_TOKEN_URL: ${{ env.MCP_CI_AUTH0_TOKEN_URL }}
-          MCP_AUDIENCE: ${{ env.RESOURCE_URL }}
-        run: |
-          # The tools/list registration asserts (ECS smoke + gateway) need a
-          # bearer token with scope mcp:connect for audience $MCP_AUDIENCE. Mint a
-          # short-lived M2M token at deploy time via client-credentials instead of
-          # storing a static (expiring) access token. Fail closed: the gate is
-          # mandatory, so missing or rejected credentials must stop the deploy
-          # before it can ship an unverified tool inventory.
-          if [ -z "$MCP_CI_AUTH0_CLIENT_ID" ] || [ -z "$MCP_CI_AUTH0_CLIENT_SECRET" ]; then
-            echo "MCP_CI_AUTH0_CLIENT_ID/SECRET not set; cannot mint token for tools/list asserts" >&2
-            exit 1
-          fi
-          TOKEN=$(curl --fail --silent --show-error -X POST "$MCP_CI_AUTH0_TOKEN_URL" \
-            -H 'Content-Type: application/json' \
-            -d "$(jq -nc \
-              --arg id "$MCP_CI_AUTH0_CLIENT_ID" \
-              --arg secret "$MCP_CI_AUTH0_CLIENT_SECRET" \
-              --arg aud "$MCP_AUDIENCE" \
-              '{client_id:$id, client_secret:$secret, audience:$aud, grant_type:"client_credentials", scope:"mcp:connect"}')" \
-            | jq -r '.access_token // empty')
-          if [ -z "$TOKEN" ]; then
-            echo "Auth0 client-credentials grant returned no access_token" >&2
-            exit 1
-          fi
-          echo "::add-mask::$TOKEN"
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
-
       - name: Smoke test
         id: smoke
         env:
@@ -321,32 +322,13 @@ jobs:
           echo "Timed out waiting for gateway target sync"
           exit 1
 
-      # Mandatory: reuses the token minted for the smoke step. Catches a stale
-      # gateway snapshot after sync READY.
-      - name: Assert gateway tools/list
-        env:
-          MCP_CI_ACCESS_TOKEN: ${{ steps.mcp_token.outputs.token }}
-          GATEWAY_URL: https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp
-        run: |
-          if [ -z "$MCP_CI_ACCESS_TOKEN" ]; then
-            echo "Minted MCP CI token missing; cannot assert gateway tools/list" >&2
-            exit 1
-          fi
-          RESP=$(curl --fail --silent --show-error \
-            -H "Authorization: Bearer $MCP_CI_ACCESS_TOKEN" \
-            -H "Accept: application/json, text/event-stream" \
-            -H "Content-Type: application/json" \
-            -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-            "$GATEWAY_URL")
-          echo "$RESP" | jq -e '
-            [.result.tools[].name]
-            | map(sub("^solstice-mcp-private___"; ""))
-            | index("solstice_whoami")
-            and index("solstice_add_user")
-            and index("solstice_reset_password")
-            and index("solstice_change_brand_role")
-            and index("solstice_memory_recall")
-          '
+      # No token-based gateway tools/list assert here on purpose. The AgentCore
+      # gateway authorizer validates its OWN audience and performs OBO token
+      # exchange requiring a user-subject token; a CI client-credentials (M2M)
+      # token is rejected with 403 insufficient_scope. Gateway tool freshness is
+      # gated by the "Sync AgentCore gateway tool schema" step reaching READY —
+      # that re-pulls the schema from the ECS target, whose tool inventory the
+      # smoke step already asserted over an authenticated tools/list.
 
       # Only a smoke-test failure rolls back the service; a gateway sync failure
       # leaves the (healthy) deploy in place and just fails the workflow.
