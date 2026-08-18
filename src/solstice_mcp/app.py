@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -353,6 +354,7 @@ def build_mcp_app(
 
     READY_CACHE_TTL_SECONDS = 5.0
     ready_cache: dict[str, Any] = {"until": 0.0, "status_code": 200, "body": {}}
+    ready_probe_lock = threading.Lock()
 
     async def ready(_request: Request) -> Response:
         # Readiness only — ALB target checks stay on shallow /health. This
@@ -363,8 +365,9 @@ def build_mcp_app(
         # - Sync SQLAlchemy work runs in a worker thread so the ASGI event loop
         #   is not blocked while the probe waits on the DB.
         # - Response never names the probed tenant (no information leak).
-        # - Short TTL cache so unauthenticated pollers cannot stampede the
-        #   per-tenant SQLAlchemy pool shared with authenticated tools.
+        # - Short TTL cache + single-flight lock so concurrent anonymous
+        #   pollers cannot stampede the per-tenant SQLAlchemy pool shared
+        #   with authenticated tools.
         now = time.monotonic()
         if now < ready_cache["until"]:
             return JSONResponse(
@@ -373,40 +376,64 @@ def build_mcp_app(
                 headers={"Cache-Control": "no-store"},
             )
 
-        if not tenant_registry.slugs:
-            body = {"status": "not_ready", "service": MCP_SERVER_NAME, "reason": "no_tenants"}
-            ready_cache.update(until=now + READY_CACHE_TTL_SECONDS, status_code=503, body=body)
-            return JSONResponse(body, status_code=503, headers={"Cache-Control": "no-store"})
+        def _probe_under_lock() -> tuple[int, dict[str, Any]]:
+            with ready_probe_lock:
+                # Double-check after acquiring the lock: losers of the race
+                # reuse the winner's cached result instead of opening another
+                # DB connection.
+                now_locked = time.monotonic()
+                if now_locked < ready_cache["until"]:
+                    return int(ready_cache["status_code"]), ready_cache["body"]
 
-        probe_slug = tenant_registry.slugs[0]
+                if not tenant_registry.slugs:
+                    body = {
+                        "status": "not_ready",
+                        "service": MCP_SERVER_NAME,
+                        "reason": "no_tenants",
+                    }
+                    ready_cache.update(
+                        until=now_locked + READY_CACHE_TTL_SECONDS,
+                        status_code=503,
+                        body=body,
+                    )
+                    return 503, body
 
-        def _probe() -> None:
-            if db_factory is not None:
-                db_factory.ping(probe_slug)
-            else:
-                with tenant_session(probe_slug, open_session) as session:
-                    session.connection().execute(text("SELECT 1"))
+                probe_slug = tenant_registry.slugs[0]
+                try:
+                    if db_factory is not None:
+                        db_factory.ping(probe_slug)
+                    else:
+                        with tenant_session(probe_slug, open_session) as session:
+                            session.connection().execute(text("SELECT 1"))
+                except Exception as exc:
+                    # Log the slug for operators; never return it to anonymous callers.
+                    logger.warning("Readiness probe failed for tenant %r: %s", probe_slug, exc)
+                    body = {
+                        "status": "not_ready",
+                        "service": MCP_SERVER_NAME,
+                        "reason": "db_unreachable",
+                    }
+                    ready_cache.update(
+                        until=now_locked + READY_CACHE_TTL_SECONDS,
+                        status_code=503,
+                        body=body,
+                    )
+                    return 503, body
 
-        try:
-            await anyio.to_thread.run_sync(_probe)
-        except Exception as exc:
-            # Log the slug for operators; never return it to anonymous callers.
-            logger.warning("Readiness probe failed for tenant %r: %s", probe_slug, exc)
-            body = {
-                "status": "not_ready",
-                "service": MCP_SERVER_NAME,
-                "reason": "db_unreachable",
-            }
-            ready_cache.update(until=now + READY_CACHE_TTL_SECONDS, status_code=503, body=body)
-            return JSONResponse(body, status_code=503, headers={"Cache-Control": "no-store"})
+                body = {
+                    "status": "ready",
+                    "service": MCP_SERVER_NAME,
+                    "version": MCP_SERVER_VERSION,
+                }
+                ready_cache.update(
+                    until=now_locked + READY_CACHE_TTL_SECONDS,
+                    status_code=200,
+                    body=body,
+                )
+                return 200, body
 
-        body = {
-            "status": "ready",
-            "service": MCP_SERVER_NAME,
-            "version": MCP_SERVER_VERSION,
-        }
-        ready_cache.update(until=now + READY_CACHE_TTL_SECONDS, status_code=200, body=body)
-        return JSONResponse(body, headers={"Cache-Control": "no-store"})
+        status_code, body = await anyio.to_thread.run_sync(_probe_under_lock)
+        return JSONResponse(body, status_code=status_code, headers={"Cache-Control": "no-store"})
 
     # Target-group checks hit the task on /health. Public ALB only forwards
     # /mcp* to this service (api.solsticehealth.co/health is the Backend), so
