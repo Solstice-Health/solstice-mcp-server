@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from unittest.mock import patch
 
 import pytest
@@ -38,9 +39,12 @@ def test_rate_limiter_prunes_idle_keys():
     for i in range(63):
         limiter.check(subject=f"sub-{i}", client_id="c", tool_name="solstice_whoami")
     assert len(limiter._hits) == 63
+    # Expire every recorded hit relative to *current* monotonic time — using a
+    # literal 0.0 fails on fresh Linux CI VMs where monotonic() is still < 60s.
+    expired = time.monotonic() - limiter.window_seconds - 1.0
     for bucket in limiter._hits.values():
         bucket.clear()
-        bucket.append(0.0)  # expired relative to monotonic now
+        bucket.append(expired)
     limiter._checks = 63
     limiter.check(subject="alive", client_id="c", tool_name="solstice_whoami")
     assert "alive\0c\0*" in limiter._hits
