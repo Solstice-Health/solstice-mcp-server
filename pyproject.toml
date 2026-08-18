@@ -14,3 +14,13 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+packages = ["solstice_mcp"]
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+# Incremental: start as a CI gate without requiring full annotation coverage.
+# Tighten (disallow_untyped_defs) once the baseline is clean.

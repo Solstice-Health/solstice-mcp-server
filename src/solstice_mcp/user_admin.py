@@ -32,16 +32,17 @@ import secrets
 import threading
 import urllib.error
 import urllib.parse
-import urllib.request
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+import httpx
 from mcp.server.fastmcp.exceptions import ToolError
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from solstice_mcp import http_client
 from solstice_mcp.brands import Brand, BrandTeamMember, UserRole, require_brand_role
 from solstice_mcp.memory_client import Auth0ClientCredentials, MemoryClientError
 from solstice_mcp.requests import require_staff_in_tenant
@@ -81,7 +82,10 @@ def generate_temp_password() -> str:
 
 
 class Auth0UserAdmin:
-    """Thin Auth0 Management + Authentication API client (urllib, no new deps).
+    """Thin Auth0 Management + Authentication API client.
+
+    Production uses pooled httpx with retries; tests inject a urllib-style
+    ``opener`` (``FakeBackendOpener``) for call recording.
 
     The management token is a cached client-credentials grant against
     ``/api/v2/``; ``send_reset_email`` uses the Authentication API and needs
@@ -97,15 +101,21 @@ class Auth0UserAdmin:
         client_id: str,
         client_secret: str,
         timeout: float = 15.0,
-        opener: urllib.request.OpenerDirector | None = None,
+        opener: Any | None = None,
         token_acquirer: Any | None = None,
+        http: httpx.Client | None = None,
     ) -> None:
         if not (domain and client_id and client_secret):
             raise ValueError("Auth0UserAdmin requires domain, client_id, and client_secret")
         self._domain = domain.strip().rstrip("/")
         self._client_id = client_id
         self._timeout = timeout
-        self._opener = opener or urllib.request.build_opener()
+        self._opener = opener
+        self._http = http if opener is None else None
+        self._owns_http = False
+        if self._opener is None and self._http is None:
+            self._http = httpx.Client(timeout=timeout)
+            self._owns_http = True
         self._token_acquirer = token_acquirer or Auth0ClientCredentials(
             token_endpoint=f"https://{self._domain}/oauth/token",
             client_id=client_id,
@@ -114,6 +124,11 @@ class Auth0UserAdmin:
             scope="",
             timeout=timeout,
         )
+
+    def close(self) -> None:
+        if self._owns_http and self._http is not None:
+            self._http.close()
+            self._http = None
 
     def find_user_by_email(self, email: str) -> dict[str, Any] | None:
         params = urllib.parse.urlencode({"email": email.lower()})
@@ -199,22 +214,30 @@ class Auth0UserAdmin:
         if body is not None:
             data = json.dumps(body, separators=(",", ":")).encode("utf-8")
             headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(
-            f"https://{self._domain}{path}", data=data, headers=headers, method=method
-        )
+        url = f"https://{self._domain}{path}"
         try:
-            with self._opener.open(request, timeout=self._timeout) as response:
-                raw = response.read()
-        except urllib.error.HTTPError as exc:
+            response = http_client.request(
+                method,
+                url,
+                headers=headers,
+                content=data,
+                timeout=self._timeout,
+                opener=self._opener,
+                client=self._http,
+            )
+        except (httpx.TransportError, TimeoutError, urllib.error.URLError, OSError) as exc:
+            raise ToolError("auth0_unavailable: Auth0 could not be reached") from exc
+        if response.status_code >= 400:
             # Surface the status but never the body — Auth0 error bodies can
             # echo the request payload, including passwords. 409 gets a typed
             # error so add_user can fall back to lookup on a create race.
-            message = f"auth0_error: {method} {path.split('?')[0]} returned HTTP {exc.code}"
-            if exc.code == 409:
-                raise Auth0ConflictError(message) from exc
-            raise ToolError(message) from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
-            raise ToolError("auth0_unavailable: Auth0 could not be reached") from exc
+            message = (
+                f"auth0_error: {method} {path.split('?')[0]} returned HTTP {response.status_code}"
+            )
+            if response.status_code == 409:
+                raise Auth0ConflictError(message)
+            raise ToolError(message)
+        raw = response.content
         if not raw:
             return {}
         try:
@@ -240,7 +263,9 @@ def central_session_factory_from_url(url: str) -> CentralSessionFactory:
                     pool_recycle=300,
                 )
                 factory[0] = sessionmaker(engine, expire_on_commit=False)
-        return factory[0]()
+            maker = factory[0]
+        assert maker is not None
+        return maker()
 
     return open_session
 

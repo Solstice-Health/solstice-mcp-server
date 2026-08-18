@@ -264,6 +264,10 @@ jobs:
           HEALTH=$(curl --fail --silent --show-error "$ORIGIN/mcp/health")
           echo "$HEALTH" | jq -e '.status == "ok" and .service == "solstice-mcp"'
           echo "$HEALTH" | jq -e '(.tools | not) and (.tool_count | not)'
+          # Readiness is informational in smoke (ALB stays on /health). Fail soft
+          # with a warning so a cold tenant probe does not roll back a healthy task.
+          READY_CODE=$(curl --silent --output /tmp/mcp-ready.json --write-out "%{http_code}" "$ORIGIN/mcp/ready" || true)
+          echo "mcp_ready_http=$READY_CODE body=$(cat /tmp/mcp-ready.json 2>/dev/null || true)"
           curl --fail --silent --show-error \
             "$ORIGIN/.well-known/oauth-protected-resource/mcp" \
             | jq -e --arg resource "$RESOURCE_URL" \

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlsplit
@@ -11,6 +12,7 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -21,7 +23,7 @@ from solstice_mcp.memory_client import Auth0ClientCredentials, BackendMemoryClie
 from solstice_mcp.settings import Settings, settings
 from solstice_mcp.sibling_mcps import SiblingMCPRegistry
 from solstice_mcp.storage import S3Reader, TenantS3
-from solstice_mcp.tenants import TenantDatabaseFactory, TenantMembershipCache, TenantRegistry
+from solstice_mcp.tenants import TenantDatabaseFactory, TenantMembershipCache, TenantRegistry, tenant_session
 from solstice_mcp.tools.brand_context import register_brand_context_tools
 from solstice_mcp.tools.content import register_content_tools
 from solstice_mcp.tools.discovery import register_discovery_tools
@@ -33,6 +35,8 @@ from solstice_mcp.user_admin import (
     CentralSessionFactory,
     central_session_factory_from_url,
 )
+
+logger = logging.getLogger(__name__)
 
 MCP_REQUIRED_SCOPE = "mcp:connect"
 MCP_SERVER_NAME = "solstice-mcp"
@@ -182,11 +186,19 @@ def build_mcp_app(
     if not tenant_registry.slugs:
         tenant_registry.load(runtime_settings.TENANT_CONFIG_PATH)
     open_session = session_factory
+    db_factory: TenantDatabaseFactory | None = None
     if open_session is None:
         templates = runtime_settings.database_url_templates
         if not templates:
             raise ValueError("At least one database URL template is required (DATABASE_URL_TEMPLATE_DEV/PROD)")
-        open_session = TenantDatabaseFactory(tenant_registry, templates)
+        db_factory = TenantDatabaseFactory(tenant_registry, templates)
+        open_session = db_factory
+        # Pre-warm engines so the first authenticated request after deploy
+        # does not pay cold-create cost across every tenant on this worker.
+        db_factory.warm()
+    elif isinstance(open_session, TenantDatabaseFactory):
+        db_factory = open_session
+        db_factory.warm()
 
     membership_cache = cache or TenantMembershipCache()
     s3_reader = s3 or TenantS3(region_name=runtime_settings.AWS_REGION)
@@ -337,11 +349,51 @@ def build_mcp_app(
     async def health(_request: Request) -> Response:
         return JSONResponse(_health_payload(), headers={"Cache-Control": "no-store"})
 
+    async def ready(_request: Request) -> Response:
+        # Readiness only — ALB target checks stay on shallow /health. This
+        # probe confirms the tenant registry is loaded and at least one
+        # configured tenant DB accepts a cheap ping.
+        if not tenant_registry.slugs:
+            return JSONResponse(
+                {"status": "not_ready", "service": MCP_SERVER_NAME, "reason": "no_tenants"},
+                status_code=503,
+                headers={"Cache-Control": "no-store"},
+            )
+        probe_slug = tenant_registry.slugs[0]
+        try:
+            if db_factory is not None:
+                db_factory.ping(probe_slug)
+            else:
+                with tenant_session(probe_slug, open_session) as session:
+                    session.connection().execute(text("SELECT 1"))
+        except Exception as exc:
+            logger.warning("Readiness probe failed for tenant %r: %s", probe_slug, exc)
+            return JSONResponse(
+                {
+                    "status": "not_ready",
+                    "service": MCP_SERVER_NAME,
+                    "reason": "db_unreachable",
+                },
+                status_code=503,
+                headers={"Cache-Control": "no-store"},
+            )
+        return JSONResponse(
+            {
+                "status": "ready",
+                "service": MCP_SERVER_NAME,
+                "version": MCP_SERVER_VERSION,
+                "probe_tenant": probe_slug,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
     # Target-group checks hit the task on /health. Public ALB only forwards
     # /mcp* to this service (api.solsticehealth.co/health is the Backend), so
-    # deploy smoke must use /mcp/health.
+    # deploy smoke must use /mcp/health. /mcp/ready is for deploy/k8s-style
+    # readiness — do not wire it as the ALB target-group check.
     mcp.custom_route("/health", methods=["GET"])(health)
     mcp.custom_route("/mcp/health", methods=["GET"])(health)
+    mcp.custom_route("/mcp/ready", methods=["GET"])(ready)
 
     return mcp
 
