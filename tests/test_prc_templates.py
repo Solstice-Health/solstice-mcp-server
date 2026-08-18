@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from test_server import rpc, tool_payload
 
 from solstice_mcp.brands import Brand
-from solstice_mcp.operations import CgOperation, PrcTemplateVersion
+from solstice_mcp.operations import CgOperation, CgOperationMessage, PrcTemplateVersion
 
 PINNED_EMAIL = "00000000-0000-0000-0000-000000000701"
 OPERATION_EMAIL = "00000000-0000-0000-0000-000000000702"
@@ -618,3 +618,71 @@ def test_create_prc_template_version_points_authors_at_the_contract(app_harness:
 
     assert "Contract v2" in description
     assert "solstice_prc_template_rules" in description
+    assert "publish_target" in description
+    assert "prc_template_s3_key" in description
+
+
+def test_create_prc_template_bakes_a_draft_operation_version(
+    app_harness: AppHarness,
+    mint_token,
+):
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "email"
+        head = session.get(CgOperationMessage, "00000000-0000-0000-0000-000000000503")
+        assert head is not None
+        head.prc_template_s3_key = f"cg_operation_prc_template/{OP_A1}/old.html"
+        session.commit()
+
+    resolved = tool_payload(
+        _call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            content_type="email",
+            operation_id=OP_A1,
+        )
+    )
+    assert resolved["operation_bake"]["prc_template_s3_key"].endswith("/old.html")
+    assert resolved["publish_targets"] == ["operation", "library", "both"]
+
+    baked = tool_payload(
+        _create_call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            template_key="",
+            content_type="email",
+            name="",
+            html_template="<!doctype html><html>baked-proof</html>",
+            confirmed=True,
+            publish_target="operation",
+            operation_id=OP_A1,
+        )
+    )
+    assert baked["publish_target"] == "operation"
+    assert baked["version_number"] == 3
+    assert baked["intent"] == "draft"
+    assert baked["prc_template_s3_key"].startswith(f"cg_operation_prc_template/{OP_A1}/")
+    proof = app_harness.s3.objects[("test-bucket-a", baked["prc_template_s3_key"])]
+    assert proof == b"<!doctype html><html>baked-proof</html>"
+    creative = app_harness.s3.objects[("test-bucket-a", baked["s3_key"])]
+    assert creative == b"<html>draft v2 body</html>"
+
+    with app_harness.session_factory("tenant_a") as session:
+        catalog = session.scalar(
+            select(PrcTemplateVersion).where(PrcTemplateVersion.template_key == "")
+        )
+        assert catalog is None
+        row = session.scalar(
+            select(CgOperationMessage).where(
+                CgOperationMessage.operation_id == OP_A1,
+                CgOperationMessage.version_number == 3,
+            )
+        )
+        assert row is not None
+        assert row.prc_template_s3_key == baked["prc_template_s3_key"]
+        assert row.intent == "draft"

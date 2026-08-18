@@ -118,15 +118,22 @@ creative into one document.
    ask two simple questions, never one composite question:
    - "Would you like to publish the PRC template?"
    - "Would you like to publish the creative content?"
-9. **Land only what the user accepts.** If they choose the PRC template, ask
-   "What template name should I use?" and then "What template key should I use?"
-   as separate questions. Call
-   `solstice_create_prc_template_version(..., confirmed=true)`; status defaults
-   to published, so do not ask for it. The tool appends a row but does not
-   select it for a brand or operation. Reserved brand/environment/platform
-   auto-resolving keys are rejected; explain that the new version must be
-   selected in Template Settings. If they choose the creative content, use the
-   `figma-to-solstice` / `solstice-platform` append-only flow.
+9. **If the PRC template is tied to an operation, ask the publish target
+   next.** Call `solstice_prc_template(..., operation_id=)` first. When
+   `operation_bake` is present (or the user is editing that asset), ask one
+   of: bake onto the operation, publish to the library, or both. Do not
+   combine this with the name/key questions.
+10. **Land only what the user accepts.** Library / both: ask separately
+    "What template name should I use?" and "What template key should I use?",
+    then call `solstice_create_prc_template_version(..., confirmed=true,
+    publish_target="library"|"both")`. Status defaults to published; do not
+    ask for it. The library insert never selects the version for a brand.
+    Reserved brand/environment/platform auto-resolving keys are rejected.
+    Operation / both: pass
+    `operation_id` and `publish_target="operation"|"both"`. That appends a
+    new draft html version that copies the current creative and stores the
+    proof at `prc_template_s3_key`. If they choose the creative content, use
+    the `figma-to-solstice` / `solstice-platform` append-only flow.
 
 ## Output contract
 

@@ -238,12 +238,13 @@ there is no Python copy of these rules.
 - `common.creative_slots`: Mark every intended creative iframe with one valid `data-sol-prc-creative` value; only marked iframes are creative slots.
 - `common.slot_marker`: Stamp the movable creative box with `data-sol-prc-slot` around the creative iframe; CSS class names are visual only and are not editor discovery.
 - `common.config`: Include exactly one parseable JSON object in `script#sol-prc-config[type="application/json"]`.
-- `common.fields`: Mark every visible template value exposed to field editing with exactly one normalized `data-sol-prc-field`, `data-sol-prc-mirror`, or `data-sol-prc-derived` role and preserve existing stable IDs.
+- `common.fields`: Mark every visible word on the proof chrome — labels and values — with exactly one normalized `data-sol-prc-field`, `data-sol-prc-mirror`, or `data-sol-prc-derived` role and preserve existing stable IDs. Static readable text is a contract defect: wrap it as a field or delete it before publishing.
+- `common.visible_copy`: If any reviewer-visible chrome word is unmarked, an authoring agent MUST rewrite the template so that word is a field (or a mirror/derived of an existing canonical ID) before calling `solstice_create_prc_template_version`.
 - `common.field_instances`: Use the same canonical field ID for the same logical value across every rendered page instance so one cover-edit applies to every match.
 - `common.field_value_ownership`: Make `data-sol-prc-field` the only value-editable role; keep mirrors and derived values locked while allowing their rendered instances to receive layout and style edits.
 - `common.field_page_bound`: Keep every field, mirror, and derived instance clamped inside its assigned page rect during drag, resize, and rail geometry edits.
 - `common.field_editing`: Keep every marked field, mirror, derived, inserted, and slot instance selectable, movable, and deletable through the standard engine chrome in cover-edit; a layout gesture pins that instance page-absolute and the result freezes into the next bake.
-- `common.inserted_fields`: If inserting Text, Image, or Button during cover-edit, stamp `data-sol-prc-field="inserted_{kind}_{n}"` plus `data-sol-prc-inserted` on that page only; freeze the node in the next bake.
+- `common.inserted_fields`: If inserting Text, Image, or Button during cover-edit, stamp `data-sol-prc-field="inserted_{kind}_{n}"` plus `data-sol-prc-inserted="{kind}"` on that page only; freeze the node in the next bake. The engine also extends the same scheme with two overlay-only kinds: `fpo` (the magenta FPO sticker, `inserted_fpo_{n}` / `data-sol-prc-inserted="fpo"`) and `brackets` / `bracket-left` / `bracket-right` (magenta proof brackets, `inserted_brackets_{n}` / `data-sol-prc-inserted="brackets|bracket-left|bracket-right"`). FPO and brackets are engine extensions, not catalog-template authoring kinds.
 - `common.slot_geometry_in_bake`: If a creative slot is moved or resized, keep it inside its page and write the box onto `[data-sol-prc-slot]` in the next bake, falling back to the iframe when that marker is absent.
 - `common.annotation_pages`: Provide unique page boundaries and real anchors; the runtime ignores creative anchors clipped outside the iframe viewport and keeps each callout and arrow endpoint bound to its source page.
 - `common.annotation_positions_in_bake`: After a callout drag or arrow-style change, freeze page-space pins in `script#sol-prc-annotation-positions` inside the operation bake; catalog templates must not include that script.
@@ -272,8 +273,9 @@ there is no Python copy of these rules.
 
 #### MUST
 - `email.profile`: Use `body[data-sol-prc-proof="email"]` and `data-profile="email"` in the v2 declaration.
-- `email.cover`: Provide a cover page with stable `#prc-filename`, `#prc-to`, `#prc-from`, and `#prc-options` hosts.
-- `email.options`: Provide `template#prc-option-tpl`; generated rows use `subject_INDEX` and `preheader_INDEX`.
+- `email.cover`: Provide a cover page with stable `#prc-filename`, `#prc-to`, `#prc-from`, and `#prc-options` hosts. Stamp visible To/From labels as `to_label` / `from_label` and the section heading as `cover_section_title`.
+- `email.options`: Provide `template#prc-option-tpl`; generated rows stamp `option_label_INDEX`, `subject_label_INDEX`, `subject_INDEX`, `preheader_label_INDEX`, and `preheader_INDEX`.
+- `email.cover_visible_copy`: Every visible cover word is one of those field IDs (or a `file_name` mirror on a page header). An agent that finds unmarked cover text must wrap it before publishing.
 - `email.render_pages`: Provide at least one render page with `data-viewport="desktop|mobile"` and a matching `iframe[data-sol-prc-creative]`.
 
 #### SHOULD

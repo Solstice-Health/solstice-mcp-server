@@ -233,7 +233,7 @@ class FakeS3:
         self.too_large_keys: set[tuple[str, str]] = set()
         self.missing_on_download: set[tuple[str, str]] = set()
 
-    def put(self, bucket: str, key: str, body: bytes) -> None:
+    def put(self, bucket: str, key: str, body: bytes, content_type: str = "application/octet-stream") -> None:
         self.objects[(bucket, key)] = body
 
     def mark_too_large(self, bucket: str, key: str) -> None:

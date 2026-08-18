@@ -118,12 +118,22 @@ For "what's pending / what's on my plate today" and dismissing invalid requests,
 
 Use the `prc-template-recreation` skill. Show the final HTML preview, then ask
 the user separately whether to publish the PRC template and whether to publish
-the creative content. If they choose the template, ask separately for its name
-and key, then call `solstice_create_prc_template_version(..., confirmed=true)`.
-Status defaults to published; do not ask for it. The tool appends a row and does
-not update brand or operation selections. It rejects reserved
-brand/environment/platform auto-resolving keys; select the new version in
-Template Settings when needed.
+the creative content.
+
+If they choose the template and `solstice_prc_template(..., operation_id=)`
+returned `operation_bake` (or the user is editing a specific asset), ask one
+more question first: bake the proof onto that operation (new draft html
+version + `prc_template_s3_key`), publish to the library
+(`prc_template_versions`), or both. Pass that choice as `publish_target`.
+
+Library / both: ask separately for name and key, then call
+`solstice_create_prc_template_version(..., confirmed=true)`. Status defaults
+to published; do not ask for it. The library insert does not update brand or
+operation catalog selections. Reserved auto-resolving keys are rejected.
+
+Operation / both: pass `operation_id`. The server copies the current creative
+to the next version number and writes the proof HTML to
+`cg_operation_prc_template/{operation_id}/{row_id}.html`.
 
 ## Unsupported changes
 

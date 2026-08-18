@@ -57,9 +57,11 @@ from solstice_mcp.tenants import Base, SessionFactory, TenantRegistry, tenant_se
 logger = logging.getLogger(__name__)
 
 _HTML_S3_KEY_PREFIX = "cg_operation_msg_html"
+_PRC_TEMPLATE_S3_KEY_PREFIX = "cg_operation_prc_template"
 _PRC_CONTENT_TYPES = {"banner", "email", "social"}
 _PRC_RESERVED_KEY_PREFIXES = ("brand_", "environment_default_", "platform_default_")
 _PRC_TEMPLATE_STATUSES = {"draft", "published"}
+_PRC_PUBLISH_TARGETS = {"library", "operation", "both"}
 
 
 def _looks_like_s3_key(content: str | None) -> bool:
@@ -166,6 +168,8 @@ class CgOperationMessage(Base):
     )
     created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Server-owned S3 key for the baked proof HTML (not the creative body).
+    prc_template_s3_key: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class PrcTemplateVersion(Base):
@@ -259,9 +263,12 @@ def _message_summary(msg: CgOperationMessage) -> dict[str, Any]:
     if msg.type == "text":
         return {**base, "content": msg.content}
     if msg.type in ("html", "pdf"):
+        extra = {}
+        if msg.prc_template_s3_key:
+            extra["prc_template_s3_key"] = msg.prc_template_s3_key
         if _looks_like_s3_key(msg.content):
-            return {**base, "s3_key": msg.content, "body": None}
-        return {**base, "s3_key": None, "inline": True, "body": None}
+            return {**base, "s3_key": msg.content, "body": None, **extra}
+        return {**base, "s3_key": None, "inline": True, "body": None, **extra}
     if msg.type == "blueprint":
         return {**base, "has_blueprint": True, "body": None}
     return base
@@ -433,6 +440,7 @@ def resolve_prc_template_for_brand(
 
         template = None
         tier = ""
+        matched_operation = None
         parsed_operation_id = _normalized_uuid(operation_id)
         if parsed_operation_id:
             operation = session.scalar(
@@ -443,6 +451,7 @@ def resolve_prc_template_for_brand(
                     CgOperation.deleted_at.is_(None),
                 )
             )
+            matched_operation = operation
             operation_metadata = operation.operation_metadata if operation is not None else None
             operation_pin = (
                 _normalized_uuid(operation_metadata.get("prc_template_version_id"))
@@ -484,13 +493,229 @@ def resolve_prc_template_for_brand(
                 tier = "default"
 
         if template is None:
+            if matched_operation is not None:
+                bake = _latest_operation_bake(session, parsed_operation_id)
+                if bake:
+                    return {
+                        "id": None,
+                        "template_key": None,
+                        "version_number": None,
+                        "content_type": normalized_content_type,
+                        "name": None,
+                        "resolved_tier": "operation_bake",
+                        "operation_bake": bake,
+                        "publish_targets": ["operation", "library", "both"],
+                        "html_template": None,
+                    }
             return None
-        return _prc_template_payload(
+        payload = _prc_template_payload(
             template,
             tier=tier,
             fetch=fetch,
             max_inline_bytes=max_inline_bytes,
         )
+        if matched_operation is not None:
+            bake = _latest_operation_bake(session, parsed_operation_id)
+            payload["operation_bake"] = bake
+            payload["publish_targets"] = (
+                ["operation", "library", "both"] if bake else ["library"]
+            )
+        return payload
+
+
+def _latest_operation_bake(session, operation_id: str) -> dict[str, Any] | None:
+    """Latest html row that already carries a baked proof key."""
+    rows = session.scalars(
+        select(CgOperationMessage).where(
+            CgOperationMessage.operation_id == operation_id,
+            CgOperationMessage.type == "html",
+            CgOperationMessage.deleted_at.is_(None),
+            CgOperationMessage.prc_template_s3_key.is_not(None),
+        )
+    ).all()
+    if not rows:
+        return None
+    latest = max(
+        rows,
+        key=lambda row: (
+            row.created_at or datetime.min.replace(tzinfo=UTC),
+            row.version_number or 0,
+        ),
+    )
+    return {
+        "message_id": latest.message_id,
+        "row_id": latest.id,
+        "prc_template_s3_key": latest.prc_template_s3_key,
+        "version_number": latest.version_number,
+        "created_at": _iso(latest.created_at),
+    }
+
+
+def _latest_html_creative(session, operation_id: str) -> CgOperationMessage | None:
+    """Head html document: highest version_number, else newest created_at."""
+    rows = session.scalars(
+        select(CgOperationMessage).where(
+            CgOperationMessage.operation_id == operation_id,
+            CgOperationMessage.type == "html",
+            CgOperationMessage.deleted_at.is_(None),
+        )
+    ).all()
+    if not rows:
+        return None
+    versioned = [row for row in rows if row.version_number is not None]
+    pool = versioned or rows
+    return max(
+        pool,
+        key=lambda row: (
+            row.version_number or 0,
+            row.created_at or datetime.min.replace(tzinfo=UTC),
+        ),
+    )
+
+
+def bake_prc_template_to_operation(
+    *,
+    identity,
+    tenant_slug: str,
+    brand_id: str,
+    operation_id: str,
+    html_template: str,
+    registry: TenantRegistry,
+    session_factory: SessionFactory,
+    s3: S3Reader,
+    max_inline_bytes: int,
+) -> dict[str, Any]:
+    """Append a draft html version that copies the current creative and bakes the proof.
+
+    Mirrors Backend-Server ``finalize_html_version_message``: creative stays on
+    ``cg_operation_msg_html/...``; the proof lands at
+    ``cg_operation_prc_template/{operation_id}/{row_id}.html`` and is stamped
+    on ``n_cg_operation_messages.prc_template_s3_key``. Version number is
+    max(existing)+1 under an operation-row lock — the same rule as
+    ``commit_operation_version``.
+    """
+    parsed_operation_id = _normalized_uuid(operation_id)
+    if parsed_operation_id is None:
+        raise ToolError("invalid_request: operation_id must be a UUID")
+    html_size_bytes = len(html_template.encode("utf-8"))
+    if html_size_bytes > max_inline_bytes:
+        raise ToolError(
+            f"too_large: PRC template is {html_size_bytes} bytes; inline limit is {max_inline_bytes}"
+        )
+    tenant_config = registry.get(tenant_slug)
+    bucket = tenant_config.s3_bucket if tenant_config is not None else ""
+    if not bucket:
+        raise ToolError("not_configured: tenant has no s3_bucket")
+
+    with tenant_session(tenant_slug, session_factory) as session:
+        locked = session.scalar(
+            select(CgOperation).where(
+                CgOperation.id == parsed_operation_id, CgOperation.deleted_at.is_(None)
+            ).with_for_update()
+        )
+        if locked is None or locked.brand_id != brand_id:
+            raise ToolError("not_authorized: unknown operation")
+        head = _latest_html_creative(session, parsed_operation_id)
+        if head is None:
+            raise ToolError(
+                "invalid_state: operation has no html document to attach a proof bake to"
+            )
+        max_v = session.scalar(
+            select(func.max(CgOperationMessage.version_number)).where(
+                CgOperationMessage.operation_id == parsed_operation_id,
+                CgOperationMessage.deleted_at.is_(None),
+            )
+        )
+        next_v = (max_v or 0) + 1
+        message_id = str(uuid4())
+        row_id = str(uuid4())
+        creative_key = _version_s3_key("html", parsed_operation_id, next_v, message_id, locked.file_name)
+        bake_key = f"{_PRC_TEMPLATE_S3_KEY_PREFIX}/{parsed_operation_id}/{row_id}.html"
+        if _looks_like_s3_key(head.content):
+            try:
+                creative = s3.download(bucket, head.content, max_inline_bytes)
+            except S3ObjectMissing:
+                raise ToolError("not_found: current html object missing in s3") from None
+            except S3ObjectTooLarge:
+                raise ToolError("too_large: current html exceeds inline limit") from None
+            except S3Error as exc:
+                raise ToolError(f"not_available: s3 read failed: {exc}") from exc
+        else:
+            creative = (head.content or "").encode("utf-8")
+            if not creative.strip():
+                raise ToolError("invalid_state: current html document is empty")
+        try:
+            s3.put(bucket, creative_key, creative, "text/html")
+            s3.put(bucket, bake_key, html_template.encode("utf-8"), "text/html")
+        except S3Error as exc:
+            raise ToolError(f"not_available: s3 write failed: {exc}") from exc
+        max_pos = session.scalar(
+            select(func.max(CgOperationMessage.position)).where(
+                CgOperationMessage.operation_id == parsed_operation_id,
+                CgOperationMessage.deleted_at.is_(None),
+            )
+        )
+        base_pos = (max_pos or -1) + 1
+        now = datetime.now(UTC)
+        intent = "draft"
+        session.add(
+            CgOperationMessage(
+                id=str(uuid4()),
+                operation_id=parsed_operation_id,
+                message_id=str(uuid4()),
+                author_id=identity.user_id,
+                type="text",
+                content="Save new version",
+                version_number=None,
+                intent=None,
+                position=base_pos,
+                message_metadata={
+                    "id": str(uuid4()),
+                    "timestamp": now.isoformat(),
+                    "type": "user",
+                    "finalContent": "Save new version",
+                    "kind": "user_feedback",
+                },
+                created_at=now,
+                deleted_at=None,
+            )
+        )
+        session.add(
+            CgOperationMessage(
+                id=row_id,
+                operation_id=parsed_operation_id,
+                message_id=message_id,
+                author_id=None,
+                type="html",
+                content=creative_key,
+                version_number=next_v,
+                intent=intent,
+                position=base_pos + 1,
+                prc_template_s3_key=bake_key,
+                message_metadata=_doc_message_metadata(
+                    kind="html",
+                    version=next_v,
+                    intent=intent,
+                    s3_key=creative_key,
+                    message_id=message_id,
+                    now=now,
+                    file_name=locked.file_name,
+                ),
+                created_at=now,
+                deleted_at=None,
+            )
+        )
+        locked.updated_at = now
+        session.commit()
+    return {
+        "operation_id": parsed_operation_id,
+        "version_number": next_v,
+        "intent": intent,
+        "message_id": message_id,
+        "s3_key": creative_key,
+        "prc_template_s3_key": bake_key,
+        "asset_url": build_asset_url(tenant_slug, parsed_operation_id),
+    }
 
 
 def create_prc_template_version(
@@ -506,12 +731,15 @@ def create_prc_template_version(
     config_schema: dict[str, Any] | None = None,
     default_field_values: dict[str, Any] | None = None,
     status: str = "published",
+    publish_target: str = "library",
+    operation_id: str | None = None,
     *,
     max_inline_bytes: int,
     registry: TenantRegistry,
     session_factory: SessionFactory,
+    s3: S3Reader | None = None,
 ) -> dict[str, Any]:
-    """Append one PRC template version without selecting or mutating another row."""
+    """Append a catalog PRC version and/or bake the proof onto an operation."""
     identity = require_brand_role(
         subject,
         tenant_slug,
@@ -520,32 +748,41 @@ def create_prc_template_version(
         registry=registry,
         session_factory=session_factory,
     )
+    normalized_target = publish_target.strip().lower() or "library"
+    if normalized_target not in _PRC_PUBLISH_TARGETS:
+        allowed = ", ".join(sorted(_PRC_PUBLISH_TARGETS))
+        raise ToolError(f"invalid_request: publish_target must be one of {allowed}")
     if not confirmed:
         raise ToolError(
-            "confirmation_required: show the user the template key, content type, "
-            "name, and HTML preview before retrying with confirmed=true"
+            "confirmation_required: ask whether to bake the proof onto the "
+            "associated operation, publish to the library, or both; then show "
+            "the template key, content type, name, and HTML preview before "
+            "retrying with confirmed=true"
         )
 
     normalized_key = template_key.strip()
     normalized_content_type = content_type.strip().lower()
     normalized_name = name.strip()
     normalized_status = status.strip().lower()
-    if not normalized_key:
-        raise ToolError("invalid_request: template_key is required")
-    if len(normalized_key) > 255:
-        raise ToolError("invalid_request: template_key must be at most 255 characters")
-    if normalized_key.lower().startswith(_PRC_RESERVED_KEY_PREFIXES):
-        raise ToolError(
-            "invalid_request: template_key uses a reserved auto-resolving prefix; "
-            "use a custom key and select the version in Template Settings"
-        )
+    wants_library = normalized_target in {"library", "both"}
+    wants_operation = normalized_target in {"operation", "both"}
+    if wants_library:
+        if not normalized_key:
+            raise ToolError("invalid_request: template_key is required")
+        if len(normalized_key) > 255:
+            raise ToolError("invalid_request: template_key must be at most 255 characters")
+        if normalized_key.lower().startswith(_PRC_RESERVED_KEY_PREFIXES):
+            raise ToolError(
+                "invalid_request: template_key uses a reserved auto-resolving prefix; "
+                "use a custom key and select the version in Template Settings"
+            )
+        if not normalized_name:
+            raise ToolError("invalid_request: name is required")
+        if len(normalized_name) > 255:
+            raise ToolError("invalid_request: name must be at most 255 characters")
     if normalized_content_type not in _PRC_CONTENT_TYPES:
         allowed = ", ".join(sorted(_PRC_CONTENT_TYPES))
         raise ToolError(f"invalid_request: content_type must be one of {allowed}")
-    if not normalized_name:
-        raise ToolError("invalid_request: name is required")
-    if len(normalized_name) > 255:
-        raise ToolError("invalid_request: name must be at most 255 characters")
     if normalized_status not in _PRC_TEMPLATE_STATUSES:
         allowed = ", ".join(sorted(_PRC_TEMPLATE_STATUSES))
         raise ToolError(f"invalid_request: status must be one of {allowed}")
@@ -556,61 +793,97 @@ def create_prc_template_version(
         raise ToolError(
             f"too_large: PRC template is {html_size_bytes} bytes; inline limit is {max_inline_bytes}"
         )
+    if wants_operation and not operation_id:
+        raise ToolError(
+            "invalid_request: operation_id is required when publish_target is "
+            "operation or both"
+        )
 
+    library: dict[str, Any] | None = None
     now = datetime.now(UTC)
-    with tenant_session(tenant_slug, session_factory) as session:
-        brand = session.scalar(
-            select(Brand)
-            .where(Brand.id == brand_id, Brand.deleted_at.is_(None))
-            .with_for_update()
-        )
-        if brand is None:
-            raise ToolError("not_authorized: unknown brand")
-        latest_version = session.scalar(
-            select(func.max(PrcTemplateVersion.version_number)).where(
-                PrcTemplateVersion.template_key == normalized_key,
-                PrcTemplateVersion.content_type == normalized_content_type,
+    if wants_library:
+        with tenant_session(tenant_slug, session_factory) as session:
+            brand = session.scalar(
+                select(Brand)
+                .where(Brand.id == brand_id, Brand.deleted_at.is_(None))
+                .with_for_update()
             )
-        )
-        template = PrcTemplateVersion(
-            id=str(uuid4()),
-            template_key=normalized_key,
-            version_number=(latest_version or 0) + 1,
-            content_type=normalized_content_type,
-            name=normalized_name,
-            description=description.strip() if description and description.strip() else None,
-            html_template=html_template,
-            config_schema=config_schema,
-            default_field_values=default_field_values,
-            status=normalized_status,
-            created_by=identity.user_id,
-            created_at=now,
-            updated_at=now,
-            deleted_at=None,
-        )
-        session.add(template)
-        try:
-            session.commit()
-        except IntegrityError as exc:
-            session.rollback()
-            raise ToolError(
-                "conflict: another PRC template version was created concurrently; "
-                "retry to append the next version"
-            ) from exc
+            if brand is None:
+                raise ToolError("not_authorized: unknown brand")
+            latest_version = session.scalar(
+                select(func.max(PrcTemplateVersion.version_number)).where(
+                    PrcTemplateVersion.template_key == normalized_key,
+                    PrcTemplateVersion.content_type == normalized_content_type,
+                )
+            )
+            template = PrcTemplateVersion(
+                id=str(uuid4()),
+                template_key=normalized_key,
+                version_number=(latest_version or 0) + 1,
+                content_type=normalized_content_type,
+                name=normalized_name,
+                description=description.strip() if description and description.strip() else None,
+                html_template=html_template,
+                config_schema=config_schema,
+                default_field_values=default_field_values,
+                status=normalized_status,
+                created_by=identity.user_id,
+                created_at=now,
+                updated_at=now,
+                deleted_at=None,
+            )
+            session.add(template)
+            try:
+                session.commit()
+            except IntegrityError as exc:
+                session.rollback()
+                raise ToolError(
+                    "conflict: another PRC template version was created concurrently; "
+                    "retry to append the next version"
+                ) from exc
+        library = {
+            "id": template.id,
+            "template_key": template.template_key,
+            "version_number": template.version_number,
+            "content_type": template.content_type,
+            "name": template.name,
+            "description": template.description,
+            "config_schema": template.config_schema,
+            "default_field_values": template.default_field_values,
+            "template_status": template.status,
+            "created_at": _iso(template.created_at),
+            "html_size_bytes": html_size_bytes,
+            "brand_selection_updated": False,
+        }
 
+    operation_bake = None
+    if wants_operation:
+        if s3 is None:
+            raise ToolError("not_configured: s3 is required to bake a proof onto an operation")
+        operation_bake = bake_prc_template_to_operation(
+            identity=identity,
+            tenant_slug=tenant_slug,
+            brand_id=brand_id,
+            operation_id=operation_id or "",
+            html_template=html_template,
+            registry=registry,
+            session_factory=session_factory,
+            s3=s3,
+            max_inline_bytes=max_inline_bytes,
+        )
+
+    if library is not None:
+        return {
+            **library,
+            "publish_target": normalized_target,
+            "operation_bake": operation_bake,
+        }
     return {
-        "id": template.id,
-        "template_key": template.template_key,
-        "version_number": template.version_number,
-        "content_type": template.content_type,
-        "name": template.name,
-        "description": template.description,
-        "config_schema": template.config_schema,
-        "default_field_values": template.default_field_values,
-        "template_status": template.status,
-        "created_at": _iso(template.created_at),
+        "publish_target": normalized_target,
+        "operation_bake": operation_bake,
         "html_size_bytes": html_size_bytes,
         "brand_selection_updated": False,
+        **(operation_bake or {}),
     }
 
 
@@ -1738,10 +2011,12 @@ __all__ = [
     "CgOperationMessage",
     "Project",
     "approve_operation_version",
+    "bake_prc_template_to_operation",
     "build_asset_url",
     "commit_operation_version",
     "create_edit_operation",
     "create_operation",
+    "create_prc_template_version",
     "get_operation_html",
     "get_operation_info",
     "get_project_info",

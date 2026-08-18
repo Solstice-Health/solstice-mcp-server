@@ -49,6 +49,9 @@ class S3Reader(Protocol):
     def head(self, bucket: str, key: str) -> int | None:
         """Return object size in bytes, or None if the object is absent."""
 
+    def put(self, bucket: str, key: str, body: bytes, content_type: str) -> None:
+        """Write object bytes. Used for server-side PRC proof bakes."""
+
 
 class TenantS3:
     """boto3-backed ``S3Reader``. Presigns GET/PUT URLs, downloads, and heads objects.
@@ -88,6 +91,14 @@ class TenantS3:
             Params={"Bucket": bucket, "Key": key, "ContentType": content_type},
             ExpiresIn=expires_in,
         )
+
+    def put(self, bucket: str, key: str, body: bytes, content_type: str) -> None:
+        try:
+            self._client.put_object(
+                Bucket=bucket, Key=key, Body=body, ContentType=content_type
+            )
+        except Exception as exc:
+            raise S3Error(f"put_object failed for {key!r}: {exc}") from exc
 
     def head(self, bucket: str, key: str) -> int | None:
         from botocore.exceptions import ClientError
