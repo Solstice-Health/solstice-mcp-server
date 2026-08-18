@@ -3,3 +3,4 @@
 -r requirements.lock.txt
 pytest>=8.3,<9
 ruff>=0.12,<1
+mypy>=1.14,<2

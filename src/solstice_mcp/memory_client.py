@@ -19,9 +19,12 @@ import threading
 import time
 import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from typing import Any
+
+import httpx
+
+from solstice_mcp import http_client
 
 logger = logging.getLogger(__name__)
 
@@ -135,19 +138,29 @@ class Auth0ClientCredentials:
                 "scope": self._scope,
             }
         ).encode("utf-8")
-        request = urllib.request.Request(
-            self._token_endpoint,
-            data=body,
-            headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:
-                payload = _read_json(response)
-        except urllib.error.HTTPError as exc:
-            raise MemoryClientUnauthorized("auth0_token_endpoint_failed", status=exc.code) from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
+            # client_credentials is safe to retry; Auth0 issues a new token
+            # without side effects. Mutating memory/Auth0 admin POSTs must NOT
+            # set retry_mutations (http_client defaults to no retries there).
+            response = http_client.request(
+                "POST",
+                self._token_endpoint,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
+                content=body,
+                timeout=self._timeout,
+                retry_mutations=True,
+            )
+        except (httpx.TransportError, TimeoutError, urllib.error.URLError, OSError) as exc:
             raise MemoryClientUnavailable("auth0_token_endpoint_unreachable") from exc
+
+        if response.status_code >= 400:
+            raise MemoryClientUnauthorized(
+                "auth0_token_endpoint_failed", status=response.status_code
+            )
+        payload = _parse_json_bytes(response.content)
 
         token = payload.get("access_token")
         expires_in = payload.get("expires_in")
@@ -165,14 +178,26 @@ class BackendMemoryClient:
         base_url: str,
         token_acquirer: Auth0ClientCredentials,
         timeout: float = 10.0,
-        opener: urllib.request.OpenerDirector | None = None,
+        opener: Any | None = None,
+        http: httpx.Client | None = None,
     ) -> None:
         if not base_url:
             raise ValueError("Backend base URL is required for memory tools")
         self._base_url = base_url.rstrip("/")
         self._token_acquirer = token_acquirer
         self._timeout = timeout
-        self._opener = opener or urllib.request.build_opener()
+        # opener set → urllib (tests). opener None → pooled httpx (production).
+        self._opener = opener
+        self._http = http if opener is None else None
+        self._owns_http = False
+        if self._opener is None and self._http is None:
+            self._http = httpx.Client(timeout=timeout)
+            self._owns_http = True
+
+    def close(self) -> None:
+        if self._owns_http and self._http is not None:
+            self._http.close()
+            self._http = None
 
     def recall(
         self,
@@ -347,14 +372,22 @@ class BackendMemoryClient:
             data = json.dumps(json_body, separators=(",", ":")).encode("utf-8")
             headers["Content-Type"] = "application/json"
 
-        request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with self._opener.open(request, timeout=self._timeout) as response:
-                return _read_json(response)
-        except urllib.error.HTTPError as exc:
-            raise _map_http_error(exc) from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
+            response = http_client.request(
+                method,
+                url,
+                headers=headers,
+                content=data,
+                timeout=self._timeout,
+                opener=self._opener,
+                client=self._http,
+            )
+        except (httpx.TransportError, TimeoutError, urllib.error.URLError, OSError) as exc:
             raise MemoryClientUnavailable("backend_unreachable") from exc
+
+        if response.status_code >= 400:
+            raise _map_http_status(response.status_code, body=response.content)
+        return _parse_json_bytes(response.content)
 
 
 def _mutation_body(
@@ -391,8 +424,7 @@ def _brand_id_for_scope(actor: ActorEnvelope, scope: str) -> str | None:
     return None if scope == MEMORY_SCOPE_TENANT_PERSONAL else actor.brand_id
 
 
-def _read_json(response: Any) -> dict[str, Any]:
-    raw = response.read()
+def _parse_json_bytes(raw: bytes) -> dict[str, Any]:
     if not raw:
         return {}
     try:
@@ -404,14 +436,9 @@ def _read_json(response: Any) -> dict[str, Any]:
     return payload
 
 
-def _map_http_error(exc: urllib.error.HTTPError) -> MemoryClientError:
-    status = exc.code
+def _map_http_status(status: int, *, body: bytes = b"") -> MemoryClientError:
     # The response body may carry backend-internal detail; never surface it.
-    try:
-        body = exc.read()
-        logger.debug("backend memory error body", extra={"status": status, "body_len": len(body)})
-    except Exception:  # reading the error body is best-effort; never surfaced
-        pass
+    logger.debug("backend memory error body", extra={"status": status, "body_len": len(body)})
     if status in (401, 403):
         return MemoryClientUnauthorized("backend_unauthorized", status=status)
     if status == 404:
