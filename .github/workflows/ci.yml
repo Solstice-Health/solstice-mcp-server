@@ -20,4 +20,7 @@ jobs:
           cache: pip
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
+      - run: mypy src
       - run: pytest
+      # WIRING DEFERRED: Postgres-backed integration for gate/RBAC (SQLite lies about
+      # FOR UPDATE / UUID). Follow-up ticket after SOL-3166 lands — CI cost/time.

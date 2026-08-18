@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import DateTime, String, Uuid, create_engine, select
+from sqlalchemy import DateTime, String, Uuid, create_engine, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 logger = logging.getLogger(__name__)
@@ -153,6 +153,31 @@ class TenantDatabaseFactory:
                 factory = sessionmaker(engine, expire_on_commit=False)
                 self._sessions[slug] = factory
         return factory()
+
+    def warm(self, slugs: Iterable[str] | None = None) -> None:
+        """Create engines and run ``SELECT 1`` for configured tenants.
+
+        Failures are logged and skipped so one unreachable tenant cannot block
+        boot; readiness (``/mcp/ready``) remains the gate that fails closed.
+        """
+        for slug in list(slugs if slugs is not None else self.registry.slugs):
+            try:
+                session = self(slug)
+                try:
+                    session.connection().execute(text("SELECT 1"))
+                finally:
+                    session.close()
+            except Exception as exc:
+                # Warm is best-effort at boot; readiness probes decide health.
+                logger.warning("Failed to warm tenant engine %r: %s", slug, exc)
+
+    def ping(self, slug: str) -> None:
+        """Cheap connectivity check used by readiness probes."""
+        session = self(slug)
+        try:
+            session.connection().execute(text("SELECT 1"))
+        finally:
+            session.close()
 
 
 @dataclass(frozen=True)

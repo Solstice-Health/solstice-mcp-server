@@ -226,6 +226,10 @@ jobs:
           HEALTH=$(curl --fail --silent --show-error "$ORIGIN/mcp/health")
           echo "$HEALTH" | jq -e '.status == "ok" and .service == "solstice-mcp"'
           echo "$HEALTH" | jq -e '(.tools | not) and (.tool_count | not)'
+          # Readiness is informational in smoke (ALB stays on /health). Fail soft
+          # with a warning so a cold tenant probe does not roll back a healthy task.
+          READY_CODE=$(curl --silent --output /tmp/mcp-ready.json --write-out "%{http_code}" "$ORIGIN/mcp/ready" || true)
+          echo "mcp_ready_http=$READY_CODE body=$(cat /tmp/mcp-ready.json 2>/dev/null || true)"
           curl --fail --silent --show-error \
             "$ORIGIN/.well-known/oauth-protected-resource/mcp" \
             | jq -e --arg resource "$RESOURCE_URL" \
@@ -283,16 +287,16 @@ jobs:
           echo "Timed out waiting for gateway target sync"
           exit 1
 
-      # Optional authenticated tools/list against the gateway when a CI bearer
-      # is provisioned (mcp:connect). Health already asserted ECS registration;
-      # this catches a stale gateway snapshot that sync claimed READY for.
+      # Mandatory when MCP_CI_ACCESS_TOKEN is provisioned: catches a stale gateway
+      # snapshot that synchronize-gateway-targets claimed READY for. Unset token
+      # skips with a clear message (forks / local without the secret).
       - name: Assert gateway tools/list
         env:
           MCP_CI_ACCESS_TOKEN: ${{ secrets.MCP_CI_ACCESS_TOKEN }}
           GATEWAY_URL: https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp
         run: |
           if [ -z "$MCP_CI_ACCESS_TOKEN" ]; then
-            echo "MCP_CI_ACCESS_TOKEN unset; skipping gateway tools/list (ECS /health already asserted registration)"
+            echo "MCP_CI_ACCESS_TOKEN unset; skipping gateway tools/list assert"
             exit 0
           fi
           RESP=$(curl --fail --silent --show-error \
@@ -309,7 +313,12 @@ jobs:
             and index("solstice_reset_password")
             and index("solstice_change_brand_role")
             and index("solstice_memory_recall")
+            and index("solstice_memory_observe")
+            and index("solstice_memory_remember")
+            and index("solstice_memory_replace")
+            and index("solstice_memory_forget")
           '
+          echo "$RESP" | jq -r '"gateway_tools=\(.result.tools | length)"'
 
       # Only a smoke-test failure rolls back the service; a gateway sync failure
       # leaves the (healthy) deploy in place and just fails the workflow.

@@ -29,6 +29,7 @@ import anyio.to_thread
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+from solstice_mcp.metrics import emit_tool_metrics
 from solstice_mcp.rate_limit import default_limiter
 
 P = ParamSpec("P")
@@ -188,24 +189,33 @@ def audited_tool(
             except Exception as exc:
                 # Re-raise after recording the outcome; tool error behavior is unchanged.
                 error_code = str(exc).partition(":")[0]
+                duration_ms = round((time.monotonic() - started_at) * 1000, 3)
+                outcome = (
+                    "denied"
+                    if error_code in {"not_authorized", "rate_limited"}
+                    else "error"
+                )
                 event.update(
-                    outcome=(
-                        "denied"
-                        if error_code in {"not_authorized", "rate_limited"}
-                        else "error"
-                    ),
+                    outcome=outcome,
                     error_code=error_code,
                     error_type=type(exc).__name__,
-                    duration_ms=round((time.monotonic() - started_at) * 1000, 3),
+                    duration_ms=duration_ms,
                 )
                 logger.info(json.dumps(event, separators=(",", ":"), sort_keys=True))
+                emit_tool_metrics(
+                    tool=function.__name__, outcome=outcome, duration_ms=duration_ms
+                )
                 raise
 
+            duration_ms = round((time.monotonic() - started_at) * 1000, 3)
             event.update(
                 outcome="success",
-                duration_ms=round((time.monotonic() - started_at) * 1000, 3),
+                duration_ms=duration_ms,
             )
             logger.info(json.dumps(event, separators=(",", ":"), sort_keys=True))
+            emit_tool_metrics(
+                tool=function.__name__, outcome="success", duration_ms=duration_ms
+            )
             return result
 
         return mcp.tool(annotations=annotations)(audited)

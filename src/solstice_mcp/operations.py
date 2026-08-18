@@ -1085,7 +1085,7 @@ def get_operation_html(
     }
 
     if _looks_like_s3_key(msg.content):
-        s3_key = msg.content
+        s3_key = msg.content or ""
         tenant_config = registry.get(tenant_slug)
         bucket = tenant_config.s3_bucket if tenant_config is not None else ""
         if not bucket:
