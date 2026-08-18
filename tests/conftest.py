@@ -27,6 +27,7 @@ from solstice_mcp.brand_context import ClinicalClaim, DesignLibrary, GuidelineAn
 from solstice_mcp.brands import Brand, BrandTeamMember
 from solstice_mcp.memory_client import BackendMemoryClient
 from solstice_mcp.operations import CgOperation, CgOperationMessage, Project
+from solstice_mcp.rate_limit import default_limiter
 from solstice_mcp.requests import AdminRequest
 from solstice_mcp.settings import Settings
 from solstice_mcp.tenants import Base, TenantMembershipCache, TenantRegistry, User
@@ -71,6 +72,14 @@ REQ_ORPHAN_A1 = "00000000-0000-0000-0000-000000000904"
 def _b64(value: int) -> str:
     size = (value.bit_length() + 7) // 8
     return base64.urlsafe_b64encode(value.to_bytes(size, "big")).rstrip(b"=").decode()
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter() -> Iterator[None]:
+    """Keep the process-wide limiter from leaking hits across tests."""
+    default_limiter.reset()
+    yield
+    default_limiter.reset()
 
 
 @pytest.fixture(scope="session")

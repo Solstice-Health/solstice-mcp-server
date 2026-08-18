@@ -56,6 +56,17 @@ from solstice_mcp.tenants import Base, SessionFactory, TenantRegistry, tenant_se
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_LIST_LIMIT = 100
+MAX_LIST_LIMIT = 500
+
+
+def _clamp_list_limit(limit: int) -> int:
+    return max(1, min(int(limit), MAX_LIST_LIMIT))
+
+
+def _clamp_list_offset(offset: int) -> int:
+    return max(0, int(offset))
+
 _HTML_S3_KEY_PREFIX = "cg_operation_msg_html"
 _PRC_CONTENT_TYPES = {"banner", "email", "social"}
 _PRC_RESERVED_KEY_PREFIXES = ("brand_", "environment_default_", "platform_default_")
@@ -635,10 +646,18 @@ def list_projects_for_brand(
     tenant_slug: str,
     brand_id: str,
     *,
+    limit: int = DEFAULT_LIST_LIMIT,
+    offset: int = 0,
     registry: TenantRegistry,
     session_factory: SessionFactory,
-) -> list[dict[str, Any]]:
-    """List non-deleted projects for a brand. Gated at MEMBER."""
+) -> dict[str, Any]:
+    """List non-deleted projects for a brand. Gated at MEMBER.
+
+    Bounded page: default ``limit`` 100, hard max 500. ``has_more`` is true when
+    at least one more row exists after this page.
+    """
+    limit = _clamp_list_limit(limit)
+    offset = _clamp_list_offset(offset)
     require_brand_role(
         subject, tenant_slug, brand_id,
         min_role=UserRole.MEMBER,
@@ -648,9 +667,18 @@ def list_projects_for_brand(
         rows = session.scalars(
             select(Project).where(
                 Project.brand_id == brand_id, Project.deleted_at.is_(None)
-            ).order_by(Project.name)
+            ).order_by(Project.name).offset(offset).limit(limit + 1)
         ).all()
-    return [_project_summary(p) for p in rows]
+    has_more = len(rows) > limit
+    page = rows[:limit]
+    projects = [_project_summary(p) for p in page]
+    return {
+        "projects": projects,
+        "count": len(projects),
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+    }
 
 
 def get_project_info(
@@ -871,10 +899,18 @@ def list_operations_for_brand(
     tenant_slug: str,
     brand_id: str,
     *,
+    limit: int = DEFAULT_LIST_LIMIT,
+    offset: int = 0,
     registry: TenantRegistry,
     session_factory: SessionFactory,
-) -> list[dict[str, Any]]:
-    """List non-deleted operations for a brand. Gated at MEMBER."""
+) -> dict[str, Any]:
+    """List non-deleted operations for a brand. Gated at MEMBER.
+
+    Bounded page: default ``limit`` 100, hard max 500. ``has_more`` is true when
+    at least one more row exists after this page.
+    """
+    limit = _clamp_list_limit(limit)
+    offset = _clamp_list_offset(offset)
     require_brand_role(
         subject, tenant_slug, brand_id,
         min_role=UserRole.MEMBER,
@@ -884,9 +920,18 @@ def list_operations_for_brand(
         rows = session.scalars(
             select(CgOperation).where(
                 CgOperation.brand_id == brand_id, CgOperation.deleted_at.is_(None)
-            ).order_by(CgOperation.created_at)
+            ).order_by(CgOperation.created_at).offset(offset).limit(limit + 1)
         ).all()
-    return [_operation_summary(op) for op in rows]
+    has_more = len(rows) > limit
+    page = rows[:limit]
+    operations = [_operation_summary(op) for op in page]
+    return {
+        "operations": operations,
+        "count": len(operations),
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+    }
 
 
 def get_operation_info(

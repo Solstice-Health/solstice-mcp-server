@@ -109,8 +109,9 @@ MCP_INSTRUCTIONS = (
     "User administration (staff-only): solstice_reset_password(tenant_slug, "
     "email, mode) resets a user's password — mode='email' sends the Auth0 "
     "reset email; mode='temp_password' overwrites the password and returns "
-    "the new one, which you must deliver to the user verbatim (use it only "
-    "when the reset email did not arrive). solstice_change_brand_role sets "
+    "the new one with force_password_change set — deliver it out-of-band "
+    "(not into long-lived chat docs), only when the reset email did not "
+    "arrive. solstice_change_brand_role sets "
     "an existing member's role on one brand; granting SOLSTICE_STAFF is an "
     "escalation — confirm with the user first. solstice_add_user onboards a "
     "person into a tenant (Auth0 + central auth + tenant DB, optional brand "
@@ -322,15 +323,15 @@ def build_mcp_app(
         )
 
     def _health_payload() -> dict[str, Any]:
-        # Public tool-name inventory for deploy CI (no secrets). Names only —
-        # same set tools/list would return after auth.
-        tool_names = sorted(tool.name for tool in mcp._tool_manager.list_tools())
+        # Public liveness only — no tool inventory (that discloses whether
+        # env-gated user-admin / memory tools are live). Authenticated
+        # solstice_server_info and tools/list remain the inventory sources;
+        # deploy smoke asserts registration via tools/list when a CI token
+        # is provisioned.
         return {
             "status": "ok",
             "service": MCP_SERVER_NAME,
             "version": MCP_SERVER_VERSION,
-            "tools": tool_names,
-            "tool_count": len(tool_names),
         }
 
     async def health(_request: Request) -> Response:

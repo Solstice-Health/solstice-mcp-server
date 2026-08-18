@@ -13,6 +13,8 @@ import anyio.to_thread
 import jwt
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 
+from solstice_mcp.audit import emit_auth_denied
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,7 +30,11 @@ def fetch_jwks(url: str, *, timeout: float = 5.0) -> dict[str, Any]:
 
 
 class JWKSCache:
-    """Thread-safe, short-lived cache for one Auth0 JWKS document."""
+    """Thread-safe, short-lived cache for one Auth0 JWKS document.
+
+    Unknown-kid forced refresh is throttled to at most once per TTL window so a
+    flood of fabricated kids cannot amplify Auth0 JWKS fetches.
+    """
 
     def __init__(
         self,
@@ -43,14 +49,26 @@ class JWKSCache:
         self.timeout = timeout
         self._value = initial
         self._expires_at = float("inf") if initial is not None else 0.0
+        self._last_refresh_at = 0.0
         self._lock = threading.Lock()
 
     def get(self, *, refresh: bool = False) -> dict[str, Any]:
         with self._lock:
-            if not refresh and self._value is not None and time.monotonic() < self._expires_at:
+            now = time.monotonic()
+            if not refresh and self._value is not None and now < self._expires_at:
+                return self._value
+            # Forced refresh (unknown kid): only if we have never fetched, the
+            # document is past TTL, or we have not refreshed within this TTL.
+            if (
+                refresh
+                and self._value is not None
+                and now < self._expires_at
+                and (now - self._last_refresh_at) < self.ttl_seconds
+            ):
                 return self._value
             self._value = fetch_jwks(self.url, timeout=self.timeout)
-            self._expires_at = time.monotonic() + self.ttl_seconds
+            self._expires_at = now + self.ttl_seconds
+            self._last_refresh_at = now
             return self._value
 
 
@@ -105,5 +123,7 @@ class MCPAccessTokenVerifier(TokenVerifier):
             # FastMCP's 401 response — but never silently: a JWKS outage or an
             # issuer/audience misconfig must be distinguishable from a bad
             # token in the logs. The token itself is never logged.
-            logger.info("Token verification failed: %s: %s", type(exc).__name__, exc)
+            reason = f"{type(exc).__name__}: {exc}"
+            logger.info("Token verification failed: %s", reason)
+            emit_auth_denied(reason=reason, error_type=type(exc).__name__)
             return None

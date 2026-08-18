@@ -142,20 +142,30 @@ def register_content_tools(
     update_tool = audited_tool(mcp, require_access_token, annotations=UPDATE_IN_PLACE)
 
     @read_only_tool
-    def solstice_list_projects(tenant_slug: str, brand_id: str) -> dict[str, Any]:
-        """List projects for a brand. Read-only; gated at MEMBER."""
-        projects = list_projects_for_brand(
+    def solstice_list_projects(
+        tenant_slug: str,
+        brand_id: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """List projects for a brand. Read-only; gated at MEMBER.
+
+        Paged: default ``limit`` 100, hard max 500. Pass ``offset`` to fetch the
+        next page when ``has_more`` is true.
+        """
+        page = list_projects_for_brand(
             require_subject(),
             tenant_slug,
             brand_id,
+            limit=limit,
+            offset=offset,
             registry=registry,
             session_factory=session_factory,
         )
         return {
             "tenant_slug": tenant_slug,
             "brand_id": brand_id,
-            "projects": projects,
-            "count": len(projects),
+            **page,
         }
 
     @read_only_tool
@@ -179,20 +189,30 @@ def register_content_tools(
         return {"status": "ok", **info}
 
     @read_only_tool
-    def solstice_list_operations(tenant_slug: str, brand_id: str) -> dict[str, Any]:
-        """List content-generation operations for a brand. Read-only; gated at MEMBER."""
-        operations = list_operations_for_brand(
+    def solstice_list_operations(
+        tenant_slug: str,
+        brand_id: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """List content-generation operations for a brand. Read-only; gated at MEMBER.
+
+        Paged: default ``limit`` 100, hard max 500. Pass ``offset`` to fetch the
+        next page when ``has_more`` is true.
+        """
+        page = list_operations_for_brand(
             require_subject(),
             tenant_slug,
             brand_id,
+            limit=limit,
+            offset=offset,
             registry=registry,
             session_factory=session_factory,
         )
         return {
             "tenant_slug": tenant_slug,
             "brand_id": brand_id,
-            "operations": operations,
-            "count": len(operations),
+            **page,
         }
 
     @read_only_tool
