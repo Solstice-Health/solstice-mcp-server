@@ -87,12 +87,14 @@ def test_reset_password_temp_mode_patches_auth0_and_returns_password(app_harness
         {"tenant_slug": TENANT, "email": "other@a.test", "mode": "temp_password"},
     ))
     assert TEMP_PASSWORD_RE.match(payload["temp_password"]), payload["temp_password"]
+    assert payload["force_password_change"] is True
 
     patches = _auth0_calls(app_harness, "PATCH", f"/api/v2/users/{OTHER_SUB.replace('|', '%7C')}")
     assert len(patches) == 1
     body = json.loads(patches[0]["body"])
     assert body["password"] == payload["temp_password"]
     assert body["connection"] == "Username-Password-Authentication"
+    assert body["app_metadata"]["force_password_change"] is True
     # No reset email was dispatched in temp mode.
     assert not _auth0_calls(app_harness, "POST", "/dbconnections/change_password")
 

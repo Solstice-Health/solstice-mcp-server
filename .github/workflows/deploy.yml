@@ -218,30 +218,45 @@ jobs:
         id: smoke
         env:
           RESOURCE_URL: ${{ env.RESOURCE_URL }}
+          MCP_CI_ACCESS_TOKEN: ${{ secrets.MCP_CI_ACCESS_TOKEN }}
         run: |
           ORIGIN="${RESOURCE_URL%/mcp}"
           # Public ALB routes only /mcp* to this service — ORIGIN/health is the
-          # Backend. Tool inventory lives on /mcp/health (TG still uses /health).
+          # Backend. /mcp/health is lean liveness (no tool inventory).
           HEALTH=$(curl --fail --silent --show-error "$ORIGIN/mcp/health")
           echo "$HEALTH" | jq -e '.status == "ok" and .service == "solstice-mcp"'
-          echo "$HEALTH" | jq -e '
-            (.tools | index("solstice_whoami"))
-            and (.tools | index("solstice_reset_password"))
-            and (.tools | index("solstice_change_brand_role"))
-            and (.tools | index("solstice_add_user"))
-            and (.tools | index("solstice_memory_recall"))
-            and (.tools | index("solstice_memory_observe"))
-            and (.tools | index("solstice_memory_remember"))
-            and (.tools | index("solstice_memory_replace"))
-            and (.tools | index("solstice_memory_forget"))
-          '
-          echo "$HEALTH" | jq -r '"registered_tools=\(.tool_count): \(.tools | join(", "))"'
+          echo "$HEALTH" | jq -e '(.tools | not) and (.tool_count | not)'
           curl --fail --silent --show-error \
             "$ORIGIN/.well-known/oauth-protected-resource/mcp" \
             | jq -e --arg resource "$RESOURCE_URL" \
               '.resource == $resource and (.scopes_supported | index("mcp:connect"))'
           STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" "$RESOURCE_URL")
           test "$STATUS" = "401"
+          # Tool registration: authenticated tools/list (avoids leaking inventory
+          # on public health). Fail closed — a missing secret must not ship
+          # without verifying env-gated tools are registered.
+          if [ -z "$MCP_CI_ACCESS_TOKEN" ]; then
+            echo "MCP_CI_ACCESS_TOKEN unset; cannot assert tools/list registration" >&2
+            exit 1
+          fi
+          RESP=$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $MCP_CI_ACCESS_TOKEN" \
+            -H "Accept: application/json, text/event-stream" \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+            "$RESOURCE_URL")
+          echo "$RESP" | jq -e '
+            ([.result.tools[].name] | index("solstice_whoami"))
+            and ([.result.tools[].name] | index("solstice_reset_password"))
+            and ([.result.tools[].name] | index("solstice_change_brand_role"))
+            and ([.result.tools[].name] | index("solstice_add_user"))
+            and ([.result.tools[].name] | index("solstice_memory_recall"))
+            and ([.result.tools[].name] | index("solstice_memory_observe"))
+            and ([.result.tools[].name] | index("solstice_memory_remember"))
+            and ([.result.tools[].name] | index("solstice_memory_replace"))
+            and ([.result.tools[].name] | index("solstice_memory_forget"))
+          '
+          echo "$RESP" | jq -r '"registered_tools=\(.result.tools | length): \([.result.tools[].name] | join(", "))"'
 
       - name: Sync AgentCore gateway tool schema
         id: gateway_sync
@@ -269,17 +284,16 @@ jobs:
           echo "Timed out waiting for gateway target sync"
           exit 1
 
-      # Optional authenticated tools/list against the gateway when a CI bearer
-      # is provisioned (mcp:connect). Health already asserted ECS registration;
-      # this catches a stale gateway snapshot that sync claimed READY for.
+      # Mandatory when MCP_CI_ACCESS_TOKEN is provisioned (smoke already
+      # requires it). Catches a stale gateway snapshot after sync READY.
       - name: Assert gateway tools/list
         env:
           MCP_CI_ACCESS_TOKEN: ${{ secrets.MCP_CI_ACCESS_TOKEN }}
           GATEWAY_URL: https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp
         run: |
           if [ -z "$MCP_CI_ACCESS_TOKEN" ]; then
-            echo "MCP_CI_ACCESS_TOKEN unset; skipping gateway tools/list (ECS /health already asserted registration)"
-            exit 0
+            echo "MCP_CI_ACCESS_TOKEN unset; cannot assert gateway tools/list" >&2
+            exit 1
           fi
           RESP=$(curl --fail --silent --show-error \
             -H "Authorization: Bearer $MCP_CI_ACCESS_TOKEN" \

@@ -150,11 +150,21 @@ class Auth0UserAdmin:
         )
 
     def set_password(self, auth0_id: str, password: str) -> None:
+        """Set a new password and flag the account for change-on-next-login.
+
+        ``app_metadata.force_password_change`` is the durable signal for an
+        Auth0 Action / post-login flow to require a password change. The MCP
+        tool still returns the temp password once for email-fail recovery.
+        """
         quoted = urllib.parse.quote(auth0_id, safe="")
         self._call(
             "PATCH",
             f"/api/v2/users/{quoted}",
-            body={"password": password, "connection": AUTH0_DB_CONNECTION},
+            body={
+                "password": password,
+                "connection": AUTH0_DB_CONNECTION,
+                "app_metadata": {"force_password_change": True},
+            },
             authenticated=True,
         )
 
@@ -303,10 +313,13 @@ def reset_password(
     temp_password = generate_temp_password()
     auth0.set_password(auth0_user["user_id"], temp_password)
     result["temp_password"] = temp_password
+    result["force_password_change"] = True
     result["note"] = (
-        "Deliver this password to the user through a secure channel and have "
-        "them change it after first login. Any previously sent reset-email "
-        "link will still work and would overwrite this password if clicked."
+        "Deliver this password to the user through a secure channel (not chat "
+        "history or shared docs) and have them change it after first login. "
+        "Auth0 app_metadata.force_password_change was set so a post-login "
+        "Action can require that change. Any previously sent reset-email link "
+        "will still work and would overwrite this password if clicked."
     )
     return result
 

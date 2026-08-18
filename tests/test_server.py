@@ -84,10 +84,9 @@ def test_health_and_protected_resource_metadata_are_public(app_harness: AppHarne
         assert body["status"] == "ok"
         assert body["service"] == "solstice-mcp"
         assert body["version"] == "1.0.0"
-        assert "solstice_whoami" in body["tools"]
-        assert "solstice_add_user" in body["tools"]
-        assert "solstice_memory_recall" in body["tools"]
-        assert body["tool_count"] == len(body["tools"])
+        # Lean public health — no tool inventory (auth'd solstice_server_info).
+        assert "tools" not in body
+        assert "tool_count" not in body
 
     metadata = app_harness.client.get("/.well-known/oauth-protected-resource/mcp")
     assert metadata.status_code == 200
