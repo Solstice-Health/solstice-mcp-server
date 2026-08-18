@@ -67,6 +67,40 @@ def test_http_client_retries_transport_errors(monkeypatch):
     assert len(attempts) == 2
 
 
+def test_http_client_does_not_retry_mutating_methods(monkeypatch):
+    attempts: list[int] = []
+
+    def fake_once(method, url, *, headers, content, timeout, client):
+        attempts.append(1)
+        return http_client.HttpResponse(status_code=503, content=b"busy")
+
+    monkeypatch.setattr(http_client, "_httpx_once", fake_once)
+    monkeypatch.setattr(http_client, "_backoff", lambda _n: None)
+
+    response = http_client.request("POST", "https://example.test/x", retries=3)
+    assert response.status_code == 503
+    assert len(attempts) == 1
+
+
+def test_http_client_retries_mutations_when_opted_in(monkeypatch):
+    attempts: list[int] = []
+
+    def fake_once(method, url, *, headers, content, timeout, client):
+        attempts.append(1)
+        if len(attempts) < 2:
+            return http_client.HttpResponse(status_code=503, content=b"busy")
+        return http_client.HttpResponse(status_code=200, content=b'{"ok":true}')
+
+    monkeypatch.setattr(http_client, "_httpx_once", fake_once)
+    monkeypatch.setattr(http_client, "_backoff", lambda _n: None)
+
+    response = http_client.request(
+        "POST", "https://example.test/token", retries=3, retry_mutations=True
+    )
+    assert response.status_code == 200
+    assert len(attempts) == 2
+
+
 def test_emit_tool_metrics_sends_dogstatsd_payload(monkeypatch):
     reset_for_tests()
     sent: list[tuple[bytes, tuple[str, int]]] = []
@@ -111,7 +145,8 @@ def test_ready_returns_ready_when_db_ping_ok(app_harness: AppHarness):
     body = response.json()
     assert body["status"] == "ready"
     assert body["service"] == "solstice-mcp"
-    assert body["probe_tenant"] in app_harness.registry.slugs
+    # Must not leak which tenant was probed (unauthenticated route).
+    assert "probe_tenant" not in body
 
 
 def test_ready_returns_503_when_session_factory_raises(tmp_path, signing_material):

@@ -139,6 +139,9 @@ class Auth0ClientCredentials:
             }
         ).encode("utf-8")
         try:
+            # client_credentials is safe to retry; Auth0 issues a new token
+            # without side effects. Mutating memory/Auth0 admin POSTs must NOT
+            # set retry_mutations (http_client defaults to no retries there).
             response = http_client.request(
                 "POST",
                 self._token_endpoint,
@@ -148,6 +151,7 @@ class Auth0ClientCredentials:
                 },
                 content=body,
                 timeout=self._timeout,
+                retry_mutations=True,
             )
         except (httpx.TransportError, TimeoutError, urllib.error.URLError, OSError) as exc:
             raise MemoryClientUnavailable("auth0_token_endpoint_unreachable") from exc

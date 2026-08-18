@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlsplit
 
+import anyio
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
@@ -349,43 +351,62 @@ def build_mcp_app(
     async def health(_request: Request) -> Response:
         return JSONResponse(_health_payload(), headers={"Cache-Control": "no-store"})
 
+    READY_CACHE_TTL_SECONDS = 5.0
+    ready_cache: dict[str, Any] = {"until": 0.0, "status_code": 200, "body": {}}
+
     async def ready(_request: Request) -> Response:
         # Readiness only — ALB target checks stay on shallow /health. This
         # probe confirms the tenant registry is loaded and at least one
         # configured tenant DB accepts a cheap ping.
-        if not tenant_registry.slugs:
+        #
+        # Hardening vs review findings:
+        # - Sync SQLAlchemy work runs in a worker thread so the ASGI event loop
+        #   is not blocked while the probe waits on the DB.
+        # - Response never names the probed tenant (no information leak).
+        # - Short TTL cache so unauthenticated pollers cannot stampede the
+        #   per-tenant SQLAlchemy pool shared with authenticated tools.
+        now = time.monotonic()
+        if now < ready_cache["until"]:
             return JSONResponse(
-                {"status": "not_ready", "service": MCP_SERVER_NAME, "reason": "no_tenants"},
-                status_code=503,
+                ready_cache["body"],
+                status_code=int(ready_cache["status_code"]),
                 headers={"Cache-Control": "no-store"},
             )
+
+        if not tenant_registry.slugs:
+            body = {"status": "not_ready", "service": MCP_SERVER_NAME, "reason": "no_tenants"}
+            ready_cache.update(until=now + READY_CACHE_TTL_SECONDS, status_code=503, body=body)
+            return JSONResponse(body, status_code=503, headers={"Cache-Control": "no-store"})
+
         probe_slug = tenant_registry.slugs[0]
-        try:
+
+        def _probe() -> None:
             if db_factory is not None:
                 db_factory.ping(probe_slug)
             else:
                 with tenant_session(probe_slug, open_session) as session:
                     session.connection().execute(text("SELECT 1"))
+
+        try:
+            await anyio.to_thread.run_sync(_probe)
         except Exception as exc:
+            # Log the slug for operators; never return it to anonymous callers.
             logger.warning("Readiness probe failed for tenant %r: %s", probe_slug, exc)
-            return JSONResponse(
-                {
-                    "status": "not_ready",
-                    "service": MCP_SERVER_NAME,
-                    "reason": "db_unreachable",
-                },
-                status_code=503,
-                headers={"Cache-Control": "no-store"},
-            )
-        return JSONResponse(
-            {
-                "status": "ready",
+            body = {
+                "status": "not_ready",
                 "service": MCP_SERVER_NAME,
-                "version": MCP_SERVER_VERSION,
-                "probe_tenant": probe_slug,
-            },
-            headers={"Cache-Control": "no-store"},
-        )
+                "reason": "db_unreachable",
+            }
+            ready_cache.update(until=now + READY_CACHE_TTL_SECONDS, status_code=503, body=body)
+            return JSONResponse(body, status_code=503, headers={"Cache-Control": "no-store"})
+
+        body = {
+            "status": "ready",
+            "service": MCP_SERVER_NAME,
+            "version": MCP_SERVER_VERSION,
+        }
+        ready_cache.update(until=now + READY_CACHE_TTL_SECONDS, status_code=200, body=body)
+        return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
     # Target-group checks hit the task on /health. Public ALB only forwards
     # /mcp* to this service (api.solsticehealth.co/health is the Backend), so

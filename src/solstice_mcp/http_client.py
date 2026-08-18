@@ -1,8 +1,14 @@
 """Shared outbound HTTP with retries (httpx) and a urllib fallback for tests.
 
 Production callers leave ``opener=None`` and get a pooled ``httpx.Client`` with
-bounded retries on 5xx / transport errors. Tests inject a urllib-style opener
-(``FakeBackendOpener`` / Auth0 fake) and keep the existing call-recording shape.
+bounded retries on 5xx / transport errors for idempotent methods. Mutating
+methods (POST/PATCH/PUT/DELETE) are never retried by default — a late 502 after
+the upstream already applied the write must not duplicate memory writes or
+Auth0 password emails. Callers may opt in with ``retry_mutations=True`` only
+for known-safe POSTs (e.g. Auth0 client-credentials token grants).
+
+Tests inject a urllib-style opener (``FakeBackendOpener`` / Auth0 fake) and
+keep the existing call-recording shape.
 
 HTTP status codes are returned on ``HttpResponse`` — callers map them. Only
 transport failures raise after retries are exhausted.
@@ -23,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_RETRIES = 3
 RETRYABLE_STATUS = frozenset({502, 503, 504})
+IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 class HttpResponse:
@@ -46,12 +53,18 @@ def request(
     content: bytes | None = None,
     timeout: float = 10.0,
     retries: int = DEFAULT_RETRIES,
+    retry_mutations: bool = False,
     opener: Any | None = None,
     client: httpx.Client | None = None,
 ) -> HttpResponse:
-    """Perform one HTTP request with optional retries on transient failures."""
+    """Perform one HTTP request with optional retries on transient failures.
+
+    Retries apply to idempotent methods (GET/HEAD/OPTIONS) by default. Mutating
+    methods only retry when ``retry_mutations=True`` (opt-in for safe POSTs).
+    """
     headers = dict(headers or {})
-    attempts = max(1, retries)
+    method_u = method.upper()
+    attempts = max(1, retries) if method_u in IDEMPOTENT_METHODS or retry_mutations else 1
     last_error: Exception | None = None
 
     for attempt in range(attempts):
