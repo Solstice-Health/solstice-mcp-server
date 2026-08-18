@@ -33,6 +33,20 @@ def test_rate_limiter_strict_tools_use_separate_budget():
     limiter.check(subject="sub", client_id="c", tool_name="solstice_whoami")
 
 
+def test_rate_limiter_prunes_idle_keys():
+    limiter = RateLimiter(default_rpm=100, strict_rpm=100, window_seconds=60.0)
+    for i in range(63):
+        limiter.check(subject=f"sub-{i}", client_id="c", tool_name="solstice_whoami")
+    assert len(limiter._hits) == 63
+    for bucket in limiter._hits.values():
+        bucket.clear()
+        bucket.append(0.0)  # expired relative to monotonic now
+    limiter._checks = 63
+    limiter.check(subject="alive", client_id="c", tool_name="solstice_whoami")
+    assert "alive\0c\0*" in limiter._hits
+    assert all(not k.startswith("sub-") for k in limiter._hits)
+
+
 def test_jwks_unknown_kid_refresh_throttled():
     fetches: list[str] = []
 

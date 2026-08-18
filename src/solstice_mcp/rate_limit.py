@@ -55,6 +55,7 @@ class RateLimiter:
         self.window_seconds = window_seconds
         self._hits: dict[str, deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
+        self._checks = 0
 
     def check(self, *, subject: str, client_id: str, tool_name: str) -> None:
         limit = self.strict_rpm if tool_name in STRICT_TOOL_NAMES else self.default_rpm
@@ -73,11 +74,23 @@ class RateLimiter:
                     f"(limit {limit} per {int(self.window_seconds)}s); retry shortly"
                 )
             bucket.append(now)
+            self._checks += 1
+            # Periodically drop idle keys so long-lived workers do not retain
+            # every historical (subject, client) forever.
+            if self._checks % 64 == 0:
+                idle = [
+                    k
+                    for k, hits in self._hits.items()
+                    if k != key and (not hits or hits[-1] < cutoff)
+                ]
+                for idle_key in idle:
+                    del self._hits[idle_key]
 
     def reset(self) -> None:
         """Clear all buckets (tests)."""
         with self._lock:
             self._hits.clear()
+            self._checks = 0
 
 
 # Process-wide limiter shared by audited_tool wrappers on this worker.

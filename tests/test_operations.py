@@ -358,6 +358,8 @@ def test_list_operations_respects_limit(app_harness: AppHarness):
     assert page2["count"] == 1
     assert page2["has_more"] is False
     assert {page["operations"][0]["id"], page2["operations"][0]["id"]} == {OP_A1, OP_A2}
+    # Stable pages: walking offset must not reshuffle the same two ids.
+    assert page["operations"][0]["id"] != page2["operations"][0]["id"]
 
 
 # ---------------------------------------------------------------------------

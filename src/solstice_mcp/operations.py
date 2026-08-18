@@ -667,7 +667,7 @@ def list_projects_for_brand(
         rows = session.scalars(
             select(Project).where(
                 Project.brand_id == brand_id, Project.deleted_at.is_(None)
-            ).order_by(Project.name).offset(offset).limit(limit + 1)
+            ).order_by(Project.name, Project.id).offset(offset).limit(limit + 1)
         ).all()
     has_more = len(rows) > limit
     page = rows[:limit]
@@ -920,7 +920,7 @@ def list_operations_for_brand(
         rows = session.scalars(
             select(CgOperation).where(
                 CgOperation.brand_id == brand_id, CgOperation.deleted_at.is_(None)
-            ).order_by(CgOperation.created_at).offset(offset).limit(limit + 1)
+            ).order_by(CgOperation.created_at, CgOperation.id).offset(offset).limit(limit + 1)
         ).all()
     has_more = len(rows) > limit
     page = rows[:limit]
