@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 PLUGIN = ROOT / "plugins" / "solstice-platform"
 PLUGIN_NAME = "solstice-platform"
-PLUGIN_VERSION = "0.3.11"
+PLUGIN_VERSION = "0.3.12"
 # Cursor/Claude → ECS direct (full tools/list). Codex → AgentCore (Cedar/OBO).
 ECS_URL = "https://api.solsticehealth.co/mcp"
 GATEWAY_URL = (
@@ -80,7 +80,7 @@ def test_shared_skill_is_portable_and_action_focused() -> None:
         "open/read document",
     ):
         assert action in body_lower
-    for language in ("fetch=false", "fetch=true", "ask", "untrusted user content", "no change was made"):
+    for language in ("prc_proof_url", "ask", "untrusted user content", "no change was made"):
         assert language in body_lower
 
     skill_dir = PLUGIN / "skills" / PLUGIN_NAME
@@ -150,6 +150,7 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "creative html",
         "untrusted content",
         "solstice_brand_claims",
+        "solstice_list_public_fonts",
         "solstice_create_prc_template_version",
         "confirmed=true",
         "would you like to publish the prc template?",
@@ -179,8 +180,10 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "never fall back across content types",
         "solstice_list_operations",
         "solstice_operation_messages",
-        "solstice_operation_html(..., fetch=true)",
+        "solstice_operation_html",
+        "prc_proof_url",
         "solstice_prc_template(..., fetch=true)",
+        "solstice_list_public_fonts",
         "solstice_create_prc_template_version(..., confirmed=true)",
         "never combine those choices into one question",
         "what template name should i use?",
@@ -213,6 +216,7 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "--sol-prc-annotation-line-width",
         "`common.field_instances`",
         "`common.field_overrides`",
+        "`common.hosted_fonts`",
     ):
         assert seam in contract
 

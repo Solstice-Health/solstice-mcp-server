@@ -336,6 +336,7 @@ def test_server_info_advertises_rbac_model(app_harness: AppHarness, mint_token):
     assert "solstice_brand_rules" in payload["tools"]
     assert "solstice_brand_design_assets" in payload["tools"]
     assert "solstice_brand_claims" in payload["tools"]
+    assert "solstice_list_public_fonts" in payload["tools"]
     assert "solstice_create_operation" in payload["tools"]
     # Dynamic inventory — env-gated tools the harness injects must appear.
     assert "solstice_whoami" in payload["tools"]

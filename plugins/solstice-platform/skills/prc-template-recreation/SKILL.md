@@ -28,7 +28,12 @@ creative into one document.
 4. **Source design is the visual authority; exemplars are structural only.**
    The resolved PRC template or seed supplies renderer seams, selectors, page
    builders, and injection mechanics — never layout, palette, typography, or
-   page composition. When the source design is itself a proof sheet (header
+   page composition. When converting an existing Solstice asset, that
+   operation's baked proof (`prc_proof_url` from
+   `solstice_operation_html` on the source html message; GET the URL) is
+   the visual authority. Catalog `html_template` from `solstice_prc_template`
+   is seams only. Do not substitute a catalog or generic shell for a missing
+   bake — stop. When the source design is itself a proof sheet (header
    band, per-platform sections, per-frame breakouts, form flows, annotation
    placement), reproduce that page structure in the template. A proof that
    looks like the exemplar instead of the source design is wrong.
@@ -76,6 +81,14 @@ creative into one document.
 13. **Claims are verbatim.** Use only `claim_text` returned by
    `solstice_brand_claims`. Do not infer medical, efficacy, or safety copy from
    a visual reference.
+14. **Hosted fonts, in this order.** Keep url-only `@font-face` already in the
+   bake. Then parse family + url from `solstice_brand_rules` `design_bible`
+   `font_rules` / `social_font_rules`. Then
+   `solstice_list_public_fonts(query=family)` and match `label` (filename after
+   `{md5}_`). Fontsource only for a real slug of that family. Do not stand in
+   a different family (Helvetica → Source Sans is wrong if a public file
+   exists). Stop and name the family if none of those hit.
+   `solstice_brand_design_assets` is images, not fonts.
 
 ## Workflow
 
@@ -94,14 +107,16 @@ creative into one document.
 4. **Gather brand context and exemplars.** Resolve the Solstice workspace and
    brand, then load brand rules, design assets, and claims. Call
    `solstice_prc_template(..., fetch=true)` with the exact classified content
-   type for the effective `prc_template_versions` proof-shell exemplar. Fetch a
-   final HTML creative exemplar only after its operation metadata matches that
-   same content type exactly. Do not read the whole exemplar into the main
-   context: save it to a file and dispatch a small subagent to return a
-   skeleton digest — required IDs/templates/slots/data attributes, script
-   section map, and only the rules that differ from the renderer contract and
-   canonical seed (see "Digest exemplars via subagent" in
-   `references/reconstruction-workflow.md`).
+   type for the effective `prc_template_versions` proof-shell exemplar (seams
+   only). When converting an existing operation, list html messages, pick the
+   source bake row, and call `solstice_operation_html`: `url` is the creative,
+   `prc_proof_url` is the bake — GET those URLs for the bodies. Fetch a final HTML creative
+   exemplar only after its operation metadata matches that same content type
+   exactly. Do not read the whole exemplar into the main context: save it to a
+   file and dispatch a small subagent to return a skeleton digest — required
+   IDs/templates/slots/data attributes, script section map, and only the rules
+   that differ from the renderer contract and canonical seed (see "Digest
+   exemplars via subagent" in `references/reconstruction-workflow.md`).
 5. **Recreate both layers.**
    - `creative.html`: complete, standalone creative HTML for the detected
      content type.

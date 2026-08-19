@@ -11,7 +11,9 @@ sources are renderable, so the flag is gated on the file extension.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from conftest import PROJECT_P2, SHARED_SUB, STAFF_SUB, AppHarness
 from sqlalchemy import select
@@ -168,3 +170,42 @@ def test_flag_binds_published_version_over_draft(app_harness: AppHarness, mint_t
     assert v1_metadata["show_source_on_ui"] is True
     v2_metadata = _doc_metadata(app_harness, op_id, 2)
     assert "show_source_on_ui" not in v2_metadata
+
+
+def test_flag_binds_newest_created_at_even_when_unnumbered(
+    app_harness: AppHarness, mint_token
+):
+    token = mint_token(sub=SHARED_SUB)
+    op_id = _create_edit_pdf(app_harness, token)
+    _land_version(app_harness, token, op_id, "pdf", "v1.pdf")
+    later_id = str(uuid4())
+    with app_harness.session_factory(TENANT) as session:
+        session.add(
+            CgOperationMessage(
+                id=later_id,
+                operation_id=op_id,
+                message_id="later-pdf",
+                author_id=None,
+                type="pdf",
+                content=f"approved_pdfs/{op_id}/later.pdf",
+                version_number=None,
+                intent="final",
+                position=99,
+                created_at=datetime.now(UTC) + timedelta(days=1),
+                deleted_at=None,
+            )
+        )
+        session.commit()
+    source_key, response = _commit_source(
+        app_harness, token, op_id, "source.html", show_source_on_ui=True
+    )
+    payload = tool_payload(response)
+    assert payload["bound_version_number"] is None
+    with app_harness.session_factory(TENANT) as session:
+        later = session.get(CgOperationMessage, later_id)
+        assert later is not None
+        metadata = dict(later.message_metadata or {})
+    assert metadata["source_html_s3_key"] == source_key
+    assert metadata["show_source_on_ui"] is True
+    v1_metadata = _doc_metadata(app_harness, op_id, 1)
+    assert "show_source_on_ui" not in v1_metadata

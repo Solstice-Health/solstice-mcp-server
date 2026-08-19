@@ -10,10 +10,14 @@ without importing it:
   optional ``project_id``.
 - ``n_cg_operation_messages`` — chat + document versions on an operation.
   ``type`` ∈ {text, html, pdf, blueprint}; document rows (html/pdf) carry an
-  ``intent`` ∈ {draft, final}. HTML bodies live in tenant S3 under
-  ``cg_operation_msg_html/...``; the ``content`` column holds either inline
-  HTML or that S3 key. This module returns the S3 key but NOT the body — the
-  body fetch is deferred to a future tool (see ``solstice_operation_html``).
+  ``intent`` ∈ {draft, final}. Timeline and head identity match Backend:
+  ``created_at`` then ``id`` (NULLS FIRST). ``version_number`` is an optional
+  S3-path label on MCP writes, not the sort key. HTML bodies live in tenant
+  S3 under ``cg_operation_msg_html/...``; the ``content`` column holds either
+  inline HTML or that S3 key. Baked proofs live under
+  ``cg_operation_prc_template/...`` on ``prc_template_s3_key``.
+  ``solstice_operation_html`` signs both; callers GET the URLs for the
+  bodies.
 - ``prc_template_versions`` — versioned proof-shell HTML. Reads resolve the
   effective template through operation, brand, environment, then platform
   precedence and never expose an unscoped tenant-wide template listing. Writes
@@ -531,25 +535,38 @@ def resolve_prc_template_for_brand(
         return payload
 
 
+# Backend message_table_repository: created_at ASC NULLS FIRST, id ASC.
+# `IS NULL DESC` is the portable NULLS FIRST; head is the reverse of this.
+_MESSAGE_ORDER_OLDEST_FIRST = (
+    CgOperationMessage.created_at.is_(None).desc(),
+    CgOperationMessage.created_at.asc(),
+    CgOperationMessage.id.asc(),
+)
+_MESSAGE_ORDER_NEWEST_FIRST = (
+    CgOperationMessage.created_at.is_(None),
+    CgOperationMessage.created_at.desc(),
+    CgOperationMessage.id.desc(),
+)
+
+
+def _latest_message(session, *where: Any) -> CgOperationMessage | None:
+    """Head live row: last in Backend ``(created_at NULLS FIRST, id)`` order."""
+    return session.scalar(
+        select(CgOperationMessage).where(*where).order_by(*_MESSAGE_ORDER_NEWEST_FIRST).limit(1)
+    )
+
+
 def _latest_operation_bake(session, operation_id: str) -> dict[str, Any] | None:
     """Latest html row that already carries a baked proof key."""
-    rows = session.scalars(
-        select(CgOperationMessage).where(
-            CgOperationMessage.operation_id == operation_id,
-            CgOperationMessage.type == "html",
-            CgOperationMessage.deleted_at.is_(None),
-            CgOperationMessage.prc_template_s3_key.is_not(None),
-        )
-    ).all()
-    if not rows:
-        return None
-    latest = max(
-        rows,
-        key=lambda row: (
-            row.created_at or datetime.min.replace(tzinfo=UTC),
-            row.version_number or 0,
-        ),
+    latest = _latest_message(
+        session,
+        CgOperationMessage.operation_id == operation_id,
+        CgOperationMessage.type == "html",
+        CgOperationMessage.deleted_at.is_(None),
+        CgOperationMessage.prc_template_s3_key.is_not(None),
     )
+    if latest is None:
+        return None
     return {
         "message_id": latest.message_id,
         "row_id": latest.id,
@@ -560,24 +577,12 @@ def _latest_operation_bake(session, operation_id: str) -> dict[str, Any] | None:
 
 
 def _latest_html_creative(session, operation_id: str) -> CgOperationMessage | None:
-    """Head html document: highest version_number, else newest created_at."""
-    rows = session.scalars(
-        select(CgOperationMessage).where(
-            CgOperationMessage.operation_id == operation_id,
-            CgOperationMessage.type == "html",
-            CgOperationMessage.deleted_at.is_(None),
-        )
-    ).all()
-    if not rows:
-        return None
-    versioned = [row for row in rows if row.version_number is not None]
-    pool = versioned or rows
-    return max(
-        pool,
-        key=lambda row: (
-            row.version_number or 0,
-            row.created_at or datetime.min.replace(tzinfo=UTC),
-        ),
+    """Head html document: newest ``created_at``, then ``id``."""
+    return _latest_message(
+        session,
+        CgOperationMessage.operation_id == operation_id,
+        CgOperationMessage.type == "html",
+        CgOperationMessage.deleted_at.is_(None),
     )
 
 
@@ -599,9 +604,10 @@ def bake_prc_template_to_operation(
     Mirrors Backend-Server ``finalize_html_version_message``: creative stays on
     ``cg_operation_msg_html/...``; the proof lands at
     ``cg_operation_prc_template/{operation_id}/{row_id}.html`` and is stamped
-    on ``n_cg_operation_messages.prc_template_s3_key``. Version number is
-    max(existing)+1 under an operation-row lock — the same rule as
-    ``commit_operation_version``.
+    on ``n_cg_operation_messages.prc_template_s3_key``. Head creative is
+    newest ``created_at`` then ``id``. Stamped ``version_number`` is
+    max(existing)+1 for the S3 key label (same as ``commit_operation_version``),
+    not identity.
     """
     parsed_operation_id = _normalized_uuid(operation_id)
     if parsed_operation_id is None:
@@ -1283,11 +1289,7 @@ def list_operation_messages(
                     CgOperationMessage.intent != "draft",
                 )
             )
-        stmt = stmt.order_by(
-            CgOperationMessage.created_at.is_(None),
-            CgOperationMessage.created_at,
-            CgOperationMessage.position,
-        )
+        stmt = stmt.order_by(*_MESSAGE_ORDER_OLDEST_FIRST)
         rows = session.scalars(stmt).all()
     return [_message_summary(m) for m in rows]
 
@@ -1298,24 +1300,22 @@ def get_operation_html(
     operation_id: str,
     message_id: str,
     *,
-    fetch: bool,
     registry: TenantRegistry,
     session_factory: SessionFactory,
     s3: S3Reader,
     presign_expiry: int = 600,
-    max_inline_bytes: int = 2_000_000,
 ) -> dict[str, Any]:
-    """Return the HTML body for one operation message.
+    """Return presigned GET URLs for the HTML creative and baked PRC proof.
 
-    By default returns a presigned GET URL only (no body transfer). When
-    ``fetch=True`` the body is downloaded inline, subject to a size cap.
+    Mirrors Backend ``content-url``: the document key and ``prc_template_s3_key``
+    are signed from the same row. Callers that need the body GET ``url`` /
+    ``prc_proof_url``. Bodies are never inlined.
 
     Authorization + intent filter:
     - Gated at MEMBER on the operation's brand (resolved from the row).
     - The intent filter is re-applied here: a non-staff caller cannot retrieve
-      a ``draft`` document message at all — no URL, no body — because a
-      presigned URL is itself a read capability. Only SOLSTICE_STAFF sees
-      drafts; MEMBER/ADMIN see final only.
+      a ``draft`` document message at all — a presigned URL is a read
+      capability. Only SOLSTICE_STAFF sees drafts; MEMBER/ADMIN see final only.
     """
     with tenant_session(tenant_slug, session_factory) as session:
         op = session.scalar(
@@ -1344,49 +1344,51 @@ def get_operation_html(
         )
         if msg is None:
             raise ToolError("not_found: unknown message")
-    if msg.intent == "draft" and not staff:
+        msg_type = msg.type
+        msg_intent = msg.intent
+        msg_version = msg.version_number
+        msg_content = msg.content
+        bake_key = msg.prc_template_s3_key
+    if msg_intent == "draft" and not staff:
         # Draft visibility is enforced for both the URL and the body: a
         # presigned URL is a read capability, so it must not be handed to a
         # non-staff caller any more than the inline body would be.
         raise ToolError("not_authorized: draft messages require SOLSTICE_STAFF")
-    if msg.type != "html":
+    if msg_type != "html":
         raise ToolError("not_found: message is not an html document")
 
     result: dict[str, Any] = {
         "operation_id": operation_id,
         "message_id": message_id,
-        "type": msg.type,
-        "intent": msg.intent,
-        "version_number": msg.version_number,
+        "type": msg_type,
+        "intent": msg_intent,
+        "version_number": msg_version,
         "url": None,
         "s3_key": None,
-        "html": None,
+        "prc_proof_url": None,
+        "prc_proof_s3_key": None,
     }
 
-    if _looks_like_s3_key(msg.content):
-        s3_key = msg.content or ""
+    needs_s3 = _looks_like_s3_key(msg_content) or bool(bake_key)
+    bucket = ""
+    if needs_s3:
         tenant_config = registry.get(tenant_slug)
         bucket = tenant_config.s3_bucket if tenant_config is not None else ""
         if not bucket:
             raise ToolError("not_configured: tenant has no s3_bucket")
+
+    if _looks_like_s3_key(msg_content):
+        s3_key = msg_content or ""
         result["s3_key"] = s3_key
         result["url"] = s3.presign(bucket, s3_key, presign_expiry)
-        if fetch:
-            try:
-                body = s3.download(bucket, s3_key, max_inline_bytes)
-            except S3ObjectTooLarge:
-                result["too_large"] = True
-            except S3ObjectMissing:
-                raise ToolError("not_found: html object missing in s3") from None
-            except S3Error as exc:
-                raise ToolError(f"not_available: s3 read failed: {exc}") from exc
-            else:
-                result["html"] = body.decode("utf-8", errors="replace")
     else:
-        # Inline HTML stored in the row (not yet offloaded to S3).
+        # No URL exists until the row is offloaded; this is the only inline body.
         result["inline"] = True
-        if fetch:
-            result["html"] = msg.content or ""
+        result["html"] = msg_content or ""
+
+    if bake_key:
+        result["prc_proof_s3_key"] = bake_key
+        result["prc_proof_url"] = s3.presign(bucket, bake_key, presign_expiry)
     return result
 
 
@@ -1913,21 +1915,21 @@ def commit_operation_version(
                 # Bind the HTML source to a document version so the FE offers
                 # the PDF↔Source toggle. Mirrors Backend-Server
                 # select_source_html_target_message: published (final) head
-                # wins, else the latest version of any intent.
-                docs = session.scalars(
-                    select(CgOperationMessage).where(
-                        CgOperationMessage.operation_id == operation_id,
-                        CgOperationMessage.version_number.is_not(None),
-                        CgOperationMessage.deleted_at.is_(None),
-                    )
-                ).all()
-                pool = [d for d in docs if d.intent == "final"] or list(docs)
-                if not pool:
+                # wins, else the latest document of any intent. Head is
+                # created_at then id, not version_number.
+                docs = (
+                    CgOperationMessage.operation_id == operation_id,
+                    CgOperationMessage.type.in_(("html", "pdf")),
+                    CgOperationMessage.deleted_at.is_(None),
+                )
+                target = _latest_message(
+                    session, *docs, CgOperationMessage.intent == "final"
+                ) or _latest_message(session, *docs)
+                if target is None:
                     raise ToolError(
                         "invalid_state: no document version to bind the source to - "
                         "commit the pdf/html version first"
                     )
-                target = max(pool, key=lambda d: d.version_number or 0)
                 message_metadata = dict(target.message_metadata) if isinstance(
                     target.message_metadata, dict
                 ) else {}

@@ -55,8 +55,8 @@ stays off:
 Process the queue one operation at a time:
 
 1. **Fetch** — find the latest final HTML version via
-   `solstice_operation_messages`, then `solstice_operation_html` with
-   `fetch=true`.
+   `solstice_operation_messages`, then `solstice_operation_html`, then GET
+   the returned `url`.
 2. **Swap the ISI block**:
    - Locate the region by its headings — the block starting at
      "IMPORTANT SAFETY INFORMATION" (often paired with an INDICATION heading)

@@ -277,7 +277,7 @@ def register_content_tools(
         Reads ``prc_template_versions`` using the same precedence as Solstice:
         operation override, explicit/derived brand template, environment
         default, then platform default. When ``operation_id`` is set, also
-        returns ``operation_bake`` (latest html row's ``prc_template_s3_key``)
+        returns ``operation_bake`` (newest-``created_at`` html row's ``prc_template_s3_key``)
         and ``publish_targets`` so the caller can ask whether to bake onto
         that operation, publish to the library, or both.
 
@@ -385,28 +385,29 @@ def register_content_tools(
         message_id: str,
         fetch: bool = False,
     ) -> dict[str, Any]:
-        """Return the HTML body for one operation message.
+        """Return presigned GET URLs for one operation HTML message.
 
-        By default returns a presigned GET URL (no body transfer). Set
-        fetch=True to download the HTML inline — use that only when the user
-        explicitly asks to read, save, or visualize the document.
+        Mirrors Backend ``content-url``: ``url`` / ``s3_key`` are the creative;
+        ``prc_proof_url`` / ``prc_proof_s3_key`` are the bake when present.
+        Download those URLs when you need the body — the payload never inlines
+        HTML. ``fetch`` is ignored (kept so older callers do not error). Catalog
+        ``solstice_prc_template`` HTML is not a substitute for the bake.
 
         Gated at MEMBER on the operation's brand. Draft visibility is enforced
-        here too: a non-staff caller cannot retrieve a draft message's URL or
-        body (a presigned URL is a read capability, so it is not handed out for
-        drafts). SOLSTICE_STAFF sees drafts; MEMBER/ADMIN see final only.
+        here too: a non-staff caller cannot retrieve a draft message's URL
+        (a presigned URL is a read capability). SOLSTICE_STAFF sees drafts;
+        MEMBER/ADMIN see final only.
         """
+        _ = fetch
         return get_operation_html(
             require_subject(),
             tenant_slug,
             operation_id,
             message_id,
-            fetch=fetch,
             registry=registry,
             session_factory=session_factory,
             s3=s3,
             presign_expiry=presign_expiry,
-            max_inline_bytes=max_inline_bytes,
         )
 
     @append_only_tool

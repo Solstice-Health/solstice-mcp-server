@@ -156,6 +156,7 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
         "solstice_brand_rules",
         "solstice_brand_design_assets",
         "solstice_brand_claims",
+        "solstice_list_public_fonts",
         "solstice_list_projects",
         "solstice_project_info",
         "solstice_list_operations",

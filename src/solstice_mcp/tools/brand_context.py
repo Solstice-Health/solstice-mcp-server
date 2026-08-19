@@ -1,4 +1,4 @@
-"""Register read-only brand context tools (rules, design assets, claims)."""
+"""Register read-only brand context tools (rules, design assets, claims, fonts)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from solstice_mcp.brand_context import (
     get_brand_design_assets,
     get_brand_rules,
 )
+from solstice_mcp.public_fonts import list_public_fonts
 from solstice_mcp.storage import S3Reader
 from solstice_mcp.tenants import SessionFactory, TenantRegistry
 
@@ -90,6 +91,29 @@ def register_brand_context_tools(
             session_factory=session_factory,
             limit=limit,
             extracted_only=extracted_only,
+        )
+
+    @read_only_tool
+    def solstice_list_public_fonts(
+        tenant_slug: str,
+        query: str = "",
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """List hosted font files in solstice-public-forever/permanent_assets/.
+
+        Read-only; gated at tenant membership (no brand). Match ``query`` against
+        the filename after an optional ``{32hex}_`` prefix. Empty query returns
+        all font keys, capped at ``limit`` (max 500). Returns public HTTPS URLs,
+        not presigned links. Design-library images are a different tool.
+        """
+        return list_public_fonts(
+            require_subject(),
+            tenant_slug,
+            query=query,
+            limit=limit,
+            registry=registry,
+            session_factory=session_factory,
+            s3=s3,
         )
 
 
