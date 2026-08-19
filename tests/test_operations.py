@@ -19,6 +19,7 @@ from conftest import (
 from test_server import rpc, tool_payload
 
 from solstice_mcp.operations import (
+    CgOperationMessage,
     get_operation_html,
     get_operation_info,
     get_project_info,
@@ -285,7 +286,7 @@ def test_list_operation_messages_unit_hides_drafts_for_non_staff(app_harness: Ap
         SHARED_SUB, "tenant_a", OP_A1,
         registry=app_harness.registry, session_factory=app_harness.session_factory,
     )
-    assert {m["message_id"] for m in msgs} == {"m1", "m2", "m4"}
+    assert [m["message_id"] for m in msgs] == ["m1", "m2", "m4"]
 
 
 def test_list_operation_messages_unit_shows_drafts_for_staff(app_harness: AppHarness):
@@ -293,7 +294,7 @@ def test_list_operation_messages_unit_shows_drafts_for_staff(app_harness: AppHar
         STAFF_SUB, "tenant_a", OP_A1,
         registry=app_harness.registry, session_factory=app_harness.session_factory,
     )
-    assert {m["message_id"] for m in msgs} == {"m1", "m2", "m3", "m4"}
+    assert [m["message_id"] for m in msgs] == ["m1", "m2", "m3", "m4"]
 
 
 def test_list_operation_messages_unit_denies_non_member(app_harness: AppHarness):
@@ -363,11 +364,8 @@ def test_list_operations_respects_limit(app_harness: AppHarness):
 
 
 # ---------------------------------------------------------------------------
-# solstice_operation_html — presigned URL by default, inline on fetch=True
+# solstice_operation_html — presigned URL + s3_key; bodies are not inlined
 # ---------------------------------------------------------------------------
-
-_FINAL_KEY = "cg_operation_msg_html/{op}/v1/m2/v1.html"
-_DRAFT_KEY = "cg_operation_msg_html/{op}/v2/m3/v2.html"
 
 
 def _call_html(harness, mint_token, *, sub=SHARED_SUB, op=OP_A1, msg="m2", fetch=False):
@@ -380,90 +378,94 @@ def _call_html(harness, mint_token, *, sub=SHARED_SUB, op=OP_A1, msg="m2", fetch
 
 
 def test_html_returns_presigned_url_without_body(app_harness: AppHarness, mint_token):
-    response = _call_html(app_harness, mint_token, sub=SHARED_SUB, msg="m2", fetch=False)
+    response = _call_html(app_harness, mint_token, sub=SHARED_SUB, msg="m2")
     payload = tool_payload(response)
     assert payload["url"].startswith("https://fake-s3/test-bucket-a/")
-    assert payload["html"] is None
+    assert "html" not in payload
+    assert "prc_proof_html" not in payload
     assert payload["s3_key"].startswith("cg_operation_msg_html/")
     assert payload["intent"] == "final"
-    # No download performed when fetch is False.
+    assert payload["prc_proof_url"] is None
     assert app_harness.s3.download_calls == []
 
 
-def test_html_fetch_downloads_body_inline(app_harness: AppHarness, mint_token):
+def test_html_fetch_is_ignored_and_does_not_inline(app_harness: AppHarness, mint_token):
     response = _call_html(app_harness, mint_token, sub=SHARED_SUB, msg="m2", fetch=True)
     payload = tool_payload(response)
-    assert payload["html"] == "<html>final v1 body</html>"
+    assert "html" not in payload
     assert payload["url"].startswith("https://fake-s3/")
-    assert len(app_harness.s3.download_calls) == 1
+    assert app_harness.s3.download_calls == []
 
 
-def test_html_staff_can_fetch_draft(app_harness: AppHarness, mint_token):
-    # STAFF_SUB is SOLSTICE_STAFF on BRAND_A1 — draft m3 is reachable.
-    response = _call_html(app_harness, mint_token, sub=STAFF_SUB, msg="m3", fetch=True)
+def test_html_staff_can_presign_draft(app_harness: AppHarness, mint_token):
+    response = _call_html(app_harness, mint_token, sub=STAFF_SUB, msg="m3")
     payload = tool_payload(response)
     assert payload["intent"] == "draft"
-    assert payload["html"] == "<html>draft v2 body</html>"
+    assert payload["url"].startswith("https://fake-s3/")
+    assert "html" not in payload
 
 
 def test_html_non_staff_denied_draft_url(app_harness: AppHarness, mint_token):
-    # SHARED (ADMIN on a1, non-staff) cannot get even a presigned URL for a draft.
-    response = _call_html(app_harness, mint_token, sub=SHARED_SUB, msg="m3", fetch=False)
+    response = _call_html(app_harness, mint_token, sub=SHARED_SUB, msg="m3")
     assert "not_authorized" in _tool_error_text(response)
     assert app_harness.s3.presign_calls == []
 
 
-def test_html_non_staff_denied_draft_body(app_harness: AppHarness, mint_token):
-    response = _call_html(app_harness, mint_token, sub=SHARED_SUB, msg="m3", fetch=True)
-    assert "not_authorized" in _tool_error_text(response)
-    assert app_harness.s3.download_calls == []
-
-
-def test_html_too_large_returns_flag(app_harness: AppHarness, mint_token):
-    app_harness.s3.mark_too_large("test-bucket-a", _DRAFT_KEY.format(op=OP_A1))
-    response = _call_html(app_harness, mint_token, sub=STAFF_SUB, msg="m3", fetch=True)
-    payload = tool_payload(response)
-    assert payload["html"] is None
-    assert payload.get("too_large") is True
-
-
-def test_html_missing_object(app_harness: AppHarness, mint_token):
-    app_harness.s3.mark_missing_on_download("test-bucket-a", _FINAL_KEY.format(op=OP_A1))
-    response = _call_html(app_harness, mint_token, sub=SHARED_SUB, msg="m2", fetch=True)
-    assert "not_found" in _tool_error_text(response)
-
-
 def test_html_denied_for_brand_user_is_not_on(app_harness: AppHarness, mint_token):
-    # SHARED is not on BRAND_A3 (OP_A3's brand). brand_id resolved from the row.
-    response = _call_html(app_harness, mint_token, sub=SHARED_SUB, op=OP_A3, msg="m2", fetch=False)
+    response = _call_html(app_harness, mint_token, sub=SHARED_SUB, op=OP_A3, msg="m2")
     assert "not_authorized" in _tool_error_text(response)
 
 
 def test_html_unknown_message(app_harness: AppHarness, mint_token):
-    response = _call_html(app_harness, mint_token, sub=SHARED_SUB, msg="no-such-msg", fetch=False)
+    response = _call_html(app_harness, mint_token, sub=SHARED_SUB, msg="no-such-msg")
     assert "not_found" in _tool_error_text(response)
 
 
 def test_html_non_html_message_rejected(app_harness: AppHarness, mint_token):
-    # m1 is a text message, not html.
-    response = _call_html(app_harness, mint_token, sub=SHARED_SUB, msg="m1", fetch=False)
+    response = _call_html(app_harness, mint_token, sub=SHARED_SUB, msg="m1")
     assert "not_found" in _tool_error_text(response)
 
 
-def test_html_unit_staff_fetch_draft(app_harness: AppHarness):
+def test_html_unit_staff_presign_draft(app_harness: AppHarness):
     result = get_operation_html(
-        STAFF_SUB, "tenant_a", OP_A1, "m3", fetch=True,
+        STAFF_SUB, "tenant_a", OP_A1, "m3",
         registry=app_harness.registry, session_factory=app_harness.session_factory,
         s3=app_harness.s3,
     )
     assert result["intent"] == "draft"
-    assert result["html"] == "<html>draft v2 body</html>"
+    assert result["url"].startswith("https://fake-s3/")
+    assert "html" not in result
 
 
 def test_html_unit_non_staff_denied_draft(app_harness: AppHarness):
     with pytest.raises(Exception, match="not_authorized"):
         get_operation_html(
-            SHARED_SUB, "tenant_a", OP_A1, "m3", fetch=False,
+            SHARED_SUB, "tenant_a", OP_A1, "m3",
             registry=app_harness.registry, session_factory=app_harness.session_factory,
             s3=app_harness.s3,
         )
+
+
+_PROOF_ROW_ID = "00000000-0000-0000-0000-000000000502"
+_PROOF_KEY = f"cg_operation_prc_template/{OP_A1}/proof.html"
+
+
+def _attach_bake(harness: AppHarness, html: bytes = b"<html>baked proof</html>") -> str:
+    with harness.session_factory("tenant_a") as session:
+        msg = session.get(CgOperationMessage, _PROOF_ROW_ID)
+        assert msg is not None
+        msg.prc_template_s3_key = _PROOF_KEY
+        session.commit()
+    harness.s3.put("test-bucket-a", _PROOF_KEY, html)
+    return _PROOF_KEY
+
+
+def test_html_presigns_prc_proof_without_download(app_harness: AppHarness, mint_token):
+    key = _attach_bake(app_harness)
+    response = _call_html(app_harness, mint_token, sub=SHARED_SUB, msg="m2")
+    payload = tool_payload(response)
+    assert payload["prc_proof_s3_key"] == key
+    assert payload["prc_proof_url"].endswith(f"{key}?expires=600")
+    assert "prc_proof_html" not in payload
+    assert "html" not in payload
+    assert app_harness.s3.download_calls == []

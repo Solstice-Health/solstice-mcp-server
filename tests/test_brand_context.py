@@ -121,3 +121,50 @@ def test_member_role_can_read_brand_context(app_harness: AppHarness, mint_token)
         )
     )
     assert payload["count"] == 1
+
+
+def test_list_public_fonts_matches_label_after_hash(app_harness: AppHarness, mint_token):
+    app_harness.s3.put(
+        "solstice-public-forever",
+        "permanent_assets/513f7223784344d099366f01e688ffd2_Filson-Soft-Medium.ttf",
+        b"font",
+    )
+    app_harness.s3.put(
+        "solstice-public-forever",
+        "permanent_assets/fonts/Inter-Regular.woff2",
+        b"font",
+    )
+    app_harness.s3.put("solstice-public-forever", "permanent_assets/logo.png", b"img")
+    token = mint_token(sub=SHARED_SUB)
+
+    all_fonts = tool_payload(
+        _call(app_harness, token, "solstice_list_public_fonts", {"tenant_slug": TENANT})
+    )
+    labels = {row["label"] for row in all_fonts["fonts"]}
+    assert labels == {"Filson Soft Medium", "Inter Regular"}
+    assert all_fonts["count"] == 2
+    assert all_fonts["truncated"] is False
+
+    filson = tool_payload(
+        _call(
+            app_harness,
+            token,
+            "solstice_list_public_fonts",
+            {"tenant_slug": TENANT, "query": "filson medium"},
+        )
+    )
+    assert filson["count"] == 1
+    assert filson["fonts"][0]["url"].endswith("Filson-Soft-Medium.ttf")
+    assert "513f" not in filson["fonts"][0]["label"]
+
+
+def test_list_public_fonts_denies_non_member(app_harness: AppHarness, mint_token):
+    err = _tool_error_text(
+        _call(
+            app_harness,
+            mint_token(sub=OTHER_SUB),
+            "solstice_list_public_fonts",
+            {"tenant_slug": "tenant_b"},
+        )
+    )
+    assert "not_authorized" in err

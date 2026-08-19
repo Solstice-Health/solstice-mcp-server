@@ -268,6 +268,12 @@ class FakeS3:
             return None
         return len(body)
 
+    def list_keys(self, bucket: str, prefix: str, *, max_keys: int = 2000) -> list[str]:
+        keys = sorted(
+            key for stored_bucket, key in self.objects if stored_bucket == bucket and key.startswith(prefix)
+        )
+        return keys[:max_keys]
+
     def download(self, bucket: str, key: str, max_bytes: int) -> bytes:
         self.download_calls.append((bucket, key, max_bytes))
         if (bucket, key) in self.too_large_keys:

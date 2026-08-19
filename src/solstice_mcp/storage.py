@@ -52,9 +52,12 @@ class S3Reader(Protocol):
     def put(self, bucket: str, key: str, body: bytes, content_type: str) -> None:
         """Write object bytes. Used for server-side PRC proof bakes."""
 
+    def list_keys(self, bucket: str, prefix: str, *, max_keys: int = 2000) -> list[str]:
+        """Return object keys under ``prefix``, capped at ``max_keys``."""
+
 
 class TenantS3:
-    """boto3-backed ``S3Reader``. Presigns GET/PUT URLs, downloads, and heads objects.
+    """boto3-backed ``S3Reader``. Presigns GET/PUT URLs, lists prefixes, downloads, and heads objects.
 
     A single client is shared across tenants; the bucket is selected per call
     from the tenant config (``TenantConfig.s3_bucket``). Mirrors the
@@ -111,6 +114,36 @@ class TenantS3:
                 return None
             raise S3Error(f"head_object failed for {key!r}: {exc}") from exc
         return int(response.get("ContentLength") or 0)
+
+    def list_keys(self, bucket: str, prefix: str, *, max_keys: int = 2000) -> list[str]:
+        from botocore.exceptions import ClientError
+
+        keys: list[str] = []
+        token: str | None = None
+        while len(keys) < max_keys:
+            kwargs: dict[str, object] = {
+                "Bucket": bucket,
+                "Prefix": prefix,
+                "MaxKeys": min(1000, max_keys - len(keys)),
+            }
+            if token:
+                kwargs["ContinuationToken"] = token
+            try:
+                response = self._client.list_objects_v2(**kwargs)
+            except ClientError as exc:
+                raise S3Error(f"list_objects_v2 failed for {prefix!r}: {exc}") from exc
+            for obj in response.get("Contents") or []:
+                key = obj.get("Key")
+                if key:
+                    keys.append(key)
+                    if len(keys) >= max_keys:
+                        return keys
+            if not response.get("IsTruncated"):
+                break
+            token = response.get("NextContinuationToken")
+            if not token:
+                break
+        return keys
 
     def download(self, bucket: str, key: str, max_bytes: int) -> bytes:
         from botocore.exceptions import ClientError

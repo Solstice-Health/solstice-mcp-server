@@ -24,7 +24,7 @@ Turn a Figma frame into a Solstice content asset. Conversion happens in the agen
 ## Flow (summary)
 
 1. **Pull** the design via the Figma MCP (`solstice_list_sibling_mcps` → connect to Figma). Fall back to a user-exported frame image if Figma MCP is unavailable.
-2. **Context** — resolve workspace/brand, then call `solstice_brand_rules`, `solstice_brand_design_assets`, `solstice_brand_claims`. Fetch one existing final asset of the same content type via `solstice_operation_html(fetch=true)` as the format exemplar.
+2. **Context** — resolve workspace/brand, then call `solstice_brand_rules`, `solstice_brand_design_assets`, `solstice_brand_claims`. Fetch one existing final asset of the same content type via `solstice_operation_html` (GET `url`) as the format exemplar.
 3. **Convert** — produce self-contained HTML matching the exemplar and brand rules; inline images as data URIs.
 4. **Preview** — show the user a local draft; iterate on edits.
 5. **Land** — on approval: confirm project/folder/name → `solstice_create_operation` → prepare → PUT → commit → return the asset deep link.

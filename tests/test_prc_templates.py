@@ -688,6 +688,52 @@ def test_create_prc_template_bakes_a_draft_operation_version(
         assert row.intent == "draft"
 
 
+def test_bake_copies_newest_created_at_html_not_highest_version_number(
+    app_harness: AppHarness,
+    mint_token,
+):
+    later_key = f"cg_operation_msg_html/{OP_A1}/unnumbered.html"
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "email"
+        session.add(
+            CgOperationMessage(
+                id="00000000-0000-0000-0000-000000000599",
+                operation_id=OP_A1,
+                message_id="m-later",
+                author_id=None,
+                type="html",
+                content=later_key,
+                version_number=None,
+                intent="draft",
+                position=99,
+                created_at=datetime(2026, 8, 19, 12, 0, 0, tzinfo=UTC),
+                deleted_at=None,
+            )
+        )
+        session.commit()
+    app_harness.s3.put("test-bucket-a", later_key, b"<html>later unnumbered</html>")
+
+    baked = tool_payload(
+        _create_call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            template_key="",
+            content_type="email",
+            name="",
+            html_template="<!doctype html><html>baked-proof</html>",
+            confirmed=True,
+            publish_target="operation",
+            operation_id=OP_A1,
+        )
+    )
+    creative = app_harness.s3.objects[("test-bucket-a", baked["s3_key"])]
+    assert creative == b"<html>later unnumbered</html>"
+
+
 def test_prc_template_offers_operation_bake_before_first_bake(
     app_harness: AppHarness,
     mint_token,

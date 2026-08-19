@@ -252,6 +252,7 @@ there is no Python copy of these rules.
 
 #### SHOULD
 - `common.self_contained`: Keep CSS and portable assets inline and use only platform-listed or inlined fonts.
+- `common.hosted_fonts`: Resolve named families in this order: url-only `@font-face` already in the bake; `design_bible` `font_rules` / `social_font_rules` from `solstice_brand_rules`; `solstice_list_public_fonts(query=family)`; Fontsource only for a real slug of that family. Do not stand in a different family. Stop if none hit.
 - `common.compose_check`: Validate both interactive and export composition through the real frontend composer before publishing.
 - `common.minimal_shell`: Author only layers L0-L5; let the platform supply values, creative, behavior, sizing, and annotations.
 - `common.annotation_theme`: If theming runtime annotations, use only the allowlisted `--sol-prc-annotation-color`, `--sol-prc-annotation-background`, `--sol-prc-annotation-text-color`, `--sol-prc-annotation-font`, `--sol-prc-annotation-padding`, `--sol-prc-annotation-radius`, `--sol-prc-annotation-border-width`, and `--sol-prc-annotation-line-width` variables; theming is optional.
