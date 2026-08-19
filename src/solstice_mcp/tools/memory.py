@@ -159,6 +159,19 @@ class _ObservationRequest(BaseModel):
         return self
 
 
+def _require_statement(statement: str) -> str:
+    """Shared secret / bound checks for observe + remember + replace."""
+    if not isinstance(statement, str) or not statement.strip():
+        raise ToolError("invalid_argument: statement must not be empty")
+    if len(statement) > 1000:
+        raise ToolError("invalid_argument: statement must be at most 1000 characters")
+    if len(statement.splitlines()) > 12:
+        raise ToolError("invalid_argument: statement must be at most 12 lines")
+    if any(pattern.search(statement) for pattern in _SECRET_PATTERNS):
+        raise ToolError("invalid_argument: statement must not contain credentials or secret keys")
+    return statement
+
+
 def _observation_request(**values: Any) -> _ObservationRequest:
     try:
         return _ObservationRequest.model_validate(values)
@@ -462,6 +475,7 @@ def register_memory_tools(
         """
         scope = _require_scope(scope)
         _require_fact_type(fact_type)
+        statement = _require_statement(statement)
         source_refs = _require_ref_list(source_refs, required=_SOURCE_REF_REQUIRED, label="source_refs")
         entity_refs = _require_ref_list(entity_refs, required=_ENTITY_REF_REQUIRED, label="entity_refs")
         subject = require_subject()
@@ -517,6 +531,7 @@ def register_memory_tools(
         """
         scope = _require_scope(scope)
         _require_fact_type(fact_type)
+        statement = _require_statement(statement)
         source_refs = _require_ref_list(source_refs, required=_SOURCE_REF_REQUIRED, label="source_refs")
         entity_refs = _require_ref_list(entity_refs, required=_ENTITY_REF_REQUIRED, label="entity_refs")
         subject = require_subject()

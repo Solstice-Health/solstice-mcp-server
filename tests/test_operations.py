@@ -54,6 +54,9 @@ def test_list_projects_for_brand_member(app_harness: AppHarness, mint_token):
     names = {p["name"] for p in payload["projects"]}
     assert names == {"Project P1", "Project P2"}
     assert payload["count"] == 2
+    assert payload["has_more"] is False
+    assert payload["limit"] == 100
+    assert payload["offset"] == 0
 
 
 def test_list_projects_denied_for_non_member_brand(app_harness: AppHarness, mint_token):
@@ -302,11 +305,13 @@ def test_list_operation_messages_unit_denies_non_member(app_harness: AppHarness)
 
 
 def test_list_projects_for_brand_unit(app_harness: AppHarness):
-    projects = list_projects_for_brand(
+    page = list_projects_for_brand(
         SHARED_SUB, "tenant_a", BRAND_A1,
         registry=app_harness.registry, session_factory=app_harness.session_factory,
     )
-    assert {p["name"] for p in projects} == {"Project P1", "Project P2"}
+    assert {p["name"] for p in page["projects"]} == {"Project P1", "Project P2"}
+    assert page["has_more"] is False
+    assert page["limit"] == 100
 
 
 def test_get_project_info_unit_returns_dir_map(app_harness: AppHarness):
@@ -329,11 +334,32 @@ def test_get_operation_info_unit(app_harness: AppHarness):
 
 
 def test_list_operations_for_brand_unit(app_harness: AppHarness):
-    ops = list_operations_for_brand(
+    page = list_operations_for_brand(
         SHARED_SUB, "tenant_a", BRAND_A1,
         registry=app_harness.registry, session_factory=app_harness.session_factory,
     )
-    assert {op["id"] for op in ops} == {OP_A1, OP_A2}
+    assert {op["id"] for op in page["operations"]} == {OP_A1, OP_A2}
+    assert page["has_more"] is False
+
+
+def test_list_operations_respects_limit(app_harness: AppHarness):
+    page = list_operations_for_brand(
+        SHARED_SUB, "tenant_a", BRAND_A1,
+        limit=1, offset=0,
+        registry=app_harness.registry, session_factory=app_harness.session_factory,
+    )
+    assert page["count"] == 1
+    assert page["has_more"] is True
+    page2 = list_operations_for_brand(
+        SHARED_SUB, "tenant_a", BRAND_A1,
+        limit=1, offset=1,
+        registry=app_harness.registry, session_factory=app_harness.session_factory,
+    )
+    assert page2["count"] == 1
+    assert page2["has_more"] is False
+    assert {page["operations"][0]["id"], page2["operations"][0]["id"]} == {OP_A1, OP_A2}
+    # Stable pages: walking offset must not reshuffle the same two ids.
+    assert page["operations"][0]["id"] != page2["operations"][0]["id"]
 
 
 # ---------------------------------------------------------------------------

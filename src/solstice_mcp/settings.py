@@ -51,12 +51,12 @@ class Settings:
     @classmethod
     def from_env(cls) -> Settings:
         values = {name: os.getenv(name, field.default) for name, field in cls.__dataclass_fields__.items()}
-        values["S3_PRESIGN_EXPIRY_SECONDS"] = int(values["S3_PRESIGN_EXPIRY_SECONDS"])
-        values["S3_MAX_INLINE_BYTES"] = int(values["S3_MAX_INLINE_BYTES"])
-        values["SOLSTICE_BACKEND_TIMEOUT_SECONDS"] = int(values["SOLSTICE_BACKEND_TIMEOUT_SECONDS"])
+        values["S3_PRESIGN_EXPIRY_SECONDS"] = int(str(values["S3_PRESIGN_EXPIRY_SECONDS"]))
+        values["S3_MAX_INLINE_BYTES"] = int(str(values["S3_MAX_INLINE_BYTES"]))
+        values["SOLSTICE_BACKEND_TIMEOUT_SECONDS"] = int(str(values["SOLSTICE_BACKEND_TIMEOUT_SECONDS"]))
         token_timeout_key = "SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS"
-        values[token_timeout_key] = int(values[token_timeout_key])
-        return cls(**values)
+        values[token_timeout_key] = int(str(values[token_timeout_key]))
+        return cls(**values)  # type: ignore[arg-type]
 
     @property
     def user_admin_auth0_configured(self) -> bool:

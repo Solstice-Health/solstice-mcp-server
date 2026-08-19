@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlsplit
 
+import anyio
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -21,7 +25,7 @@ from solstice_mcp.memory_client import Auth0ClientCredentials, BackendMemoryClie
 from solstice_mcp.settings import Settings, settings
 from solstice_mcp.sibling_mcps import SiblingMCPRegistry
 from solstice_mcp.storage import S3Reader, TenantS3
-from solstice_mcp.tenants import TenantDatabaseFactory, TenantMembershipCache, TenantRegistry
+from solstice_mcp.tenants import TenantDatabaseFactory, TenantMembershipCache, TenantRegistry, tenant_session
 from solstice_mcp.tools.brand_context import register_brand_context_tools
 from solstice_mcp.tools.content import register_content_tools
 from solstice_mcp.tools.discovery import register_discovery_tools
@@ -33,6 +37,8 @@ from solstice_mcp.user_admin import (
     CentralSessionFactory,
     central_session_factory_from_url,
 )
+
+logger = logging.getLogger(__name__)
 
 MCP_REQUIRED_SCOPE = "mcp:connect"
 MCP_SERVER_NAME = "solstice-mcp"
@@ -109,8 +115,9 @@ MCP_INSTRUCTIONS = (
     "User administration (staff-only): solstice_reset_password(tenant_slug, "
     "email, mode) resets a user's password — mode='email' sends the Auth0 "
     "reset email; mode='temp_password' overwrites the password and returns "
-    "the new one, which you must deliver to the user verbatim (use it only "
-    "when the reset email did not arrive). solstice_change_brand_role sets "
+    "the new one with force_password_change set — deliver it out-of-band "
+    "(not into long-lived chat docs), only when the reset email did not "
+    "arrive. solstice_change_brand_role sets "
     "an existing member's role on one brand; granting SOLSTICE_STAFF is an "
     "escalation — confirm with the user first. solstice_add_user onboards a "
     "person into a tenant (Auth0 + central auth + tenant DB, optional brand "
@@ -181,11 +188,19 @@ def build_mcp_app(
     if not tenant_registry.slugs:
         tenant_registry.load(runtime_settings.TENANT_CONFIG_PATH)
     open_session = session_factory
+    db_factory: TenantDatabaseFactory | None = None
     if open_session is None:
         templates = runtime_settings.database_url_templates
         if not templates:
             raise ValueError("At least one database URL template is required (DATABASE_URL_TEMPLATE_DEV/PROD)")
-        open_session = TenantDatabaseFactory(tenant_registry, templates)
+        db_factory = TenantDatabaseFactory(tenant_registry, templates)
+        open_session = db_factory
+        # Pre-warm engines so the first authenticated request after deploy
+        # does not pay cold-create cost across every tenant on this worker.
+        db_factory.warm()
+    elif isinstance(open_session, TenantDatabaseFactory):
+        db_factory = open_session
+        db_factory.warm()
 
     membership_cache = cache or TenantMembershipCache()
     s3_reader = s3 or TenantS3(region_name=runtime_settings.AWS_REGION)
@@ -322,25 +337,111 @@ def build_mcp_app(
         )
 
     def _health_payload() -> dict[str, Any]:
-        # Public tool-name inventory for deploy CI (no secrets). Names only —
-        # same set tools/list would return after auth.
-        tool_names = sorted(tool.name for tool in mcp._tool_manager.list_tools())
+        # Public liveness only — no tool inventory (that discloses whether
+        # env-gated user-admin / memory tools are live). Authenticated
+        # solstice_server_info and tools/list remain the inventory sources;
+        # deploy smoke asserts registration via tools/list when a CI token
+        # is provisioned.
         return {
             "status": "ok",
             "service": MCP_SERVER_NAME,
             "version": MCP_SERVER_VERSION,
-            "tools": tool_names,
-            "tool_count": len(tool_names),
         }
 
     async def health(_request: Request) -> Response:
         return JSONResponse(_health_payload(), headers={"Cache-Control": "no-store"})
 
+    READY_CACHE_TTL_SECONDS = 5.0
+    ready_cache: dict[str, Any] = {"until": 0.0, "status_code": 200, "body": {}}
+    ready_async_lock = anyio.Lock()
+
+    async def ready(_request: Request) -> Response:
+        # Readiness only — ALB target checks stay on shallow /health. This
+        # probe confirms the tenant registry is loaded and at least one
+        # configured tenant DB accepts a cheap ping.
+        #
+        # Hardening vs review findings:
+        # - Sync SQLAlchemy work runs in a worker thread so the ASGI event loop
+        #   is not blocked while the probe waits on the DB.
+        # - Response never names the probed tenant (no information leak).
+        # - Async single-flight (anyio.Lock) so concurrent anonymous pollers
+        #   await in-process without each occupying an AnyIO worker thread;
+        #   only one DB ping runs, then losers reuse the cached result.
+        now = time.monotonic()
+        if now < ready_cache["until"]:
+            return JSONResponse(
+                ready_cache["body"],
+                status_code=int(ready_cache["status_code"]),
+                headers={"Cache-Control": "no-store"},
+            )
+
+        async with ready_async_lock:
+            now_locked = time.monotonic()
+            if now_locked < ready_cache["until"]:
+                return JSONResponse(
+                    ready_cache["body"],
+                    status_code=int(ready_cache["status_code"]),
+                    headers={"Cache-Control": "no-store"},
+                )
+
+            if not tenant_registry.slugs:
+                body = {
+                    "status": "not_ready",
+                    "service": MCP_SERVER_NAME,
+                    "reason": "no_tenants",
+                }
+                ready_cache.update(
+                    until=now_locked + READY_CACHE_TTL_SECONDS,
+                    status_code=503,
+                    body=body,
+                )
+                return JSONResponse(body, status_code=503, headers={"Cache-Control": "no-store"})
+
+            probe_slug = tenant_registry.slugs[0]
+
+            def _probe() -> None:
+                if db_factory is not None:
+                    db_factory.ping(probe_slug)
+                else:
+                    with tenant_session(probe_slug, open_session) as session:
+                        session.connection().execute(text("SELECT 1"))
+
+            try:
+                await anyio.to_thread.run_sync(_probe)
+            except Exception as exc:
+                # Log the slug for operators; never return it to anonymous callers.
+                logger.warning("Readiness probe failed for tenant %r: %s", probe_slug, exc)
+                body = {
+                    "status": "not_ready",
+                    "service": MCP_SERVER_NAME,
+                    "reason": "db_unreachable",
+                }
+                ready_cache.update(
+                    until=time.monotonic() + READY_CACHE_TTL_SECONDS,
+                    status_code=503,
+                    body=body,
+                )
+                return JSONResponse(body, status_code=503, headers={"Cache-Control": "no-store"})
+
+            body = {
+                "status": "ready",
+                "service": MCP_SERVER_NAME,
+                "version": MCP_SERVER_VERSION,
+            }
+            ready_cache.update(
+                until=time.monotonic() + READY_CACHE_TTL_SECONDS,
+                status_code=200,
+                body=body,
+            )
+            return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
     # Target-group checks hit the task on /health. Public ALB only forwards
     # /mcp* to this service (api.solsticehealth.co/health is the Backend), so
-    # deploy smoke must use /mcp/health.
+    # deploy smoke must use /mcp/health. /mcp/ready is for deploy/k8s-style
+    # readiness — do not wire it as the ALB target-group check.
     mcp.custom_route("/health", methods=["GET"])(health)
     mcp.custom_route("/mcp/health", methods=["GET"])(health)
+    mcp.custom_route("/mcp/ready", methods=["GET"])(ready)
 
     return mcp
 

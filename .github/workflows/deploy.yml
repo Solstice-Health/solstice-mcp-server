@@ -33,6 +33,10 @@ jobs:
       # or clients keep seeing the previous deploy's tool list.
       GATEWAY_ID: solstice-mcp-l6apghhxpf
       GATEWAY_TARGET_ID: JB1A75WG68
+      # Auth0 token endpoint for the login-solstice tenant (the authorization
+      # server advertised by /.well-known/oauth-protected-resource/mcp). Used to
+      # mint a short-lived CI token for the tools/list registration asserts.
+      MCP_CI_AUTH0_TOKEN_URL: https://login-solstice.us.auth0.com/oauth/token
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -55,6 +59,40 @@ jobs:
       - name: Login to ECR
         id: ecr
         uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64
+
+      - name: Mint MCP CI token
+        id: mcp_token
+        env:
+          MCP_CI_AUTH0_CLIENT_ID: ${{ secrets.MCP_CI_AUTH0_CLIENT_ID }}
+          MCP_CI_AUTH0_CLIENT_SECRET: ${{ secrets.MCP_CI_AUTH0_CLIENT_SECRET }}
+          MCP_CI_AUTH0_TOKEN_URL: ${{ env.MCP_CI_AUTH0_TOKEN_URL }}
+          MCP_AUDIENCE: ${{ env.RESOURCE_URL }}
+        run: |
+          # The ECS smoke tools/list assert needs a bearer token with scope
+          # mcp:connect for audience $MCP_AUDIENCE. Mint a short-lived M2M token
+          # via client-credentials instead of storing a static (expiring) token.
+          # Minted BEFORE build/register/deploy on purpose: a mint failure
+          # (missing secrets, Auth0 4xx, empty access_token) must abort the run
+          # before any new task definition goes live, so there is nothing
+          # unverified left running to roll back (fail-closed).
+          if [ -z "$MCP_CI_AUTH0_CLIENT_ID" ] || [ -z "$MCP_CI_AUTH0_CLIENT_SECRET" ]; then
+            echo "MCP_CI_AUTH0_CLIENT_ID/SECRET not set; cannot mint token for tools/list assert" >&2
+            exit 1
+          fi
+          TOKEN=$(curl --fail --silent --show-error -X POST "$MCP_CI_AUTH0_TOKEN_URL" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -nc \
+              --arg id "$MCP_CI_AUTH0_CLIENT_ID" \
+              --arg secret "$MCP_CI_AUTH0_CLIENT_SECRET" \
+              --arg aud "$MCP_AUDIENCE" \
+              '{client_id:$id, client_secret:$secret, audience:$aud, grant_type:"client_credentials", scope:"mcp:connect"}')" \
+            | jq -r '.access_token // empty')
+          if [ -z "$TOKEN" ]; then
+            echo "Auth0 client-credentials grant returned no access_token" >&2
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Build and push image
         id: image
@@ -218,30 +256,49 @@ jobs:
         id: smoke
         env:
           RESOURCE_URL: ${{ env.RESOURCE_URL }}
+          MCP_CI_ACCESS_TOKEN: ${{ steps.mcp_token.outputs.token }}
         run: |
           ORIGIN="${RESOURCE_URL%/mcp}"
           # Public ALB routes only /mcp* to this service — ORIGIN/health is the
-          # Backend. Tool inventory lives on /mcp/health (TG still uses /health).
+          # Backend. /mcp/health is lean liveness (no tool inventory).
           HEALTH=$(curl --fail --silent --show-error "$ORIGIN/mcp/health")
           echo "$HEALTH" | jq -e '.status == "ok" and .service == "solstice-mcp"'
-          echo "$HEALTH" | jq -e '
-            (.tools | index("solstice_whoami"))
-            and (.tools | index("solstice_reset_password"))
-            and (.tools | index("solstice_change_brand_role"))
-            and (.tools | index("solstice_add_user"))
-            and (.tools | index("solstice_memory_recall"))
-            and (.tools | index("solstice_memory_observe"))
-            and (.tools | index("solstice_memory_remember"))
-            and (.tools | index("solstice_memory_replace"))
-            and (.tools | index("solstice_memory_forget"))
-          '
-          echo "$HEALTH" | jq -r '"registered_tools=\(.tool_count): \(.tools | join(", "))"'
+          echo "$HEALTH" | jq -e '(.tools | not) and (.tool_count | not)'
+          # Readiness is informational in smoke (ALB stays on /health). Fail soft
+          # with a warning so a cold tenant probe does not roll back a healthy task.
+          READY_CODE=$(curl --silent --output /tmp/mcp-ready.json --write-out "%{http_code}" "$ORIGIN/mcp/ready" || true)
+          echo "mcp_ready_http=$READY_CODE body=$(cat /tmp/mcp-ready.json 2>/dev/null || true)"
           curl --fail --silent --show-error \
             "$ORIGIN/.well-known/oauth-protected-resource/mcp" \
             | jq -e --arg resource "$RESOURCE_URL" \
               '.resource == $resource and (.scopes_supported | index("mcp:connect"))'
           STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" "$RESOURCE_URL")
           test "$STATUS" = "401"
+          # Tool registration: authenticated tools/list (avoids leaking inventory
+          # on public health). Fail closed — the token is minted in the prior
+          # step, so an empty value here means the mint step regressed.
+          if [ -z "$MCP_CI_ACCESS_TOKEN" ]; then
+            echo "Minted MCP CI token missing; cannot assert tools/list registration" >&2
+            exit 1
+          fi
+          RESP=$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $MCP_CI_ACCESS_TOKEN" \
+            -H "Accept: application/json, text/event-stream" \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+            "$RESOURCE_URL")
+          echo "$RESP" | jq -e '
+            ([.result.tools[].name] | index("solstice_whoami"))
+            and ([.result.tools[].name] | index("solstice_reset_password"))
+            and ([.result.tools[].name] | index("solstice_change_brand_role"))
+            and ([.result.tools[].name] | index("solstice_add_user"))
+            and ([.result.tools[].name] | index("solstice_memory_recall"))
+            and ([.result.tools[].name] | index("solstice_memory_observe"))
+            and ([.result.tools[].name] | index("solstice_memory_remember"))
+            and ([.result.tools[].name] | index("solstice_memory_replace"))
+            and ([.result.tools[].name] | index("solstice_memory_forget"))
+          '
+          echo "$RESP" | jq -r '"registered_tools=\(.result.tools | length): \([.result.tools[].name] | join(", "))"'
 
       - name: Sync AgentCore gateway tool schema
         id: gateway_sync
@@ -269,33 +326,13 @@ jobs:
           echo "Timed out waiting for gateway target sync"
           exit 1
 
-      # Optional authenticated tools/list against the gateway when a CI bearer
-      # is provisioned (mcp:connect). Health already asserted ECS registration;
-      # this catches a stale gateway snapshot that sync claimed READY for.
-      - name: Assert gateway tools/list
-        env:
-          MCP_CI_ACCESS_TOKEN: ${{ secrets.MCP_CI_ACCESS_TOKEN }}
-          GATEWAY_URL: https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp
-        run: |
-          if [ -z "$MCP_CI_ACCESS_TOKEN" ]; then
-            echo "MCP_CI_ACCESS_TOKEN unset; skipping gateway tools/list (ECS /health already asserted registration)"
-            exit 0
-          fi
-          RESP=$(curl --fail --silent --show-error \
-            -H "Authorization: Bearer $MCP_CI_ACCESS_TOKEN" \
-            -H "Accept: application/json, text/event-stream" \
-            -H "Content-Type: application/json" \
-            -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-            "$GATEWAY_URL")
-          echo "$RESP" | jq -e '
-            [.result.tools[].name]
-            | map(sub("^solstice-mcp-private___"; ""))
-            | index("solstice_whoami")
-            and index("solstice_add_user")
-            and index("solstice_reset_password")
-            and index("solstice_change_brand_role")
-            and index("solstice_memory_recall")
-          '
+      # No token-based gateway tools/list assert here on purpose. The AgentCore
+      # gateway authorizer validates its OWN audience and performs OBO token
+      # exchange requiring a user-subject token; a CI client-credentials (M2M)
+      # token is rejected with 403 insufficient_scope. Gateway tool freshness is
+      # gated by the "Sync AgentCore gateway tool schema" step reaching READY —
+      # that re-pulls the schema from the ECS target, whose tool inventory the
+      # smoke step already asserted over an authenticated tools/list.
 
       # Only a smoke-test failure rolls back the service; a gateway sync failure
       # leaves the (healthy) deploy in place and just fails the workflow.

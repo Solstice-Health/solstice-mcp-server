@@ -29,11 +29,15 @@ import anyio.to_thread
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+from solstice_mcp.metrics import emit_tool_metrics
+from solstice_mcp.rate_limit import default_limiter
+
 P = ParamSpec("P")
 R = TypeVar("R")
 
 AUDIT_LOGGER_NAME = "solstice_mcp.audit"
 AUDIT_EVENT_NAME = "mcp_tool_audit"
+AUTH_DENY_EVENT_NAME = "mcp_auth_denied"
 # Tool-argument keys that are safe identity/resource selectors (never payloads).
 AUDIT_RESOURCE_FIELDS = {
     "tenant_slug",
@@ -132,6 +136,23 @@ def _build_audit_event(
     return event
 
 
+def emit_auth_denied(*, reason: str, error_type: str) -> None:
+    """Structured auth failure for Datadog (never includes the bearer token)."""
+    event = {
+        "service": os.getenv("DD_SERVICE", "solstice-mcp").strip() or "solstice-mcp",
+        "env": _audit_env(),
+        "event": AUTH_DENY_EVENT_NAME,
+        "event_id": str(uuid4()),
+        "request_id": str(uuid4()),
+        "timestamp": datetime.now(UTC).isoformat(),
+        "outcome": "denied",
+        "error_code": "invalid_token",
+        "error_type": error_type,
+        "reason": reason,
+    }
+    logger.info(json.dumps(event, separators=(",", ":"), sort_keys=True))
+
+
 def audited_tool(
     mcp: FastMCP,
     require_access_token: Callable[[], Any],
@@ -155,6 +176,11 @@ def audited_tool(
             )
 
             try:
+                default_limiter.check(
+                    subject=str(getattr(token, "subject", "") or ""),
+                    client_id=str(getattr(token, "client_id", "") or "unknown"),
+                    tool_name=function.__name__,
+                )
                 # Tool bodies do blocking I/O (SQLAlchemy, boto3). The MCP SDK
                 # calls sync tools inline on the event loop, so offload to a
                 # worker thread to keep one slow DB/S3 call from stalling every
@@ -163,20 +189,33 @@ def audited_tool(
             except Exception as exc:
                 # Re-raise after recording the outcome; tool error behavior is unchanged.
                 error_code = str(exc).partition(":")[0]
+                duration_ms = round((time.monotonic() - started_at) * 1000, 3)
+                outcome = (
+                    "denied"
+                    if error_code in {"not_authorized", "rate_limited"}
+                    else "error"
+                )
                 event.update(
-                    outcome="denied" if error_code == "not_authorized" else "error",
+                    outcome=outcome,
                     error_code=error_code,
                     error_type=type(exc).__name__,
-                    duration_ms=round((time.monotonic() - started_at) * 1000, 3),
+                    duration_ms=duration_ms,
                 )
                 logger.info(json.dumps(event, separators=(",", ":"), sort_keys=True))
+                emit_tool_metrics(
+                    tool=function.__name__, outcome=outcome, duration_ms=duration_ms
+                )
                 raise
 
+            duration_ms = round((time.monotonic() - started_at) * 1000, 3)
             event.update(
                 outcome="success",
-                duration_ms=round((time.monotonic() - started_at) * 1000, 3),
+                duration_ms=duration_ms,
             )
             logger.info(json.dumps(event, separators=(",", ":"), sort_keys=True))
+            emit_tool_metrics(
+                tool=function.__name__, outcome="success", duration_ms=duration_ms
+            )
             return result
 
         return mcp.tool(annotations=annotations)(audited)
