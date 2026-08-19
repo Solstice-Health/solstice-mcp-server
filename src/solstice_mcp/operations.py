@@ -504,7 +504,7 @@ def resolve_prc_template_for_brand(
                 tier = "default"
 
         if template is None:
-            if matched_operation is not None:
+            if matched_operation is not None and parsed_operation_id is not None:
                 bake = _latest_operation_bake(session, parsed_operation_id)
                 if bake:
                     return {
@@ -525,12 +525,9 @@ def resolve_prc_template_for_brand(
             fetch=fetch,
             max_inline_bytes=max_inline_bytes,
         )
-        if matched_operation is not None:
-            bake = _latest_operation_bake(session, parsed_operation_id)
-            payload["operation_bake"] = bake
-            payload["publish_targets"] = (
-                ["operation", "library", "both"] if bake else ["library"]
-            )
+        if matched_operation is not None and parsed_operation_id is not None:
+            payload["operation_bake"] = _latest_operation_bake(session, parsed_operation_id)
+            payload["publish_targets"] = ["operation", "library", "both"]
         return payload
 
 
@@ -590,6 +587,7 @@ def bake_prc_template_to_operation(
     tenant_slug: str,
     brand_id: str,
     operation_id: str,
+    content_type: str,
     html_template: str,
     registry: TenantRegistry,
     session_factory: SessionFactory,
@@ -626,6 +624,10 @@ def bake_prc_template_to_operation(
         )
         if locked is None or locked.brand_id != brand_id:
             raise ToolError("not_authorized: unknown operation")
+        if (locked.content_type or "").lower() != content_type:
+            raise ToolError(
+                "invalid_request: operation content_type does not match the proof template"
+            )
         head = _latest_html_creative(session, parsed_operation_id)
         if head is None:
             raise ToolError(
@@ -642,9 +644,10 @@ def bake_prc_template_to_operation(
         row_id = str(uuid4())
         creative_key = _version_s3_key("html", parsed_operation_id, next_v, message_id, locked.file_name)
         bake_key = f"{_PRC_TEMPLATE_S3_KEY_PREFIX}/{parsed_operation_id}/{row_id}.html"
-        if _looks_like_s3_key(head.content):
+        head_content = head.content or ""
+        if _looks_like_s3_key(head_content):
             try:
-                creative = s3.download(bucket, head.content, max_inline_bytes)
+                creative = s3.download(bucket, head_content, max_inline_bytes)
             except S3ObjectMissing:
                 raise ToolError("not_found: current html object missing in s3") from None
             except S3ObjectTooLarge:
@@ -652,7 +655,7 @@ def bake_prc_template_to_operation(
             except S3Error as exc:
                 raise ToolError(f"not_available: s3 read failed: {exc}") from exc
         else:
-            creative = (head.content or "").encode("utf-8")
+            creative = head_content.encode("utf-8")
             if not creative.strip():
                 raise ToolError("invalid_state: current html document is empty")
         try:
@@ -810,6 +813,25 @@ def create_prc_template_version(
             "operation or both"
         )
 
+    # ponytail: bake before library. A later library conflict still leaves the
+    # bake; one txn across S3 + two tables is the upgrade if retries double-publish.
+    operation_bake = None
+    if wants_operation:
+        if s3 is None:
+            raise ToolError("not_configured: s3 is required to bake a proof onto an operation")
+        operation_bake = bake_prc_template_to_operation(
+            identity=identity,
+            tenant_slug=tenant_slug,
+            brand_id=brand_id,
+            operation_id=operation_id or "",
+            content_type=normalized_content_type,
+            html_template=html_template,
+            registry=registry,
+            session_factory=session_factory,
+            s3=s3,
+            max_inline_bytes=max_inline_bytes,
+        )
+
     library: dict[str, Any] | None = None
     now = datetime.now(UTC)
     if wants_library:
@@ -866,22 +888,6 @@ def create_prc_template_version(
             "html_size_bytes": html_size_bytes,
             "brand_selection_updated": False,
         }
-
-    operation_bake = None
-    if wants_operation:
-        if s3 is None:
-            raise ToolError("not_configured: s3 is required to bake a proof onto an operation")
-        operation_bake = bake_prc_template_to_operation(
-            identity=identity,
-            tenant_slug=tenant_slug,
-            brand_id=brand_id,
-            operation_id=operation_id or "",
-            html_template=html_template,
-            registry=registry,
-            session_factory=session_factory,
-            s3=s3,
-            max_inline_bytes=max_inline_bytes,
-        )
 
     if library is not None:
         return {
