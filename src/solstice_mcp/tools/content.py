@@ -276,11 +276,16 @@ def register_content_tools(
 
         Reads ``prc_template_versions`` using the same precedence as Solstice:
         operation override, explicit/derived brand template, environment
-        default, then platform default. By default returns metadata and field
-        configuration without the potentially large HTML body. Set
-        ``fetch=True`` when the template HTML is needed as a structural
-        exemplar. A brand opt-out (``enabled=false`` with no pinned template)
-        returns ``not_found`` instead of falling through to a default.
+        default, then platform default. When ``operation_id`` is set, also
+        returns ``operation_bake`` (latest html row's ``prc_template_s3_key``)
+        and ``publish_targets`` so the caller can ask whether to bake onto
+        that operation, publish to the library, or both.
+
+        By default returns metadata and field configuration without the
+        potentially large HTML body. Set ``fetch=True`` when the template HTML
+        is needed as a structural exemplar. A brand opt-out (``enabled=false``
+        with no pinned template) returns ``not_found`` instead of falling
+        through to a default.
 
         Read-only; gated at MEMBER on the selected brand. ``operation_id`` is
         honored only when that operation belongs to the same brand and exact
@@ -321,27 +326,30 @@ def register_content_tools(
         config_schema: dict[str, Any] | None = None,
         default_field_values: dict[str, Any] | None = None,
         status: str = "published",
+        publish_target: str = "library",
+        operation_id: str | None = None,
     ) -> dict[str, Any]:
-        """Append one reusable PRC proof-template version.
+        """Publish a PRC proof template to the library, bake it onto an operation, or both.
 
         The HTML must follow Solstice PRC Template Contract v2. Call
-        ``solstice_prc_template_rules(profile)`` for the exact MUST, SHOULD, and
-        MUST-NOT rules generated from the versioned renderer contract before
-        authoring or publishing the template.
+        ``solstice_prc_template_rules(profile)`` before authoring.
 
-        After the user approves the exact HTML preview and chooses to publish
-        the PRC template, ask separately for its display name and template key.
-        Use the tenant, brand, and content type already established during
-        conversion, then pass ``confirmed=true``. Status defaults to
-        ``published``; do not ask the user to choose it.
+        If ``solstice_prc_template(..., operation_id=)`` returned
+        ``operation_bake`` or the user is editing a specific asset, ask one
+        question first: bake this proof onto the operation (new draft html
+        version + ``prc_template_s3_key``), publish to the library
+        (``prc_template_versions``), or both. Then pass
+        ``publish_target`` as ``operation``, ``library``, or ``both``.
 
-        This inserts a new ``prc_template_versions`` row and derives its id,
-        next version number, creator, and timestamps server-side. It never
-        updates or deletes an existing version and never changes brand or
-        operation template selections. Brand, environment, and platform
-        auto-resolving key prefixes are reserved to prevent a brand-scoped
-        caller from affecting another brand; select the new version in Template
-        Settings when needed. Requires SOLSTICE_STAFF on the selected brand.
+        Library / both: after the HTML preview, ask separately for display
+        name and template key, then ``confirmed=true``. This inserts a new
+        ``prc_template_versions`` row and never changes brand or operation
+        catalog selections. Reserved auto-resolving key prefixes are rejected.
+
+        Operation / both: pass ``operation_id``. The server copies the current
+        creative to the next version number and stores the proof HTML at
+        ``cg_operation_prc_template/{operation_id}/{row_id}.html``. Staff
+        intent is draft. Requires SOLSTICE_STAFF on the selected brand.
         """
         template = create_prc_template_version(
             require_subject(),
@@ -356,9 +364,12 @@ def register_content_tools(
             config_schema=config_schema,
             default_field_values=default_field_values,
             status=status,
+            publish_target=publish_target,
+            operation_id=operation_id,
             max_inline_bytes=max_inline_bytes,
             registry=registry,
             session_factory=session_factory,
+            s3=s3,
         )
         return {
             "status": "ok",
