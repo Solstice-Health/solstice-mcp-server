@@ -647,19 +647,20 @@ def bake_prc_template_to_operation(
         head_content = head.content or ""
         if _looks_like_s3_key(head_content):
             try:
-                creative = s3.download(bucket, head_content, max_inline_bytes)
+                s3.copy(bucket, head_content, creative_key)
             except S3ObjectMissing:
                 raise ToolError("not_found: current html object missing in s3") from None
-            except S3ObjectTooLarge:
-                raise ToolError("too_large: current html exceeds inline limit") from None
             except S3Error as exc:
-                raise ToolError(f"not_available: s3 read failed: {exc}") from exc
+                raise ToolError(f"not_available: s3 copy failed: {exc}") from exc
         else:
             creative = head_content.encode("utf-8")
             if not creative.strip():
                 raise ToolError("invalid_state: current html document is empty")
+            try:
+                s3.put(bucket, creative_key, creative, "text/html")
+            except S3Error as exc:
+                raise ToolError(f"not_available: s3 write failed: {exc}") from exc
         try:
-            s3.put(bucket, creative_key, creative, "text/html")
             s3.put(bucket, bake_key, html_template.encode("utf-8"), "text/html")
         except S3Error as exc:
             raise ToolError(f"not_available: s3 write failed: {exc}") from exc

@@ -52,6 +52,9 @@ class S3Reader(Protocol):
     def put(self, bucket: str, key: str, body: bytes, content_type: str) -> None:
         """Write object bytes. Used for server-side PRC proof bakes."""
 
+    def copy(self, bucket: str, src_key: str, dst_key: str) -> None:
+        """Server-side copy within the same bucket."""
+
 
 class TenantS3:
     """boto3-backed ``S3Reader``. Presigns GET/PUT URLs, downloads, and heads objects.
@@ -99,6 +102,21 @@ class TenantS3:
             )
         except Exception as exc:
             raise S3Error(f"put_object failed for {key!r}: {exc}") from exc
+
+    def copy(self, bucket: str, src_key: str, dst_key: str) -> None:
+        from botocore.exceptions import ClientError
+
+        try:
+            self._client.copy_object(
+                Bucket=bucket,
+                CopySource={"Bucket": bucket, "Key": src_key},
+                Key=dst_key,
+            )
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in {"NoSuchKey", "404"}:
+                raise S3ObjectMissing(src_key) from exc
+            raise S3Error(f"copy_object failed for {src_key!r} -> {dst_key!r}: {exc}") from exc
 
     def head(self, bucket: str, key: str) -> int | None:
         from botocore.exceptions import ClientError

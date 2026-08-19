@@ -268,6 +268,13 @@ class FakeS3:
             return None
         return len(body)
 
+    def copy(self, bucket: str, src_key: str, dst_key: str) -> None:
+        from solstice_mcp.storage import S3ObjectMissing
+
+        if (bucket, src_key) in self.missing_on_download or (bucket, src_key) not in self.objects:
+            raise S3ObjectMissing(src_key)
+        self.objects[(bucket, dst_key)] = self.objects[(bucket, src_key)]
+
     def download(self, bucket: str, key: str, max_bytes: int) -> bytes:
         self.download_calls.append((bucket, key, max_bytes))
         if (bucket, key) in self.too_large_keys:
