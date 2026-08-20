@@ -669,9 +669,10 @@ def register_content_tools(
 
         Requires SOLSTICE_STAFF on the operation's brand. The target message
         must be an html or pdf document version (find message_ids via
-        solstice_operation_messages). A real draft→final flip also closes
-        pending change-request batches so non-admin viewers can open the
-        asset. Approving an already-final version is an idempotent no-op.
+        solstice_operation_messages). A real draft→final flip also closes the
+        two things that keep brand members on "Your asset is being prepared."
+        — pending change-request batches and pending admin requests on the
+        operation. Approving an already-final version is an idempotent no-op.
         Text/blueprint messages are rejected.
 
         The response includes ``asset_url`` — the operation's Solstice page.

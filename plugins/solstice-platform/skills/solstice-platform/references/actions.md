@@ -110,7 +110,7 @@ Only for users the server recognizes as Solstice staff on the asset's brand; the
 ## Staff: approve a draft version
 
 1. Find the draft document message via `solstice_operation_messages` (drafts are visible to staff only).
-2. Confirm the specific version with the user, then call `solstice_approve_operation_version` with the message's `message_id`. It flips the draft to final and closes pending change-request batches so brand members can view the asset. Approving an already-final version is a no-op.
+2. Confirm the specific version with the user, then call `solstice_approve_operation_version` with the message's `message_id`. It flips the draft to final and closes both things that hide the asset from brand members — pending change-request batches and pending admin requests on the operation. Approving an already-final version is a no-op.
 
 ## Staff: request triage
 

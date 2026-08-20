@@ -34,7 +34,7 @@ from typing import Any
 
 from mcp.server.fastmcp.exceptions import ToolError
 from sqlalchemy import JSON, DateTime, String, Uuid, select
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from solstice_mcp.brands import (
     Brand,
@@ -82,6 +82,7 @@ class AdminRequest(Base):
     request_metadata: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     resolved_by_user_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_message_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), nullable=True)
     resolved_version_number: Mapped[int | None] = mapped_column(nullable=True)
     assigned_to: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -305,9 +306,54 @@ def dismiss_request(
     }
 
 
+def complete_pending_requests_for_operation(
+    session: Session,
+    operation_id: str,
+    *,
+    resolved_by_user_id: str | None,
+    resolved_message_id: str | None,
+) -> int:
+    """Flip every pending request on one operation to ``completed``.
+
+    Mirrors Backend-Server's ``AdminRequestService.mark_resolved_for_operation``
+    (what the admin Publish path runs): the status flip plus the resolution
+    audit columns, in one pass over the operation's pending rows. A pending row
+    keeps the asset locked for non-admin viewers — the project view and the
+    content editor both gate on ``GET /admin-requests/client/pending-operation-ids``
+    — so approving a version without this leaves brand members on the
+    "Your asset is being prepared." screen.
+
+    Runs inside the caller's session and transaction; the caller owns both
+    authorization and the commit. Deliberately narrower than the Backend
+    service: no "ready to review" owner email and no in-app notification
+    flip, because those are Backend-owned side effects (SES + SSE) that the
+    MCP server has no path to.
+
+    Returns the number of rows flipped.
+    """
+    rows = session.scalars(
+        select(AdminRequest)
+        .where(
+            AdminRequest.cg_operation_id == operation_id,
+            AdminRequest.status == "pending",
+            AdminRequest.deleted_at.is_(None),
+        )
+        .with_for_update()
+    ).all()
+    resolved_at = datetime.now(UTC)
+    for row in rows:
+        row.status = "completed"
+        row.resolved_by_user_id = resolved_by_user_id
+        row.resolved_at = resolved_at
+        row.resolved_message_id = resolved_message_id
+        row.updated_at = resolved_at
+    return len(rows)
+
+
 __all__ = [
     "DISMISS_CATEGORIES",
     "AdminRequest",
+    "complete_pending_requests_for_operation",
     "dismiss_request",
     "list_requests",
     "require_staff_in_tenant",

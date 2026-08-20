@@ -55,6 +55,7 @@ from solstice_mcp.brands import (
     require_brand_role,
     role_satisfies,
 )
+from solstice_mcp.requests import complete_pending_requests_for_operation
 from solstice_mcp.storage import S3Error, S3ObjectMissing, S3ObjectTooLarge, S3Reader
 from solstice_mcp.tenants import Base, SessionFactory, TenantRegistry, tenant_session
 
@@ -1556,11 +1557,16 @@ def approve_operation_version(
 
     The target message must be a document row (type ``html`` or ``pdf``) with
     intent ``draft``. The flip updates the ``intent`` column and the
-    ``versionIntent`` key in the message metadata (the FE reads both), and
-    closes pending change-request batches on the operation so non-admin
-    viewers can open the asset. Approving an already-final version is an
-    idempotent no-op (message and change requests unchanged). Text/blueprint
-    messages are rejected.
+    ``versionIntent`` key in the message metadata (the FE reads both).
+
+    A draft→final flip also clears BOTH locks that keep brand members on the
+    "Your asset is being prepared." screen, matching what admin Publish does:
+    pending change-request batches in the operation metadata, and pending
+    ``admin_requests`` rows for the operation (the content editor gates on
+    each independently, so closing only one still leaves non-admins blocked).
+    Approving an already-final version is an idempotent no-op — message,
+    change requests, and requests all untouched. Text/blueprint messages are
+    rejected.
 
     Gated at SOLSTICE_STAFF on the operation's brand (resolved from the row).
     """
@@ -1573,7 +1579,7 @@ def approve_operation_version(
         if op is None:
             raise ToolError("not_authorized: unknown operation")
         brand_id = op.brand_id
-    require_brand_role(
+    identity = require_brand_role(
         subject, tenant_slug, brand_id,
         min_role=UserRole.SOLSTICE_STAFF,
         registry=registry, session_factory=session_factory,
@@ -1600,6 +1606,7 @@ def approve_operation_version(
                 "intent": "final",
                 "already_final": True,
                 "change_requests_resolved": 0,
+                "requests_completed": 0,
                 "asset_url": build_asset_url(tenant_slug, operation_id),
             }
         if msg.intent != "draft":
@@ -1623,6 +1630,14 @@ def approve_operation_version(
         ) else {}
         resolved = _close_pending_change_requests(op_metadata)
         locked_op.operation_metadata = op_metadata
+        # Audit column mirrors Backend Publish: the message ROW id, not the
+        # FE-facing message_id.
+        requests_completed = complete_pending_requests_for_operation(
+            session,
+            operation_id,
+            resolved_by_user_id=identity.user_id,
+            resolved_message_id=msg.id,
+        )
         session.commit()
         version_number = msg.version_number
     return {
@@ -1632,6 +1647,7 @@ def approve_operation_version(
         "intent": "final",
         "already_final": False,
         "change_requests_resolved": resolved,
+        "requests_completed": requests_completed,
         "asset_url": build_asset_url(tenant_slug, operation_id),
     }
 

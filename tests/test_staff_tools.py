@@ -10,9 +10,12 @@ from conftest import (
     OP_A1,
     OP_A2,
     PROJECT_P1,
+    REQ_COMPLETED_A1,
+    REQ_PENDING_A1,
     SHARED_SUB,
     STAFF_SUB,
     USER_A_OTHER,
+    USER_A_STAFF,
     USER_B_SHARED,
     AppHarness,
 )
@@ -20,6 +23,7 @@ from sqlalchemy import select
 from test_server import rpc, tool_payload
 
 from solstice_mcp.operations import CgOperation, CgOperationMessage, Project
+from solstice_mcp.requests import AdminRequest
 
 TENANT = "tenant_a"
 BUCKET = "test-bucket-a"
@@ -47,6 +51,13 @@ def _operation(harness: AppHarness, op_id: str) -> CgOperation:
         # read them after detach.
         _ = op.operation_metadata
         return op
+
+
+def _admin_request(harness: AppHarness, request_id: str) -> AdminRequest:
+    with harness.session_factory(TENANT) as session:
+        row = session.scalar(select(AdminRequest).where(AdminRequest.id == request_id))
+        assert row is not None
+        return row
 
 
 def _set_operation_metadata(harness: AppHarness, op_id: str, metadata: dict[str, Any]) -> None:
@@ -300,6 +311,39 @@ def test_approve_already_final_does_not_close_change_requests(
     meta = _operation(app_harness, OP_A1).operation_metadata
     assert meta["change_request_history"][0]["status"] == "pending"
     assert meta["approved_resubmit_metadata"]["complex_document_change_request"] is True
+
+
+def test_approve_completes_pending_admin_requests(app_harness: AppHarness, mint_token):
+    # A pending admin_requests row keeps the asset locked for non-admins even
+    # once the version is final — approve has to close that lock too.
+    already_resolved_at = _admin_request(app_harness, REQ_COMPLETED_A1).resolved_at
+    payload = tool_payload(_call(
+        app_harness, mint_token(sub=STAFF_SUB),
+        "solstice_approve_operation_version",
+        {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m3"},
+    ))
+    assert payload["requests_completed"] == 1
+
+    row = _admin_request(app_harness, REQ_PENDING_A1)
+    assert row.status == "completed"
+    assert row.resolved_by_user_id == USER_A_STAFF
+    assert row.resolved_at is not None
+    # Audit pointer is the message ROW id, matching Backend's publish path.
+    assert row.resolved_message_id == _message(app_harness, OP_A1, "m3").id
+
+    settled = _admin_request(app_harness, REQ_COMPLETED_A1)
+    assert settled.resolved_at == already_resolved_at
+
+
+def test_approve_already_final_leaves_pending_requests_alone(app_harness: AppHarness, mint_token):
+    payload = tool_payload(_call(
+        app_harness, mint_token(sub=STAFF_SUB),
+        "solstice_approve_operation_version",
+        {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m2"},
+    ))
+    assert payload["already_final"] is True
+    assert payload["requests_completed"] == 0
+    assert _admin_request(app_harness, REQ_PENDING_A1).status == "pending"
 
 
 def test_approve_with_no_change_request_history_is_noop_for_metadata(
