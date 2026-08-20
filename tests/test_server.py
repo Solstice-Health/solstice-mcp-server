@@ -166,6 +166,7 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
         "solstice_prc_template",
         "solstice_prc_template_rules",
         "solstice_create_prc_template_version",
+        "solstice_prepare_prc_template_bake",
         "solstice_create_operation",
         "solstice_create_edit_operation",
         "solstice_prepare_operation_version",
@@ -192,11 +193,13 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
     assert "confirmed" in prc_create_schema["required"]
     assert "html_template" not in prc_create_schema["required"]
     assert "operation_bake_html" in prc_create_schema["properties"]
+    assert "operation_bake_s3_key" in prc_create_schema["properties"]
     assert "status" not in prc_create_schema["required"]
     assert prc_create_schema["properties"]["status"]["default"] == "published"
 
     non_destructive_writes = {
         "solstice_create_prc_template_version",
+        "solstice_prepare_prc_template_bake",
         "solstice_create_operation",
         "solstice_create_edit_operation",
         "solstice_prepare_operation_version",

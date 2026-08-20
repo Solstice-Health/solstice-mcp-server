@@ -25,6 +25,7 @@ from solstice_mcp.operations import (
     list_operations_for_brand,
     list_projects_for_brand,
     prepare_operation_version,
+    prepare_prc_template_bake,
     resolve_prc_template_for_brand,
     update_operation,
 )
@@ -323,6 +324,7 @@ def register_content_tools(
         confirmed: bool,
         html_template: str | None = None,
         operation_bake_html: str | None = None,
+        operation_bake_s3_key: str | None = None,
         description: str | None = None,
         config_schema: dict[str, Any] | None = None,
         default_field_values: dict[str, Any] | None = None,
@@ -348,9 +350,11 @@ def register_content_tools(
         ``prc_template_versions`` row and never changes brand or operation
         catalog selections. Reserved auto-resolving key prefixes are rejected.
 
-        Operation / both: pass ``operation_id`` and ``operation_bake_html``.
-        The latter must be a self-contained Contract v2 operation bake:
-        hydrated fields, creative ``srcdoc``, baked layout, and an export marker
+        Operation / both: pass ``operation_id`` and either ``operation_bake_html``
+        (under the inline byte cap) or ``operation_bake_s3_key`` after
+        ``solstice_prepare_prc_template_bake`` + PUT to ``upload_url``. The bake
+        must be a self-contained Contract v2 operation bake: hydrated fields,
+        creative ``srcdoc``, baked layout, and an export marker
         (``body.sol-prc-export`` or ``style#sol-prc-export-style``). A raw
         ``html_template`` catalog shell is rejected because it is not a proof
         bake. If the source is pre-v2 or validation fails, repair the fetched
@@ -371,6 +375,7 @@ def register_content_tools(
             confirmed=confirmed,
             html_template=html_template,
             operation_bake_html=operation_bake_html,
+            operation_bake_s3_key=operation_bake_s3_key,
             description=description,
             config_schema=config_schema,
             default_field_values=default_field_values,
@@ -551,6 +556,35 @@ def register_content_tools(
             operation_id,
             type,
             file_name,
+            registry=registry,
+            session_factory=session_factory,
+            s3=s3,
+            presign_expiry=presign_expiry,
+        )
+
+    @append_only_tool
+    def solstice_prepare_prc_template_bake(
+        tenant_slug: str,
+        brand_id: str,
+        operation_id: str,
+        content_type: str,
+    ) -> dict[str, Any]:
+        """Prepare a Contract v2 PRC operation bake upload. Step 1 of 2.
+
+        Returns a presigned PUT URL and ``prc_template_s3_key`` for
+        ``cg_operation_prc_template/{operation_id}/{row_id}.html``. Upload the
+        bake HTML bytes directly to ``upload_url``, then call
+        ``solstice_create_prc_template_version`` with ``publish_target``
+        ``operation`` or ``both``, ``confirmed=true``, and
+        ``operation_bake_s3_key`` set to the returned key. Requires
+        SOLSTICE_STAFF on the operation's brand.
+        """
+        return prepare_prc_template_bake(
+            require_subject(),
+            tenant_slug,
+            brand_id,
+            operation_id,
+            content_type,
             registry=registry,
             session_factory=session_factory,
             s3=s3,
