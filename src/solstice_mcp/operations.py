@@ -147,7 +147,8 @@ class CgOperation(Base):
     # operations. Loading them eagerly made list_operations_for_brand pull
     # hundreds of MB on large brands and OOM-kill the worker (502 at the
     # gateway). Write paths that mutate it (update_operation, commit finishing
-    # writes) still lazy-load it on attribute access inside their session.
+    # writes, approve_operation_version) still lazy-load it on attribute
+    # access inside their session.
     operation_metadata: Mapped[Any | None] = mapped_column(JSON, nullable=True, deferred=True)
     version_number: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -1516,6 +1517,32 @@ def update_operation(
     }
 
 
+def _close_pending_change_requests(metadata: dict[str, Any]) -> int:
+    """Flip pending change-request batches so non-admins can view the asset.
+
+    Mirrors Backend UI publish metadata writes (not notify / status / QC):
+    pending ``change_request_history`` entries become ``approved``, the legacy
+    ``approved_resubmit_metadata`` singleton is dropped, and
+    ``change_request_claim`` is released. Missing batch ``status`` is treated
+    as pending (same as the FE gate). Mutates ``metadata`` in place.
+    """
+    flipped = 0
+    history = metadata.get("change_request_history")
+    if isinstance(history, list):
+        approved_at = datetime.now(UTC).isoformat()
+        for entry in history:
+            if not isinstance(entry, dict):
+                continue
+            status = entry.get("status")
+            if status is None or status == "pending":
+                entry["status"] = "approved"
+                entry["approved_at"] = approved_at
+                flipped += 1
+    metadata.pop("approved_resubmit_metadata", None)
+    metadata["change_request_claim"] = None
+    return flipped
+
+
 def approve_operation_version(
     subject: str,
     tenant_slug: str,
@@ -1529,9 +1556,11 @@ def approve_operation_version(
 
     The target message must be a document row (type ``html`` or ``pdf``) with
     intent ``draft``. The flip updates the ``intent`` column and the
-    ``versionIntent`` key in the message metadata (the FE reads both). Approving
-    an already-final version is an idempotent no-op. Text/blueprint messages
-    are rejected.
+    ``versionIntent`` key in the message metadata (the FE reads both), and
+    closes pending change-request batches on the operation so non-admin
+    viewers can open the asset. Approving an already-final version is an
+    idempotent no-op (message and change requests unchanged). Text/blueprint
+    messages are rejected.
 
     Gated at SOLSTICE_STAFF on the operation's brand (resolved from the row).
     """
@@ -1570,6 +1599,7 @@ def approve_operation_version(
                 "version_number": msg.version_number,
                 "intent": "final",
                 "already_final": True,
+                "change_requests_resolved": 0,
                 "asset_url": build_asset_url(tenant_slug, operation_id),
             }
         if msg.intent != "draft":
@@ -1578,9 +1608,21 @@ def approve_operation_version(
             )
         msg.intent = "final"
         if isinstance(msg.message_metadata, dict):
-            metadata = dict(msg.message_metadata)
-            metadata["versionIntent"] = "final"
-            msg.message_metadata = metadata
+            msg_metadata = dict(msg.message_metadata)
+            msg_metadata["versionIntent"] = "final"
+            msg.message_metadata = msg_metadata
+        locked_op = session.scalar(
+            select(CgOperation).where(
+                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
+            ).with_for_update()
+        )
+        if locked_op is None:
+            raise ToolError("not_authorized: unknown operation")
+        op_metadata = dict(locked_op.operation_metadata) if isinstance(
+            locked_op.operation_metadata, dict
+        ) else {}
+        resolved = _close_pending_change_requests(op_metadata)
+        locked_op.operation_metadata = op_metadata
         session.commit()
         version_number = msg.version_number
     return {
@@ -1589,6 +1631,7 @@ def approve_operation_version(
         "version_number": version_number,
         "intent": "final",
         "already_final": False,
+        "change_requests_resolved": resolved,
         "asset_url": build_asset_url(tenant_slug, operation_id),
     }
 

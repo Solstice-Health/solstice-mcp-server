@@ -669,8 +669,10 @@ def register_content_tools(
 
         Requires SOLSTICE_STAFF on the operation's brand. The target message
         must be an html or pdf document version (find message_ids via
-        solstice_operation_messages). Approving an already-final version is an
-        idempotent no-op; text/blueprint messages are rejected.
+        solstice_operation_messages). A real draft→final flip also closes
+        pending change-request batches so non-admin viewers can open the
+        asset. Approving an already-final version is an idempotent no-op.
+        Text/blueprint messages are rejected.
 
         The response includes ``asset_url`` — the operation's Solstice page.
         End your user-facing reply with ``[Open asset in Solstice](<asset_url>)``

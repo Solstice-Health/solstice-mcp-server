@@ -49,6 +49,14 @@ def _operation(harness: AppHarness, op_id: str) -> CgOperation:
         return op
 
 
+def _set_operation_metadata(harness: AppHarness, op_id: str, metadata: dict[str, Any]) -> None:
+    with harness.session_factory(TENANT) as session:
+        op = session.scalar(select(CgOperation).where(CgOperation.id == op_id))
+        assert op is not None
+        op.operation_metadata = metadata
+        session.commit()
+
+
 def _project_dir_map(harness: AppHarness, project_id: str) -> dict[str, Any]:
     with harness.session_factory(TENANT) as session:
         project = session.scalar(select(Project).where(Project.id == project_id))
@@ -239,6 +247,74 @@ def test_approve_already_final_is_idempotent(app_harness: AppHarness, mint_token
     payload = tool_payload(response)
     assert payload["already_final"] is True
     assert payload["intent"] == "final"
+    assert payload["change_requests_resolved"] == 0
+
+
+def test_approve_closes_pending_change_requests(app_harness: AppHarness, mint_token):
+    _set_operation_metadata(
+        app_harness,
+        OP_A1,
+        {
+            "campaign": "keep-me",
+            "change_request_history": [
+                {"batch_id": "b1", "status": "pending"},
+                {"batch_id": "b2"},  # missing status == pending on the FE
+                {"batch_id": "b3", "status": "approved"},
+            ],
+            "approved_resubmit_metadata": {"isShouldReview": True},
+            "change_request_claim": {"admin_id": "someone"},
+        },
+    )
+    payload = tool_payload(_call(
+        app_harness, mint_token(sub=STAFF_SUB),
+        "solstice_approve_operation_version",
+        {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m3"},
+    ))
+    assert payload["already_final"] is False
+    assert payload["change_requests_resolved"] == 2
+    meta = _operation(app_harness, OP_A1).operation_metadata
+    assert meta["campaign"] == "keep-me"
+    assert [entry["status"] for entry in meta["change_request_history"]] == [
+        "approved", "approved", "approved",
+    ]
+    assert "approved_at" in meta["change_request_history"][0]
+    assert "approved_resubmit_metadata" not in meta
+    assert meta["change_request_claim"] is None
+
+
+def test_approve_already_final_does_not_close_change_requests(
+    app_harness: AppHarness, mint_token,
+):
+    pending = {
+        "change_request_history": [{"batch_id": "stuck", "status": "pending"}],
+        "approved_resubmit_metadata": {"complex_document_change_request": True},
+    }
+    _set_operation_metadata(app_harness, OP_A1, pending)
+    payload = tool_payload(_call(
+        app_harness, mint_token(sub=STAFF_SUB),
+        "solstice_approve_operation_version",
+        {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m2"},
+    ))
+    assert payload["already_final"] is True
+    assert payload["change_requests_resolved"] == 0
+    meta = _operation(app_harness, OP_A1).operation_metadata
+    assert meta["change_request_history"][0]["status"] == "pending"
+    assert meta["approved_resubmit_metadata"]["complex_document_change_request"] is True
+
+
+def test_approve_with_no_change_request_history_is_noop_for_metadata(
+    app_harness: AppHarness, mint_token,
+):
+    payload = tool_payload(_call(
+        app_harness, mint_token(sub=STAFF_SUB),
+        "solstice_approve_operation_version",
+        {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m3"},
+    ))
+    assert payload["already_final"] is False
+    assert payload["change_requests_resolved"] == 0
+    meta = _operation(app_harness, OP_A1).operation_metadata
+    assert meta.get("change_request_history") in (None, [])
+    assert meta.get("change_request_claim") is None
 
 
 def test_approve_rejects_text_message(app_harness: AppHarness, mint_token):
