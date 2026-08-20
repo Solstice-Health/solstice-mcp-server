@@ -64,8 +64,9 @@ creative into one document.
    not satisfy Contract v2, repair the fetched HTML locally while preserving
    the source proof's content, embedded creative, and visual authority. Repeat
    local contract and standalone-preview checks until they pass. Only after the
-   user chooses `operation` or `both` may the agent send that repaired bake as
-   `operation_bake_html` to the MCP write validator. The validator is a final
+   user chooses `operation` or `both` may the agent upload that repaired bake
+   via `solstice_prepare_prc_template_bake` → PUT → `operation_bake_s3_key`.
+   The validator is a final
    gate, not a composer or repair service; neither the skill nor the server
    requires access to Solstice-Frontend.
 10. **Do not author annotation chrome.** The platform runtime creates callout
@@ -158,11 +159,12 @@ creative into one document.
     publish_target="library"|"both")`. Status defaults to published; do not
     ask for it. The library insert never selects the version for a brand.
     Reserved brand/environment/platform auto-resolving keys are rejected.
-    Operation / both: pass
-    `operation_id`, `operation_bake_html`, and
-    `publish_target="operation"|"both"`. `operation_bake_html` is the repaired,
-    self-contained Contract v2 operation bake after standalone validation and
-    preview — never the reusable catalog shell. That appends a new draft html
+    Operation / both: `solstice_prepare_prc_template_bake`, PUT the bake, then
+    pass `operation_id`, `operation_bake_s3_key`, and
+    `publish_target="operation"|"both"`. Never inline bake HTML. The upload is
+    the repaired, self-contained Contract v2 operation bake after standalone
+    validation and preview — never the reusable catalog shell. That appends a
+    new draft html
     version that copies the current creative and stores the repaired bake at
     `prc_template_s3_key`. If they choose the creative content, use the
     `figma-to-solstice` / `solstice-platform` append-only flow.

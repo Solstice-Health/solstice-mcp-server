@@ -350,20 +350,21 @@ def register_content_tools(
         ``prc_template_versions`` row and never changes brand or operation
         catalog selections. Reserved auto-resolving key prefixes are rejected.
 
-        Operation / both: pass ``operation_id`` and either ``operation_bake_html``
-        (under the inline byte cap) or ``operation_bake_s3_key`` after
-        ``solstice_prepare_prc_template_bake`` + PUT to ``upload_url``. The bake
-        must be a self-contained Contract v2 operation bake: hydrated fields,
-        creative ``srcdoc``, baked layout, and an export marker
-        (``body.sol-prc-export`` or ``style#sol-prc-export-style``). A raw
-        ``html_template`` catalog shell is rejected because it is not a proof
-        bake. If the source is pre-v2 or validation fails, repair the fetched
-        bake locally against ``solstice_prc_template_rules``, preview it, and
-        retry only after the user approves the operation update. This tool is
-        producer-neutral and does not compose or repair proof HTML. The server
-        copies the current creative to the next version number and stores the
-        freeze at ``cg_operation_prc_template/{operation_id}/{row_id}.html``.
-        Staff intent is draft. Requires SOLSTICE_STAFF on the selected brand.
+        Operation / both: ``solstice_prepare_prc_template_bake``, PUT the bake
+        HTML to ``upload_url``, then pass ``operation_id`` and
+        ``operation_bake_s3_key``. Size does not matter — never inline the bake
+        as ``operation_bake_html``. The bake must be a self-contained Contract
+        v2 operation bake: hydrated fields, creative ``srcdoc``, baked layout,
+        and an export marker (``body.sol-prc-export`` or
+        ``style#sol-prc-export-style``). A raw ``html_template`` catalog shell
+        is rejected because it is not a proof bake. If the source is pre-v2 or
+        validation fails, repair the fetched bake locally against
+        ``solstice_prc_template_rules``, preview it, and retry only after the
+        user approves the operation update. This tool is producer-neutral and
+        does not compose or repair proof HTML. The server copies the current
+        creative to the next version number and stamps
+        ``prc_template_s3_key`` on the new draft html row. Staff intent is
+        draft. Requires SOLSTICE_STAFF on the selected brand.
         """
         template = create_prc_template_version(
             require_subject(),

@@ -165,36 +165,15 @@ def _validate_prc_template_bake_s3_key(key: str, operation_id: str) -> str:
     return row_id
 
 
-def _resolve_operation_bake(
+def _load_uploaded_operation_bake(
     *,
-    operation_bake_html: str | None,
-    operation_bake_s3_key: str | None,
+    operation_bake_s3_key: str,
     operation_id: str,
     content_type: str,
     bucket: str,
     s3: S3Reader,
-    max_inline_bytes: int,
-) -> tuple[str | None, int, str | None]:
-    """Return inline HTML (when small), byte size, and a pre-uploaded key."""
-    if operation_bake_html and operation_bake_s3_key:
-        raise ToolError(
-            "invalid_request: pass operation_bake_html or operation_bake_s3_key, not both"
-        )
-    if operation_bake_html:
-        _validate_operation_prc_bake(operation_bake_html, content_type)
-        html_size_bytes = len(operation_bake_html.encode("utf-8"))
-        if html_size_bytes > max_inline_bytes:
-            raise ToolError(
-                f"too_large: PRC operation bake is {html_size_bytes} bytes; inline limit "
-                f"is {max_inline_bytes}. Call solstice_prepare_prc_template_bake, PUT the "
-                "HTML to upload_url, then retry with operation_bake_s3_key"
-            )
-        return operation_bake_html, html_size_bytes, None
-    if not operation_bake_s3_key:
-        raise ToolError(
-            "invalid_request: operation_bake_html or operation_bake_s3_key is required "
-            "when publish_target is operation or both"
-        )
+) -> tuple[int, str]:
+    """Validate a presigned-upload bake; return (size, key)."""
     _validate_prc_template_bake_s3_key(operation_bake_s3_key, operation_id)
     size = s3.head(bucket, operation_bake_s3_key)
     if size is None:
@@ -211,7 +190,7 @@ def _resolve_operation_bake(
     except S3Error as exc:
         raise ToolError(f"not_available: s3 read failed: {exc}") from exc
     _validate_operation_prc_bake(html, content_type)
-    return None, size, operation_bake_s3_key
+    return size, operation_bake_s3_key
 
 
 def _looks_like_s3_key(content: str | None) -> bool:
@@ -791,8 +770,7 @@ def bake_prc_template_to_operation(
     brand_id: str,
     operation_id: str,
     content_type: str,
-    operation_bake_html: str | None = None,
-    operation_bake_s3_key: str | None = None,
+    operation_bake_s3_key: str,
     registry: TenantRegistry,
     session_factory: SessionFactory,
     s3: S3Reader,
@@ -806,9 +784,7 @@ def bake_prc_template_to_operation(
     on ``n_cg_operation_messages.prc_template_s3_key``. Head creative is
     newest ``created_at`` then ``id``. Stamped ``version_number`` is
     max(existing)+1 for the S3 key label (same as ``commit_operation_version``),
-    not identity. ``operation_bake_html`` must already be a self-contained
-    Contract v2 operation bake; this server is producer-neutral and never
-    substitutes a raw catalog shell for a bake.
+    not identity. The bake must already be PUT to ``operation_bake_s3_key``.
     """
     parsed_operation_id = _normalized_uuid(operation_id)
     if parsed_operation_id is None:
@@ -817,15 +793,14 @@ def bake_prc_template_to_operation(
     bucket = tenant_config.s3_bucket if tenant_config is not None else ""
     if not bucket:
         raise ToolError("not_configured: tenant has no s3_bucket")
-    operation_bake_html, html_size_bytes, preuploaded_key = _resolve_operation_bake(
-        operation_bake_html=operation_bake_html,
+    html_size_bytes, bake_key = _load_uploaded_operation_bake(
         operation_bake_s3_key=operation_bake_s3_key,
         operation_id=parsed_operation_id,
         content_type=content_type,
         bucket=bucket,
         s3=s3,
-        max_inline_bytes=max_inline_bytes,
     )
+    row_id = _validate_prc_template_bake_s3_key(bake_key, parsed_operation_id)
 
     with tenant_session(tenant_slug, session_factory) as session:
         locked = session.scalar(
@@ -853,12 +828,6 @@ def bake_prc_template_to_operation(
         next_v = (max_v or 0) + 1
         message_id = str(uuid4())
         creative_key = _version_s3_key("html", parsed_operation_id, next_v, message_id, locked.file_name)
-        if preuploaded_key:
-            row_id = _validate_prc_template_bake_s3_key(preuploaded_key, parsed_operation_id)
-            bake_key = preuploaded_key
-        else:
-            row_id = str(uuid4())
-            bake_key = f"{_PRC_TEMPLATE_S3_KEY_PREFIX}/{parsed_operation_id}/{row_id}.html"
         head_content = head.content or ""
         if _looks_like_s3_key(head_content):
             try:
@@ -875,15 +844,6 @@ def bake_prc_template_to_operation(
                 raise ToolError("invalid_state: current html document is empty")
         try:
             s3.put(bucket, creative_key, creative, "text/html")
-            if not preuploaded_key:
-                if operation_bake_html is None:
-                    raise ToolError("invalid_state: inline bake HTML missing")
-                s3.put(
-                    bucket,
-                    bake_key,
-                    operation_bake_html.encode("utf-8"),
-                    "text/html",
-                )
         except S3Error as exc:
             raise ToolError(f"not_available: s3 write failed: {exc}") from exc
         max_pos = session.scalar(
@@ -1042,15 +1002,15 @@ def create_prc_template_version(
             "invalid_request: operation_id is required when publish_target is "
             "operation or both"
         )
-    if wants_operation and not operation_bake_html and not operation_bake_s3_key:
+    if wants_operation and operation_bake_html:
         raise ToolError(
-            "invalid_request: operation_bake_html or operation_bake_s3_key is required "
-            "when publish_target is operation or both; pass the self-contained Contract v2 "
-            "operation bake inline or upload it via solstice_prepare_prc_template_bake"
+            "invalid_request: operation bakes must use solstice_prepare_prc_template_bake, "
+            "PUT to upload_url, then operation_bake_s3_key"
         )
-    if wants_operation and operation_bake_html and operation_bake_s3_key:
+    if wants_operation and not operation_bake_s3_key:
         raise ToolError(
-            "invalid_request: pass operation_bake_html or operation_bake_s3_key, not both"
+            "invalid_request: operation_bake_s3_key is required when publish_target is "
+            "operation or both"
         )
 
     # ponytail: bake before library. A later library conflict still leaves the
@@ -1065,8 +1025,7 @@ def create_prc_template_version(
             brand_id=brand_id,
             operation_id=operation_id or "",
             content_type=normalized_content_type,
-            operation_bake_html=operation_bake_html,
-            operation_bake_s3_key=operation_bake_s3_key,
+            operation_bake_s3_key=operation_bake_s3_key or "",
             registry=registry,
             session_factory=session_factory,
             s3=s3,
