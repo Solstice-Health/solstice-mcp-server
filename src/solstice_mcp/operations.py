@@ -903,7 +903,14 @@ def bake_prc_template_to_operation(
             )
         )
         locked.updated_at = now
-        session.commit()
+        try:
+            session.commit()
+        except IntegrityError as exc:
+            session.rollback()
+            raise ToolError(
+                "conflict: this bake key has already been committed; "
+                "retry with a new presigned key from solstice_prepare_prc_template_bake"
+            ) from exc
     return {
         "operation_id": parsed_operation_id,
         "version_number": next_v,
