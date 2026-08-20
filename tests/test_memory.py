@@ -24,6 +24,7 @@ from conftest import (
 )
 from test_server import rpc, tool_payload
 
+from solstice_mcp import http_client
 from solstice_mcp.audit import AUDIT_EVENT_NAME, AUDIT_LOGGER_NAME
 from solstice_mcp.memory_client import (
     Auth0ClientCredentials,
@@ -896,6 +897,27 @@ def test_client_credentials_maps_unreachable(monkeypatch):
     acquirer = _make_acquirer()
     with pytest.raises(MemoryClientUnavailable, match="auth0_token_endpoint_unreachable"):
         acquirer.get_token()
+
+
+def test_client_credentials_reuses_pooled_httpx_client(monkeypatch):
+    calls: list[Any] = []
+
+    def fake_once(method, url, *, headers, content, timeout, client):
+        calls.append(client)
+        return http_client.HttpResponse(
+            status_code=200,
+            content=b'{"access_token": "tok", "expires_in": 3600}',
+        )
+
+    monkeypatch.setattr(http_client, "_httpx_once", fake_once)
+    acquirer = _make_acquirer()
+    acquirer.get_token()
+    acquirer.invalidate()
+    acquirer.get_token()
+
+    assert len(calls) == 2
+    assert calls[0] is not None  # real pooled client, not client=None
+    assert calls[0] is calls[1]  # same instance reused, not recreated per fetch
 
 
 # ---------------------------------------------------------------------------

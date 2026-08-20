@@ -100,6 +100,8 @@ class Auth0ClientCredentials:
         audience: str,
         scope: str,
         timeout: float = 5.0,
+        opener: Any | None = None,
+        http: httpx.Client | None = None,
     ) -> None:
         if not (token_endpoint and client_id and client_secret and audience):
             raise ValueError("Auth0 client-credentials requires endpoint, client id, secret, and audience")
@@ -109,9 +111,21 @@ class Auth0ClientCredentials:
         self._audience = audience
         self._scope = scope
         self._timeout = timeout
+        # opener set → urllib (tests). opener None → pooled httpx (production).
+        self._opener = opener
+        self._http = http if opener is None else None
+        self._owns_http = False
+        if self._opener is None and self._http is None:
+            self._http = httpx.Client(timeout=timeout)
+            self._owns_http = True
         self._lock = threading.Lock()
         self._token: str | None = None
         self._expires_at: float = 0.0
+
+    def close(self) -> None:
+        if self._owns_http and self._http is not None:
+            self._http.close()
+            self._http = None
 
     def get_token(self) -> str:
         with self._lock:
@@ -152,6 +166,8 @@ class Auth0ClientCredentials:
                 content=body,
                 timeout=self._timeout,
                 retry_mutations=True,
+                opener=self._opener,
+                client=self._http,
             )
         except (httpx.TransportError, TimeoutError, urllib.error.URLError, OSError) as exc:
             raise MemoryClientUnavailable("auth0_token_endpoint_unreachable") from exc
