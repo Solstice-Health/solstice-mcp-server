@@ -322,6 +322,9 @@ Learned failure modes; check each against the source design:
 - **One label style.** Lead-mock labels and frame-still labels use identical
   typography (the source design's frame labels), not the seed's two different
   label styles.
+- **Email full height.** Email creative iframes use `scrolling="no"` and grow
+  to the message's content height. A nested scrollbar inside the desktop or
+  mobile frame is a contract defect (`email.full_height`).
 
 ## 7. Verify standalone artifacts
 

@@ -87,8 +87,10 @@ historically won and silently selected the wrong compose branch.
 
 Only `iframe[data-sol-prc-creative]` elements receive creative. The platform
 sets `srcdoc`, `scrolling`, `loading`, viewport metadata, and slot width
-(600px desktop, 375px mobile). The v1 fallback that injected into every iframe
-is not part of v2.
+(600px desktop, 375px mobile). Email frames use `scrolling="no"` and the
+injected document's full content height — never a fixed clip box with an
+internal scrollbar. The v1 fallback that injected into every iframe is not
+part of v2.
 
 Banner keeps one authored `[data-banner-section]`; the platform clones it for
 multiple dimensions. Banner slot iframes can live in `#frame-template` and
@@ -285,6 +287,7 @@ there is no Python copy of these rules.
 - `email.cover_visible_copy`: Every visible cover word is one of those field IDs (or a `file_name` mirror on a page header). An agent that finds unmarked cover text must wrap it before publishing.
 - `email.render_pages`: Provide at least one render page with `data-viewport="desktop|mobile"` and a matching `iframe[data-sol-prc-creative]`.
 - `email.render_slot`: Wrap every desktop and mobile `iframe[data-sol-prc-creative]` in `[data-sol-prc-slot]` so Engine Next can select that inner render frame; the iframe element is not a slot marker.
+- `email.full_height`: Size every email `iframe[data-sol-prc-creative]` to the injected document's full content height with `scrolling="no"` so the message is not clipped behind an internal scrollbar.
 
 #### SHOULD
 - `email.dual_viewport`: Provide both a 600px desktop slot and a 375px mobile slot unless the approved proof is intentionally single-viewport.
@@ -293,6 +296,7 @@ there is no Python copy of these rules.
 #### MUST NOT
 - `email.cross_profile`: Include banner adapters or sections, social builder templates, or a non-email creative slot.
 - `email.operation_seed`: Seed filename, to, from, subject, preheader, or other operation values in `#sol-prc-config`.
+- `email.clipped_frame`: Give an email creative iframe a fixed clipping height or `overflow: auto|scroll` that creates an internal scrollbar over the message.
 
 ### Banner
 
