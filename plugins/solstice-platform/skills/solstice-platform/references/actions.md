@@ -133,9 +133,12 @@ Library / both: ask separately for name and key, then call
 to published; do not ask for it. The library insert does not update brand or
 operation catalog selections. Reserved auto-resolving keys are rejected.
 
-Operation / both: pass `operation_id`. The server copies the current creative
-to the next version number and writes the proof HTML to
-`cg_operation_prc_template/{operation_id}/{row_id}.html`.
+Operation / both: pass `operation_id` and `operation_bake_html`. The bake input
+must be the approved, self-contained Contract v2 operation proof with hydrated
+fields and creative `srcdoc`; never pass the reusable `html_template` shell in
+its place. The server is producer-neutral, copies the current creative to the
+next version number, and writes that
+freeze to `cg_operation_prc_template/{operation_id}/{row_id}.html`.
 
 ## Unsupported changes
 

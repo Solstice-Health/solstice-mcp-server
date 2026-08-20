@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 PLUGIN = ROOT / "plugins" / "solstice-platform"
 PLUGIN_NAME = "solstice-platform"
-PLUGIN_VERSION = "0.3.13"
+PLUGIN_VERSION = "0.3.14"
 # Cursor/Claude → ECS direct (full tools/list). Codex → AgentCore (Cedar/OBO).
 ECS_URL = "https://api.solsticehealth.co/mcp"
 GATEWAY_URL = (
@@ -162,6 +162,8 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "__prc_field_overrides",
         "same canonical field id",
         "source page",
+        "repair before operation validation",
+        "validator is a final",
     ):
         assert phrase in body_lower
 
@@ -196,6 +198,8 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "#sol-prc-config",
         "__prc_field_overrides",
         "unique `data-sol-prc-page` ids",
+        "repair loop, not a one-shot validator",
+        "mcp validation is the final write gate",
     ):
         assert phrase in workflow
     assert "#prc-cover-data" not in workflow
@@ -223,6 +227,12 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
     authoring_guidance = "\n".join((body, workflow, contract)).lower()
     for stale_annotation_model in ("cross-page", "re-home", "nearest page"):
         assert stale_annotation_model not in authoring_guidance
+    for frontend_dependency in (
+        "real frontend composer",
+        "frontend-composed",
+        "buildprctemplatehtmlfromstoredtemplate",
+    ):
+        assert frontend_dependency not in authoring_guidance
 
 
 def test_isi_replacement_skill_is_portable_and_human_in_loop() -> None:

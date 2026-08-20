@@ -320,8 +320,9 @@ def register_content_tools(
         template_key: str,
         content_type: str,
         name: str,
-        html_template: str,
         confirmed: bool,
+        html_template: str | None = None,
+        operation_bake_html: str | None = None,
         description: str | None = None,
         config_schema: dict[str, Any] | None = None,
         default_field_values: dict[str, Any] | None = None,
@@ -331,8 +332,9 @@ def register_content_tools(
     ) -> dict[str, Any]:
         """Publish a PRC proof template to the library, bake it onto an operation, or both.
 
-        The HTML must follow Solstice PRC Template Contract v2. Call
-        ``solstice_prc_template_rules(profile)`` before authoring.
+        ``html_template`` is the reusable Contract v2 catalog shell and is
+        required for ``library`` / ``both``. Call
+        ``solstice_prc_template_rules(profile)`` before authoring it.
 
         If ``solstice_prc_template(..., operation_id=)`` returned
         ``operation_bake`` or the user is editing a specific asset, ask one
@@ -346,10 +348,18 @@ def register_content_tools(
         ``prc_template_versions`` row and never changes brand or operation
         catalog selections. Reserved auto-resolving key prefixes are rejected.
 
-        Operation / both: pass ``operation_id``. The server copies the current
-        creative to the next version number and stores the proof HTML at
-        ``cg_operation_prc_template/{operation_id}/{row_id}.html``. Staff
-        intent is draft. Requires SOLSTICE_STAFF on the selected brand.
+        Operation / both: pass ``operation_id`` and ``operation_bake_html``.
+        The latter must be a self-contained Contract v2 operation bake:
+        hydrated fields, creative ``srcdoc``, baked layout, and an export marker
+        (``body.sol-prc-export`` or ``style#sol-prc-export-style``). A raw
+        ``html_template`` catalog shell is rejected because it is not a proof
+        bake. If the source is pre-v2 or validation fails, repair the fetched
+        bake locally against ``solstice_prc_template_rules``, preview it, and
+        retry only after the user approves the operation update. This tool is
+        producer-neutral and does not compose or repair proof HTML. The server
+        copies the current creative to the next version number and stores the
+        freeze at ``cg_operation_prc_template/{operation_id}/{row_id}.html``.
+        Staff intent is draft. Requires SOLSTICE_STAFF on the selected brand.
         """
         template = create_prc_template_version(
             require_subject(),
@@ -358,8 +368,9 @@ def register_content_tools(
             template_key,
             content_type,
             name,
-            html_template,
             confirmed=confirmed,
+            html_template=html_template,
+            operation_bake_html=operation_bake_html,
             description=description,
             config_schema=config_schema,
             default_field_values=default_field_values,

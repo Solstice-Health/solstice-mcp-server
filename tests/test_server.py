@@ -190,6 +190,8 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
         if tool["name"] == "solstice_create_prc_template_version"
     )
     assert "confirmed" in prc_create_schema["required"]
+    assert "html_template" not in prc_create_schema["required"]
+    assert "operation_bake_html" in prc_create_schema["properties"]
     assert "status" not in prc_create_schema["required"]
     assert prc_create_schema["properties"]["status"]["default"] == "published"
 

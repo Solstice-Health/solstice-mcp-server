@@ -259,7 +259,7 @@ there is no Python copy of these rules.
 
 #### SHOULD
 - `common.self_contained`: Keep CSS and portable assets inline and use only platform-listed or inlined fonts.
-- `common.compose_check`: Validate both interactive and export composition through the real frontend composer before publishing.
+- `common.compose_check`: Validate both interactive and export-shaped output against this contract before publishing; validation must not depend on a particular producer implementation.
 - `common.minimal_shell`: Author only layers L0-L5; let the platform supply values, creative, behavior, sizing, and annotations.
 - `common.annotation_theme`: If theming runtime annotations, use only the allowlisted `--sol-prc-annotation-color`, `--sol-prc-annotation-background`, `--sol-prc-annotation-text-color`, `--sol-prc-annotation-font`, `--sol-prc-annotation-padding`, `--sol-prc-annotation-radius`, `--sol-prc-annotation-border-width`, and `--sol-prc-annotation-line-width` variables; theming is optional.
 
@@ -349,15 +349,19 @@ there is no Python copy of these rules.
 
 ## Baked proofs
 
-A baked proof is a frontend compose freeze, not another renderer. New bakes are
-stamped `<meta name="sol-prc-contract-baked" content="v2">`; live composition,
-non-interactive export, and baked-view adaptation use the same annotation
-runtime. Cover-edit freezes field/slot geometry, inserted L5 nodes, inner
-creative, and `script#sol-prc-annotation-positions` in that HTML. Overlay chrome
-is stripped on bake and re-injected on adapt. Catalog templates must not ship
-the positions script. Historical v1 bakes are immutable snapshots. Their legacy
-annotation chrome is neutralized during adaptation, and a bake without usable
-page markers falls back to recomposition from its pinned template version.
+A baked proof is a self-contained, operation-specific Contract v2 document, not
+another renderer. Any contract-conforming caller may produce or repair it. New
+bakes retain `<meta name="sol-prc-contract" content="v2" data-profile="...">`
+and are recognized by `body.sol-prc-export` or
+`style#sol-prc-export-style`; the legacy adapter may also recognize
+`sol-prc-contract-baked`, but current bakes do not require it. The document
+freezes field/slot geometry, inserted L5 nodes, inner creative, and
+`script#sol-prc-annotation-positions` when positions exist. Overlay chrome is
+not bake content and the platform runtime may inject it when viewing. Catalog
+templates must not ship the positions script. Historical v1 bakes are immutable
+snapshots. Their legacy annotation chrome is neutralized during adaptation, and
+a bake without usable page markers falls back to recomposition from its pinned
+template version.
 
 ## Validation and migration
 

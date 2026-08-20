@@ -40,6 +40,7 @@ from __future__ import annotations
 import logging
 from copy import deepcopy
 from datetime import UTC, datetime
+from html.parser import HTMLParser
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -78,6 +79,73 @@ _PRC_CONTENT_TYPES = {"banner", "email", "social"}
 _PRC_RESERVED_KEY_PREFIXES = ("brand_", "environment_default_", "platform_default_")
 _PRC_TEMPLATE_STATUSES = {"draft", "published"}
 _PRC_PUBLISH_TARGETS = {"library", "operation", "both"}
+
+
+class _OperationPrcBakeProbe(HTMLParser):
+    """Collect the Contract v2 seams that distinguish a bake from a catalog shell."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.has_doctype = False
+        self.has_html = False
+        self.has_contract_v2 = False
+        self.contract_profile: str | None = None
+        self.profile: str | None = None
+        self.has_export_marker = False
+        self.has_pages = False
+        self.has_page = False
+        self.has_frozen_creative = False
+
+    def handle_decl(self, decl: str) -> None:
+        if decl.strip().lower() == "doctype html":
+            self.has_doctype = True
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        if tag == "html":
+            self.has_html = True
+        elif tag == "meta":
+            if values.get("name") == "sol-prc-contract" and values.get("content") == "v2":
+                self.has_contract_v2 = True
+                self.contract_profile = values.get("data-profile")
+        elif tag == "style" and values.get("id") == "sol-prc-export-style":
+            self.has_export_marker = True
+        elif tag == "body":
+            self.profile = values.get("data-sol-prc-proof")
+            self.has_export_marker |= "sol-prc-export" in (values.get("class") or "").split()
+        elif tag == "main" and "data-sol-prc-pages" in values:
+            self.has_pages = True
+        elif "data-sol-prc-page" in values and "data-sol-prc-page-type" in values:
+            self.has_page = True
+        elif (
+            tag == "iframe"
+            and values.get("data-sol-prc-creative") in _PRC_CONTENT_TYPES | {"desktop", "mobile"}
+            and bool((values.get("srcdoc") or "").strip())
+        ):
+            self.has_frozen_creative = True
+
+
+def _validate_operation_prc_bake(html: str, content_type: str) -> None:
+    probe = _OperationPrcBakeProbe()
+    probe.feed(html)
+    if not all(
+        (
+            probe.has_doctype,
+            probe.has_html,
+            probe.has_contract_v2,
+            probe.contract_profile == content_type,
+            probe.profile == content_type,
+            probe.has_export_marker,
+            probe.has_pages,
+            probe.has_page,
+            probe.has_frozen_creative,
+        )
+    ):
+        raise ToolError(
+            "invalid_request: operation_bake_html must be a self-contained Contract v2 "
+            "operation bake with matching profile, an export marker, page markers, and "
+            "creative srcdoc; a catalog template shell is not an operation bake"
+        )
 
 
 def _looks_like_s3_key(content: str | None) -> bool:
@@ -595,13 +663,13 @@ def bake_prc_template_to_operation(
     brand_id: str,
     operation_id: str,
     content_type: str,
-    html_template: str,
+    operation_bake_html: str,
     registry: TenantRegistry,
     session_factory: SessionFactory,
     s3: S3Reader,
     max_inline_bytes: int,
 ) -> dict[str, Any]:
-    """Append a draft html version that copies the current creative and bakes the proof.
+    """Append a draft version that copies the creative and stores an operation bake.
 
     Mirrors Backend-Server ``finalize_html_version_message``: creative stays on
     ``cg_operation_msg_html/...``; the proof lands at
@@ -609,15 +677,18 @@ def bake_prc_template_to_operation(
     on ``n_cg_operation_messages.prc_template_s3_key``. Head creative is
     newest ``created_at`` then ``id``. Stamped ``version_number`` is
     max(existing)+1 for the S3 key label (same as ``commit_operation_version``),
-    not identity.
+    not identity. ``operation_bake_html`` must already be a self-contained
+    Contract v2 operation bake; this server is producer-neutral and never
+    substitutes a raw catalog shell for a bake.
     """
     parsed_operation_id = _normalized_uuid(operation_id)
     if parsed_operation_id is None:
         raise ToolError("invalid_request: operation_id must be a UUID")
-    html_size_bytes = len(html_template.encode("utf-8"))
+    _validate_operation_prc_bake(operation_bake_html, content_type)
+    html_size_bytes = len(operation_bake_html.encode("utf-8"))
     if html_size_bytes > max_inline_bytes:
         raise ToolError(
-            f"too_large: PRC template is {html_size_bytes} bytes; inline limit is {max_inline_bytes}"
+            f"too_large: PRC operation bake is {html_size_bytes} bytes; inline limit is {max_inline_bytes}"
         )
     tenant_config = registry.get(tenant_slug)
     bucket = tenant_config.s3_bucket if tenant_config is not None else ""
@@ -668,7 +739,7 @@ def bake_prc_template_to_operation(
                 raise ToolError("invalid_state: current html document is empty")
         try:
             s3.put(bucket, creative_key, creative, "text/html")
-            s3.put(bucket, bake_key, html_template.encode("utf-8"), "text/html")
+            s3.put(bucket, bake_key, operation_bake_html.encode("utf-8"), "text/html")
         except S3Error as exc:
             raise ToolError(f"not_available: s3 write failed: {exc}") from exc
         max_pos = session.scalar(
@@ -687,7 +758,7 @@ def bake_prc_template_to_operation(
                 message_id=str(uuid4()),
                 author_id=identity.user_id,
                 type="text",
-                content="Save new version",
+                content="PRC template update",
                 version_number=None,
                 intent=None,
                 position=base_pos,
@@ -695,7 +766,7 @@ def bake_prc_template_to_operation(
                     "id": str(uuid4()),
                     "timestamp": now.isoformat(),
                     "type": "user",
-                    "finalContent": "Save new version",
+                    "finalContent": "PRC template update",
                     "kind": "user_feedback",
                 },
                 created_at=now,
@@ -736,6 +807,7 @@ def bake_prc_template_to_operation(
         "message_id": message_id,
         "s3_key": creative_key,
         "prc_template_s3_key": bake_key,
+        "html_size_bytes": html_size_bytes,
         "asset_url": build_asset_url(tenant_slug, parsed_operation_id),
     }
 
@@ -747,8 +819,9 @@ def create_prc_template_version(
     template_key: str,
     content_type: str,
     name: str,
-    html_template: str,
     confirmed: bool,
+    html_template: str | None = None,
+    operation_bake_html: str | None = None,
     description: str | None = None,
     config_schema: dict[str, Any] | None = None,
     default_field_values: dict[str, Any] | None = None,
@@ -761,7 +834,7 @@ def create_prc_template_version(
     session_factory: SessionFactory,
     s3: S3Reader | None = None,
 ) -> dict[str, Any]:
-    """Append a catalog PRC version and/or bake the proof onto an operation."""
+    """Append a catalog template and/or a distinct composed bake onto an operation."""
     identity = require_brand_role(
         subject,
         tenant_slug,
@@ -808,17 +881,27 @@ def create_prc_template_version(
     if normalized_status not in _PRC_TEMPLATE_STATUSES:
         allowed = ", ".join(sorted(_PRC_TEMPLATE_STATUSES))
         raise ToolError(f"invalid_request: status must be one of {allowed}")
-    if not html_template.strip():
-        raise ToolError("invalid_request: html_template is required")
-    html_size_bytes = len(html_template.encode("utf-8"))
-    if html_size_bytes > max_inline_bytes:
-        raise ToolError(
-            f"too_large: PRC template is {html_size_bytes} bytes; inline limit is {max_inline_bytes}"
-        )
+    catalog_html = html_template or ""
+    if wants_library:
+        if not catalog_html.strip():
+            raise ToolError("invalid_request: html_template is required for library publishing")
+        html_size_bytes = len(catalog_html.encode("utf-8"))
+        if html_size_bytes > max_inline_bytes:
+            raise ToolError(
+                f"too_large: PRC template is {html_size_bytes} bytes; inline limit is {max_inline_bytes}"
+            )
+    else:
+        html_size_bytes = 0
     if wants_operation and not operation_id:
         raise ToolError(
             "invalid_request: operation_id is required when publish_target is "
             "operation or both"
+        )
+    if wants_operation and not operation_bake_html:
+        raise ToolError(
+            "invalid_request: operation_bake_html is required when publish_target is "
+            "operation or both; pass the self-contained Contract v2 operation bake, "
+            "not html_template"
         )
 
     # ponytail: bake before library. A later library conflict still leaves the
@@ -833,7 +916,7 @@ def create_prc_template_version(
             brand_id=brand_id,
             operation_id=operation_id or "",
             content_type=normalized_content_type,
-            html_template=html_template,
+            operation_bake_html=operation_bake_html or "",
             registry=registry,
             session_factory=session_factory,
             s3=s3,
@@ -864,7 +947,7 @@ def create_prc_template_version(
                 content_type=normalized_content_type,
                 name=normalized_name,
                 description=description.strip() if description and description.strip() else None,
-                html_template=html_template,
+                html_template=catalog_html,
                 config_schema=config_schema,
                 default_field_values=default_field_values,
                 status=normalized_status,
@@ -906,7 +989,7 @@ def create_prc_template_version(
     return {
         "publish_target": normalized_target,
         "operation_bake": operation_bake,
-        "html_size_bytes": html_size_bytes,
+        "html_size_bytes": operation_bake["html_size_bytes"] if operation_bake else 0,
         "brand_selection_updated": False,
         **(operation_bake or {}),
     }

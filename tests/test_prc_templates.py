@@ -29,6 +29,16 @@ ENV_EMAIL = "00000000-0000-0000-0000-000000000703"
 DEFAULT_BANNER = "00000000-0000-0000-0000-000000000704"
 BRAND_EMAIL_V1 = "00000000-0000-0000-0000-000000000705"
 BRAND_EMAIL_V2 = "00000000-0000-0000-0000-000000000706"
+OPERATION_BAKE_EMAIL = (
+    '<!doctype html><html><head>'
+    '<meta name="sol-prc-contract" content="v2" data-profile="email">'
+    '<style id="sol-prc-export-style"></style></head>'
+    '<body class="sol-prc-export" data-sol-prc-proof="email"><main data-sol-prc-pages>'
+    '<section data-sol-prc-page="page_desktop" data-sol-prc-page-type="render">'
+    '<iframe data-sol-prc-creative="desktop" '
+    'srcdoc="&lt;!doctype html&gt;&lt;html&gt;creative&lt;/html&gt;"></iframe>'
+    "</section></main></body></html>"
+)
 
 
 def _tool_error_text(response) -> str:
@@ -619,7 +629,11 @@ def test_create_prc_template_version_points_authors_at_the_contract(app_harness:
     assert "Contract v2" in description
     assert "solstice_prc_template_rules" in description
     assert "publish_target" in description
+    assert "operation_bake_html" in description
+    assert "raw" in description and "catalog" in description
     assert "prc_template_s3_key" in description
+    assert "producer-neutral" in description
+    assert "frontend-composed" not in description
 
 
 def test_create_prc_template_bakes_a_draft_operation_version(
@@ -657,8 +671,8 @@ def test_create_prc_template_bakes_a_draft_operation_version(
             template_key="",
             content_type="email",
             name="",
-            html_template="<!doctype html><html>baked-proof</html>",
             confirmed=True,
+            operation_bake_html=OPERATION_BAKE_EMAIL,
             publish_target="operation",
             operation_id=OP_A1,
         )
@@ -668,7 +682,7 @@ def test_create_prc_template_bakes_a_draft_operation_version(
     assert baked["intent"] == "draft"
     assert baked["prc_template_s3_key"].startswith(f"cg_operation_prc_template/{OP_A1}/")
     proof = app_harness.s3.objects[("test-bucket-a", baked["prc_template_s3_key"])]
-    assert proof == b"<!doctype html><html>baked-proof</html>"
+    assert proof == OPERATION_BAKE_EMAIL.encode()
     creative = app_harness.s3.objects[("test-bucket-a", baked["s3_key"])]
     assert creative == b"<html>draft v2 body</html>"
 
@@ -686,6 +700,68 @@ def test_create_prc_template_bakes_a_draft_operation_version(
         assert row is not None
         assert row.prc_template_s3_key == baked["prc_template_s3_key"]
         assert row.intent == "draft"
+        feedback = session.scalar(
+            select(CgOperationMessage).where(
+                CgOperationMessage.operation_id == OP_A1,
+                CgOperationMessage.type == "text",
+                CgOperationMessage.content == "PRC template update",
+            )
+        )
+        assert feedback is not None
+        assert feedback.version_number is None
+        assert feedback.position == row.position - 1
+        assert feedback.message_metadata["kind"] == "user_feedback"
+
+
+@pytest.mark.parametrize(
+    ("operation_bake_html", "error"),
+    [
+        (None, "operation_bake_html is required"),
+        (
+            '<!doctype html><html><head><meta name="sol-prc-contract" content="v2"></head>'
+            '<body data-sol-prc-proof="email"><main data-sol-prc-pages>'
+            '<section data-sol-prc-page="page_desktop" data-sol-prc-page-type="render">'
+            '<iframe data-sol-prc-creative="desktop"></iframe></section></main></body></html>',
+            "catalog template shell is not an operation bake",
+        ),
+        (
+            '<!doctype html><html><head>'
+            '<meta name="sol-prc-contract" content="v2" data-profile="email"></head>'
+            '<body data-sol-prc-proof="email"><main data-sol-prc-pages>'
+            '<section data-sol-prc-page="page_desktop" data-sol-prc-page-type="render">'
+            '<iframe data-sol-prc-creative="desktop" '
+            'srcdoc="&lt;html&gt;creative&lt;/html&gt;"></iframe></section></main></body></html>',
+            "export marker",
+        ),
+    ],
+)
+def test_create_prc_template_operation_target_requires_a_contract_v2_bake(
+    app_harness: AppHarness,
+    mint_token,
+    operation_bake_html: str | None,
+    error: str,
+):
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "email"
+        session.commit()
+
+    response = _create_call(
+        app_harness,
+        mint_token,
+        tenant_slug="tenant_a",
+        brand_id=BRAND_A1,
+        template_key="",
+        content_type="email",
+        name="",
+        confirmed=True,
+        operation_bake_html=operation_bake_html,
+        publish_target="operation",
+        operation_id=OP_A1,
+    )
+
+    assert error in _tool_error_text(response)
 
 
 def test_bake_copies_newest_created_at_html_not_highest_version_number(
@@ -724,8 +800,8 @@ def test_bake_copies_newest_created_at_html_not_highest_version_number(
             template_key="",
             content_type="email",
             name="",
-            html_template="<!doctype html><html>baked-proof</html>",
             confirmed=True,
+            operation_bake_html=OPERATION_BAKE_EMAIL,
             publish_target="operation",
             operation_id=OP_A1,
         )
@@ -790,6 +866,7 @@ def test_create_prc_template_both_does_not_commit_library_if_bake_fails(
         name="Both Email",
         html_template="<!doctype html><html>both</html>",
         confirmed=True,
+        operation_bake_html=OPERATION_BAKE_EMAIL,
         publish_target="both",
         operation_id=OP_A1,
     )
@@ -818,8 +895,8 @@ def test_create_prc_template_bake_rejects_content_type_mismatch(
         template_key="",
         content_type="email",
         name="",
-        html_template="<!doctype html><html>baked-proof</html>",
         confirmed=True,
+        operation_bake_html=OPERATION_BAKE_EMAIL,
         publish_target="operation",
         operation_id=OP_A1,
     )
@@ -849,6 +926,7 @@ def test_create_prc_template_both_bakes_then_appends_library(
             name="Both Email",
             html_template="<!doctype html><html>both</html>",
             confirmed=True,
+            operation_bake_html=OPERATION_BAKE_EMAIL,
             publish_target="both",
             operation_id=OP_A1,
         )

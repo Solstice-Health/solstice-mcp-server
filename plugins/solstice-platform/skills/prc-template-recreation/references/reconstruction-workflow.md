@@ -273,6 +273,10 @@ URL. Do not leave expiring Figma download URLs in the final HTML.
 Produce `prc-template.html` from the matching profile in
 `renderer-contract.md`.
 
+- For an existing operation whose bake is pre-v2 or incomplete, treat the
+  fetched proof as migration input. Repair it as `operation-bake.html` until it
+  satisfies every Contract v2 requirement while preserving its embedded
+  creative, content, page mapping, and visual authority.
 - Copy structural seams from the same-content-type canonical seed or supplied
   template.
 - Change presentation CSS and static labels only after all required IDs,
@@ -319,11 +323,14 @@ Learned failure modes; check each against the source design:
   typography (the source design's frame labels), not the seed's two different
   label styles.
 
-## 7. Compose and verify
+## 7. Verify standalone artifacts
 
-When `Solstice-Frontend` is available, use its actual
-`buildPrcTemplateHtmlFromStoredTemplate` implementation. Do not substitute a
-custom string replacer.
+For a library template, build a temporary local preview from `creative.html`
+and `prc-template.html` using the Contract v2 seams. For an existing operation,
+repair and preview the fetched bake as one self-contained
+`operation-bake.html`; preserve its embedded creative `srcdoc`, hydrated fields,
+operation values, and bake-resident geometry. Neither path requires access to
+Solstice-Frontend.
 
 Verify:
 
@@ -342,6 +349,12 @@ Verify:
 
 Use a screenshot comparison for geometry and a DOM check for contracts. A
 pixel-close screenshot with missing IDs is still invalid.
+
+This is a repair loop, not a one-shot validator. Any contract, hydration,
+geometry, or export failure returns the agent to section 6 to modify the local
+artifact and rerun standalone checks. Do not send a raw shell or known-invalid
+bake to `solstice_create_prc_template_version`, and do not ask the MCP server to
+compose or repair it.
 
 ## 8. Preview and land
 
@@ -369,6 +382,14 @@ Never combine those choices into one question. For each accepted artifact:
   without changing any brand or operation selection. Reserved
   brand/environment/platform auto-resolving keys are rejected; the new version
   must be selected in Template Settings.
+- Operation bake: pass the approved, repaired `operation-bake.html` as
+  `operation_bake_html` only after the user chooses
+  `publish_target="operation"` or `"both"`. It must already contain hydrated
+  fields, frozen creative `srcdoc`, baked geometry, and export markers. The
+  reusable `prc-template.html` catalog shell is not valid operation-bake
+  content. MCP validation is the final write gate; rejection sends the agent
+  back to the local repair/validate/preview loop rather than weakening
+  validation or retrying the same input.
 - Creative content: land it through the append-only `solstice-platform` flow,
   following its create-vs-edit routing and explicit content type requirement.
 
