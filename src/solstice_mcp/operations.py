@@ -148,6 +148,51 @@ def _validate_operation_prc_bake(html: str, content_type: str) -> None:
         )
 
 
+def _validate_prc_template_bake_s3_key(key: str, operation_id: str) -> str:
+    """Return the row UUID embedded in a prepared PRC bake key."""
+    prefix = f"{_PRC_TEMPLATE_S3_KEY_PREFIX}/{operation_id}/"
+    if not key.startswith(prefix) or not key.endswith(".html"):
+        raise ToolError(
+            "invalid_request: operation_bake_s3_key must be "
+            f"{_PRC_TEMPLATE_S3_KEY_PREFIX}/{{operation_id}}/{{row_id}}.html from "
+            "solstice_prepare_prc_template_bake"
+        )
+    row_id = key[len(prefix) : -len(".html")]
+    if _normalized_uuid(row_id) is None:
+        raise ToolError(
+            "invalid_request: operation_bake_s3_key row_id must be a UUID"
+        )
+    return row_id
+
+
+def _load_uploaded_operation_bake(
+    *,
+    operation_bake_s3_key: str,
+    operation_id: str,
+    content_type: str,
+    bucket: str,
+    s3: S3Reader,
+) -> tuple[int, str]:
+    """Validate a presigned-upload bake; return (size, key)."""
+    _validate_prc_template_bake_s3_key(operation_bake_s3_key, operation_id)
+    size = s3.head(bucket, operation_bake_s3_key)
+    if size is None:
+        raise ToolError(
+            "not_found: object not uploaded - PUT the bake HTML to upload_url first"
+        )
+    try:
+        # ponytail: loads bake into MCP memory; stream-parse if process OOM
+        html = s3.download(bucket, operation_bake_s3_key, size).decode("utf-8")
+    except S3ObjectMissing:
+        raise ToolError(
+            "not_found: object not uploaded - PUT the bake HTML to upload_url first"
+        ) from None
+    except S3Error as exc:
+        raise ToolError(f"not_available: s3 read failed: {exc}") from exc
+    _validate_operation_prc_bake(html, content_type)
+    return size, operation_bake_s3_key
+
+
 def _looks_like_s3_key(content: str | None) -> bool:
     if not content:
         return False
@@ -656,6 +701,68 @@ def _latest_html_creative(session, operation_id: str) -> CgOperationMessage | No
     )
 
 
+def prepare_prc_template_bake(
+    subject: str,
+    tenant_slug: str,
+    brand_id: str,
+    operation_id: str,
+    content_type: str,
+    *,
+    registry: TenantRegistry,
+    session_factory: SessionFactory,
+    s3: S3Reader,
+    presign_expiry: int = 600,
+) -> dict[str, Any]:
+    """Issue a presigned PUT URL for a Contract v2 operation PRC bake.
+
+    Two-step write (step 1 of 2): upload the bake HTML directly to
+    ``upload_url``, then call ``solstice_create_prc_template_version`` with
+    ``publish_target="operation"`` (or ``"both"``) and the returned
+    ``prc_template_s3_key`` as ``operation_bake_s3_key``. Requires
+    SOLSTICE_STAFF on the operation's brand.
+    """
+    parsed_operation_id = _normalized_uuid(operation_id)
+    if parsed_operation_id is None:
+        raise ToolError("invalid_request: operation_id must be a UUID")
+    normalized_content_type = content_type.strip().lower()
+    if normalized_content_type not in _PRC_CONTENT_TYPES:
+        allowed = ", ".join(sorted(_PRC_CONTENT_TYPES))
+        raise ToolError(f"invalid_request: content_type must be one of {allowed}")
+    with tenant_session(tenant_slug, session_factory) as session:
+        op = session.scalar(
+            select(CgOperation).where(
+                CgOperation.id == parsed_operation_id, CgOperation.deleted_at.is_(None)
+            )
+        )
+        if op is None or op.brand_id != brand_id:
+            raise ToolError("not_authorized: unknown operation")
+        if (op.content_type or "").lower() != normalized_content_type:
+            raise ToolError(
+                "invalid_request: operation content_type does not match the proof template"
+            )
+    require_brand_role(
+        subject,
+        tenant_slug,
+        brand_id,
+        min_role=UserRole.SOLSTICE_STAFF,
+        registry=registry,
+        session_factory=session_factory,
+    )
+    tenant_config = registry.get(tenant_slug)
+    bucket = tenant_config.s3_bucket if tenant_config is not None else ""
+    if not bucket:
+        raise ToolError("not_configured: tenant has no s3_bucket")
+    row_id = str(uuid4())
+    bake_key = f"{_PRC_TEMPLATE_S3_KEY_PREFIX}/{parsed_operation_id}/{row_id}.html"
+    upload_url = s3.presign_put(bucket, bake_key, presign_expiry, "text/html")
+    return {
+        "operation_id": parsed_operation_id,
+        "prc_template_s3_key": bake_key,
+        "upload_url": upload_url,
+        "expires_in": presign_expiry,
+    }
+
+
 def bake_prc_template_to_operation(
     *,
     identity,
@@ -663,7 +770,7 @@ def bake_prc_template_to_operation(
     brand_id: str,
     operation_id: str,
     content_type: str,
-    operation_bake_html: str,
+    operation_bake_s3_key: str,
     registry: TenantRegistry,
     session_factory: SessionFactory,
     s3: S3Reader,
@@ -677,23 +784,23 @@ def bake_prc_template_to_operation(
     on ``n_cg_operation_messages.prc_template_s3_key``. Head creative is
     newest ``created_at`` then ``id``. Stamped ``version_number`` is
     max(existing)+1 for the S3 key label (same as ``commit_operation_version``),
-    not identity. ``operation_bake_html`` must already be a self-contained
-    Contract v2 operation bake; this server is producer-neutral and never
-    substitutes a raw catalog shell for a bake.
+    not identity. The bake must already be PUT to ``operation_bake_s3_key``.
     """
     parsed_operation_id = _normalized_uuid(operation_id)
     if parsed_operation_id is None:
         raise ToolError("invalid_request: operation_id must be a UUID")
-    _validate_operation_prc_bake(operation_bake_html, content_type)
-    html_size_bytes = len(operation_bake_html.encode("utf-8"))
-    if html_size_bytes > max_inline_bytes:
-        raise ToolError(
-            f"too_large: PRC operation bake is {html_size_bytes} bytes; inline limit is {max_inline_bytes}"
-        )
     tenant_config = registry.get(tenant_slug)
     bucket = tenant_config.s3_bucket if tenant_config is not None else ""
     if not bucket:
         raise ToolError("not_configured: tenant has no s3_bucket")
+    html_size_bytes, bake_key = _load_uploaded_operation_bake(
+        operation_bake_s3_key=operation_bake_s3_key,
+        operation_id=parsed_operation_id,
+        content_type=content_type,
+        bucket=bucket,
+        s3=s3,
+    )
+    row_id = _validate_prc_template_bake_s3_key(bake_key, parsed_operation_id)
 
     with tenant_session(tenant_slug, session_factory) as session:
         locked = session.scalar(
@@ -720,9 +827,7 @@ def bake_prc_template_to_operation(
         )
         next_v = (max_v or 0) + 1
         message_id = str(uuid4())
-        row_id = str(uuid4())
         creative_key = _version_s3_key("html", parsed_operation_id, next_v, message_id, locked.file_name)
-        bake_key = f"{_PRC_TEMPLATE_S3_KEY_PREFIX}/{parsed_operation_id}/{row_id}.html"
         head_content = head.content or ""
         if _looks_like_s3_key(head_content):
             try:
@@ -739,7 +844,6 @@ def bake_prc_template_to_operation(
                 raise ToolError("invalid_state: current html document is empty")
         try:
             s3.put(bucket, creative_key, creative, "text/html")
-            s3.put(bucket, bake_key, operation_bake_html.encode("utf-8"), "text/html")
         except S3Error as exc:
             raise ToolError(f"not_available: s3 write failed: {exc}") from exc
         max_pos = session.scalar(
@@ -822,6 +926,7 @@ def create_prc_template_version(
     confirmed: bool,
     html_template: str | None = None,
     operation_bake_html: str | None = None,
+    operation_bake_s3_key: str | None = None,
     description: str | None = None,
     config_schema: dict[str, Any] | None = None,
     default_field_values: dict[str, Any] | None = None,
@@ -897,11 +1002,15 @@ def create_prc_template_version(
             "invalid_request: operation_id is required when publish_target is "
             "operation or both"
         )
-    if wants_operation and not operation_bake_html:
+    if wants_operation and operation_bake_html:
         raise ToolError(
-            "invalid_request: operation_bake_html is required when publish_target is "
-            "operation or both; pass the self-contained Contract v2 operation bake, "
-            "not html_template"
+            "invalid_request: operation bakes must use solstice_prepare_prc_template_bake, "
+            "PUT to upload_url, then operation_bake_s3_key"
+        )
+    if wants_operation and not operation_bake_s3_key:
+        raise ToolError(
+            "invalid_request: operation_bake_s3_key is required when publish_target is "
+            "operation or both"
         )
 
     # ponytail: bake before library. A later library conflict still leaves the
@@ -916,7 +1025,7 @@ def create_prc_template_version(
             brand_id=brand_id,
             operation_id=operation_id or "",
             content_type=normalized_content_type,
-            operation_bake_html=operation_bake_html or "",
+            operation_bake_s3_key=operation_bake_s3_key or "",
             registry=registry,
             session_factory=session_factory,
             s3=s3,
@@ -2219,5 +2328,6 @@ __all__ = [
     "list_operations_for_brand",
     "list_projects_for_brand",
     "prepare_operation_version",
+    "prepare_prc_template_bake",
     "update_operation",
 ]

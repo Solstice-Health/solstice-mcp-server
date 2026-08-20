@@ -103,6 +103,41 @@ def _create_call(
     )
 
 
+def _prepare_prc_bake_call(
+    app_harness: AppHarness,
+    mint_token,
+    *,
+    sub: str = STAFF_SUB,
+    **arguments: Any,
+):
+    return rpc(
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=sub),
+        params={"name": "solstice_prepare_prc_template_bake", "arguments": arguments},
+    )
+
+
+def _upload_operation_bake(
+    app_harness: AppHarness,
+    mint_token,
+    html: str = OPERATION_BAKE_EMAIL,
+) -> str:
+    prepared = tool_payload(
+        _prepare_prc_bake_call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            operation_id=OP_A1,
+            content_type="email",
+        )
+    )
+    key = prepared["prc_template_s3_key"]
+    app_harness.s3.objects[("test-bucket-a", key)] = html.encode()
+    return key
+
+
 def test_prc_template_resolves_brand_pin_and_fetches_html(
     app_harness: AppHarness,
     mint_token,
@@ -630,6 +665,8 @@ def test_create_prc_template_version_points_authors_at_the_contract(app_harness:
     assert "solstice_prc_template_rules" in description
     assert "publish_target" in description
     assert "operation_bake_html" in description
+    assert "operation_bake_s3_key" in description
+    assert "solstice_prepare_prc_template_bake" in description
     assert "raw" in description and "catalog" in description
     assert "prc_template_s3_key" in description
     assert "producer-neutral" in description
@@ -672,7 +709,7 @@ def test_create_prc_template_bakes_a_draft_operation_version(
             content_type="email",
             name="",
             confirmed=True,
-            operation_bake_html=OPERATION_BAKE_EMAIL,
+            operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token),
             publish_target="operation",
             operation_id=OP_A1,
         )
@@ -714,9 +751,9 @@ def test_create_prc_template_bakes_a_draft_operation_version(
 
 
 @pytest.mark.parametrize(
-    ("operation_bake_html", "error"),
+    ("html", "error"),
     [
-        (None, "operation_bake_html is required"),
+        (None, "operation_bake_s3_key is required"),
         (
             '<!doctype html><html><head><meta name="sol-prc-contract" content="v2"></head>'
             '<body data-sol-prc-proof="email"><main data-sol-prc-pages>'
@@ -738,8 +775,37 @@ def test_create_prc_template_bakes_a_draft_operation_version(
 def test_create_prc_template_operation_target_requires_a_contract_v2_bake(
     app_harness: AppHarness,
     mint_token,
-    operation_bake_html: str | None,
+    html: str | None,
     error: str,
+):
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "email"
+        session.commit()
+
+    arguments: dict[str, Any] = {
+        "tenant_slug": "tenant_a",
+        "brand_id": BRAND_A1,
+        "template_key": "",
+        "content_type": "email",
+        "name": "",
+        "confirmed": True,
+        "publish_target": "operation",
+        "operation_id": OP_A1,
+    }
+    if html is not None:
+        arguments["operation_bake_s3_key"] = _upload_operation_bake(
+            app_harness, mint_token, html
+        )
+    response = _create_call(app_harness, mint_token, **arguments)
+
+    assert error in _tool_error_text(response)
+
+
+def test_create_prc_template_rejects_inline_operation_bake_html(
+    app_harness: AppHarness,
+    mint_token,
 ):
     with app_harness.session_factory("tenant_a") as session:
         op = session.get(CgOperation, OP_A1)
@@ -756,12 +822,42 @@ def test_create_prc_template_operation_target_requires_a_contract_v2_bake(
         content_type="email",
         name="",
         confirmed=True,
-        operation_bake_html=operation_bake_html,
+        operation_bake_html=OPERATION_BAKE_EMAIL,
         publish_target="operation",
         operation_id=OP_A1,
     )
+    assert "solstice_prepare_prc_template_bake" in _tool_error_text(response)
 
-    assert error in _tool_error_text(response)
+
+def test_create_prc_template_bakes_over_inline_cap_via_presign(
+    app_harness: AppHarness,
+    mint_token,
+):
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "email"
+        session.commit()
+
+    huge = OPERATION_BAKE_EMAIL.replace("&gt;creative&lt;", "&gt;" + ("c" * 2_100_000) + "&lt;")
+    baked = tool_payload(
+        _create_call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            template_key="",
+            content_type="email",
+            name="",
+            confirmed=True,
+            operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token, huge),
+            publish_target="operation",
+            operation_id=OP_A1,
+        )
+    )
+    proof = app_harness.s3.objects[("test-bucket-a", baked["prc_template_s3_key"])]
+    assert proof == huge.encode()
+    assert baked["html_size_bytes"] > 2_000_000
 
 
 def test_bake_copies_newest_created_at_html_not_highest_version_number(
@@ -801,7 +897,7 @@ def test_bake_copies_newest_created_at_html_not_highest_version_number(
             content_type="email",
             name="",
             confirmed=True,
-            operation_bake_html=OPERATION_BAKE_EMAIL,
+            operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token),
             publish_target="operation",
             operation_id=OP_A1,
         )
@@ -866,7 +962,7 @@ def test_create_prc_template_both_does_not_commit_library_if_bake_fails(
         name="Both Email",
         html_template="<!doctype html><html>both</html>",
         confirmed=True,
-        operation_bake_html=OPERATION_BAKE_EMAIL,
+        operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token),
         publish_target="both",
         operation_id=OP_A1,
     )
@@ -887,6 +983,9 @@ def test_create_prc_template_bake_rejects_content_type_mismatch(
         op.content_type = "BANNER"
         session.commit()
 
+    bake_key = f"cg_operation_prc_template/{OP_A1}/00000000-0000-0000-0000-000000000801.html"
+    app_harness.s3.objects[("test-bucket-a", bake_key)] = OPERATION_BAKE_EMAIL.encode()
+
     response = _create_call(
         app_harness,
         mint_token,
@@ -896,7 +995,7 @@ def test_create_prc_template_bake_rejects_content_type_mismatch(
         content_type="email",
         name="",
         confirmed=True,
-        operation_bake_html=OPERATION_BAKE_EMAIL,
+        operation_bake_s3_key=bake_key,
         publish_target="operation",
         operation_id=OP_A1,
     )
@@ -926,7 +1025,7 @@ def test_create_prc_template_both_bakes_then_appends_library(
             name="Both Email",
             html_template="<!doctype html><html>both</html>",
             confirmed=True,
-            operation_bake_html=OPERATION_BAKE_EMAIL,
+            operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token),
             publish_target="both",
             operation_id=OP_A1,
         )
@@ -950,3 +1049,107 @@ def test_create_prc_template_both_bakes_then_appends_library(
         )
         assert row is not None
         assert row.prc_template_s3_key == payload["operation_bake"]["prc_template_s3_key"]
+
+
+def test_prepare_prc_template_bake_returns_presigned_put(
+    app_harness: AppHarness,
+    mint_token,
+):
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "EMAIL"
+        session.commit()
+
+    payload = tool_payload(
+        _prepare_prc_bake_call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            operation_id=OP_A1,
+            content_type="email",
+        )
+    )
+    assert payload["prc_template_s3_key"].startswith(f"cg_operation_prc_template/{OP_A1}/")
+    assert payload["prc_template_s3_key"].endswith(".html")
+    assert payload["upload_url"]
+    assert payload["expires_in"] == 600
+
+
+def test_create_prc_template_bakes_from_presigned_s3_key(
+    app_harness: AppHarness,
+    mint_token,
+):
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "EMAIL"
+        session.commit()
+
+    prepared = tool_payload(
+        _prepare_prc_bake_call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            operation_id=OP_A1,
+            content_type="email",
+        )
+    )
+    bake_key = prepared["prc_template_s3_key"]
+    app_harness.s3.objects[("test-bucket-a", bake_key)] = OPERATION_BAKE_EMAIL.encode()
+
+    baked = tool_payload(
+        _create_call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            template_key="",
+            content_type="email",
+            name="",
+            confirmed=True,
+            operation_bake_s3_key=bake_key,
+            publish_target="operation",
+            operation_id=OP_A1,
+        )
+    )
+    assert baked["prc_template_s3_key"] == bake_key
+    assert app_harness.s3.objects[("test-bucket-a", bake_key)] == OPERATION_BAKE_EMAIL.encode()
+
+
+def test_create_prc_template_rejects_missing_presigned_upload(
+    app_harness: AppHarness,
+    mint_token,
+):
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "EMAIL"
+        session.commit()
+
+    prepared = tool_payload(
+        _prepare_prc_bake_call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            operation_id=OP_A1,
+            content_type="email",
+        )
+    )
+    response = _create_call(
+        app_harness,
+        mint_token,
+        tenant_slug="tenant_a",
+        brand_id=BRAND_A1,
+        template_key="",
+        content_type="email",
+        name="",
+        confirmed=True,
+        operation_bake_s3_key=prepared["prc_template_s3_key"],
+        publish_target="operation",
+        operation_id=OP_A1,
+    )
+    assert "PUT the bake HTML to upload_url first" in _tool_error_text(response)

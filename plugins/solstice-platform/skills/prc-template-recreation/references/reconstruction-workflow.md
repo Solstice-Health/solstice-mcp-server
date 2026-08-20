@@ -382,10 +382,12 @@ Never combine those choices into one question. For each accepted artifact:
   without changing any brand or operation selection. Reserved
   brand/environment/platform auto-resolving keys are rejected; the new version
   must be selected in Template Settings.
-- Operation bake: pass the approved, repaired `operation-bake.html` as
-  `operation_bake_html` only after the user chooses
-  `publish_target="operation"` or `"both"`. It must already contain hydrated
-  fields, frozen creative `srcdoc`, baked geometry, and export markers. The
+- Operation bake: call `solstice_prepare_prc_template_bake`, PUT the approved
+  repaired `operation_bake.html` to `upload_url`, then pass
+  `operation_bake_s3_key`, only after the user chooses
+  `publish_target="operation"` or `"both"`. Never inline the bake. It must
+  already contain hydrated fields, frozen creative `srcdoc`, baked geometry,
+  and export markers. The
   reusable `prc-template.html` catalog shell is not valid operation-bake
   content. MCP validation is the final write gate; rejection sends the agent
   back to the local repair/validate/preview loop rather than weakening
