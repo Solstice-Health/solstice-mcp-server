@@ -48,7 +48,8 @@ Every template starts with one declaration whose profile matches L1:
   - NEVER declare --prc-* CSS variables - runtime-owned
   - NEVER style outside the page box (backdrop, page gaps,
     centering, shadow, @page) - the platform paints those
-  - NEVER link external fonts - platform-listed fonts only
+  - NEVER link external fonts or reference a family with no
+    hosted file - the proof-font lock rejects it at bake
   - Keep operation creative out of this file - it is injected
   Full rules: solstice_prc_template_rules via the Solstice MCP -->
 ```
@@ -92,11 +93,14 @@ is not part of v2.
 Banner keeps one authored `[data-banner-section]`; the platform clones it for
 multiple dimensions. Banner slot iframes can live in `#frame-template` and
 `#isi-region-template`, but they still carry
-`data-sol-prc-creative="banner"`. The movable box is `[data-sol-prc-slot]`
-around that iframe — CSS classes are visual only. Cover-edit Next may
-reposition a slot inside its page; that box is written onto
-`[data-sol-prc-slot]` in the next bake, or onto the iframe when the marker is
-absent. Catalog templates still author the slot in place.
+`data-sol-prc-creative="banner"`. Social clone cells come from
+`#prc-variant-cell-tpl` and `#prc-frame-cell-tpl` the same way. The movable,
+selectable box is `[data-sol-prc-slot]` around that iframe — including every
+cloned composed inner render frame. CSS classes are visual only. Cover-edit
+Next selects that box when the iframe interior is clicked, and may reposition
+it inside its page; the box is written onto `[data-sol-prc-slot]` in the next
+bake, or onto the iframe when the marker is absent. Catalog templates still
+author the slot in place.
 
 ### L4 — Config seed
 
@@ -178,7 +182,9 @@ A v2 template must never author:
   margin between pages, page centering, or a page drop shadow;
 - `@page` or `@media print` rules, which set export pagination and geometry;
 - external font links such as `fonts.googleapis.com`. Use platform-listed or
-  inlined fonts.
+  inlined fonts;
+- `style#sol-prc-locked-fonts`, `style#sol-prc-hosted-faces`, and
+  `sol-prc-`-prefixed font-family names, which the proof-font lock writes.
 
 Templates never author callout chrome. This prohibition includes visually
 similar custom classes: if markup, CSS, or JavaScript hosts, styles, places, or
@@ -236,7 +242,7 @@ there is no Python copy of these rules.
 - `common.profile`: Put exactly one matching `data-sol-prc-proof` value on body and include no cross-profile markers.
 - `common.pages`: Wrap pages in one `main[data-sol-prc-pages]`, give every page a stable `data-sol-prc-page` plus `data-sol-prc-page-type`, and ensure every rendered page ID is unique in the composed document.
 - `common.creative_slots`: Mark every intended creative iframe with one valid `data-sol-prc-creative` value; only marked iframes are creative slots.
-- `common.slot_marker`: Stamp the movable creative box with `data-sol-prc-slot` around the creative iframe; CSS class names are visual only and are not editor discovery.
+- `common.slot_marker`: Stamp the movable creative box with `data-sol-prc-slot` around the creative iframe, including iframe clones from banner and social templates. Engine Next selects that box (iframe interior maps to it); CSS class names are visual only and are not editor discovery.
 - `common.config`: Include exactly one parseable JSON object in `script#sol-prc-config[type="application/json"]`.
 - `common.fields`: Mark every visible word on the proof chrome — labels and values — with exactly one normalized `data-sol-prc-field`, `data-sol-prc-mirror`, or `data-sol-prc-derived` role and preserve existing stable IDs. Static readable text is a contract defect: wrap it as a field or delete it before publishing.
 - `common.visible_copy`: If any reviewer-visible chrome word is unmarked, an authoring agent MUST rewrite the template so that word is a field (or a mirror/derived of an existing canonical ID) before calling `solstice_create_prc_template_version`.
@@ -249,10 +255,10 @@ there is no Python copy of these rules.
 - `common.annotation_pages`: Provide unique page boundaries and real anchors; the runtime ignores creative anchors clipped outside the iframe viewport and keeps each callout and arrow endpoint bound to its source page.
 - `common.annotation_positions_in_bake`: After a callout drag or arrow-style change, freeze page-space pins in `script#sol-prc-annotation-positions` inside the operation bake; catalog templates must not include that script.
 - `common.layer_separation`: Keep reusable proof-template chrome separate from operation creative, values, and bake-resident runtime data.
+- `common.hosted_fonts`: Resolve every named font-family so the proof-font lock passes and view matches export: keep or add url-only `@font-face` with a reachable hosted file (never `local()`-only, which the lock strips), sourced in this order — `design_bible` `font_rules` / `social_font_rules` from `solstice_brand_rules`, then `solstice_list_public_fonts(query=family)`, then Fontsource only for a real slug of that family with every used weight present. Do not stand in a different family; only Helvetica / Helvetica Neue rewrite to Arial. The lock also walks creative srcdocs, and url-only faces hosted on the template propagate into them. Stop if none hit and name the family.
 
 #### SHOULD
 - `common.self_contained`: Keep CSS and portable assets inline and use only platform-listed or inlined fonts.
-- `common.hosted_fonts`: Resolve named families in this order: url-only `@font-face` already in the bake; `design_bible` `font_rules` / `social_font_rules` from `solstice_brand_rules`; `solstice_list_public_fonts(query=family)`; Fontsource only for a real slug of that family. Do not stand in a different family. Stop if none hit.
 - `common.compose_check`: Validate both interactive and export composition through the real frontend composer before publishing.
 - `common.minimal_shell`: Author only layers L0-L5; let the platform supply values, creative, behavior, sizing, and annotations.
 - `common.annotation_theme`: If theming runtime annotations, use only the allowlisted `--sol-prc-annotation-color`, `--sol-prc-annotation-background`, `--sol-prc-annotation-text-color`, `--sol-prc-annotation-font`, `--sol-prc-annotation-padding`, `--sol-prc-annotation-radius`, `--sol-prc-annotation-border-width`, and `--sol-prc-annotation-line-width` variables; theming is optional.
@@ -278,6 +284,7 @@ there is no Python copy of these rules.
 - `email.options`: Provide `template#prc-option-tpl`; generated rows stamp `option_label_INDEX`, `subject_label_INDEX`, `subject_INDEX`, `preheader_label_INDEX`, and `preheader_INDEX`.
 - `email.cover_visible_copy`: Every visible cover word is one of those field IDs (or a `file_name` mirror on a page header). An agent that finds unmarked cover text must wrap it before publishing.
 - `email.render_pages`: Provide at least one render page with `data-viewport="desktop|mobile"` and a matching `iframe[data-sol-prc-creative]`.
+- `email.render_slot`: Wrap every desktop and mobile `iframe[data-sol-prc-creative]` in `[data-sol-prc-slot]` so Engine Next can select that inner render frame; the iframe element is not a slot marker.
 
 #### SHOULD
 - `email.dual_viewport`: Provide both a 600px desktop slot and a 375px mobile slot unless the approved proof is intentionally single-viewport.
@@ -295,6 +302,7 @@ there is no Python copy of these rules.
 - `banner.page`: Give the banner section a stable page marker with `data-sol-prc-page-type="storyboard"`.
 - `banner.behavior_seams`: Preserve `#banner-scene-adapter` and `#banner-placeholder-srcdoc` as executable behavior seams.
 - `banner.clone_templates`: Provide `#frame-template` and `#isi-region-template` with their required slots and `iframe[data-sol-prc-creative="banner"]`.
+- `banner.inner_render_slot`: Wrap every `iframe[data-sol-prc-creative="banner"]` in `#frame-template` and `#isi-region-template` with `[data-sol-prc-slot]` so each cloned composed frame is a selectable inner render frame.
 - `banner.fields`: Put primary editable banner values on the first section, mirrors on clones, and cumulative duration in `data-sol-prc-derived`, using the same canonical field IDs across all rendered dimensions.
 
 #### SHOULD
@@ -312,6 +320,7 @@ there is no Python copy of these rules.
 - `social.profile`: Use `body[data-sol-prc-proof="social"]` and `data-profile="social"` in the v2 declaration.
 - `social.source_slot`: Provide one source `iframe[data-sol-prc-creative="social"]` that receives the full social creative.
 - `social.builders`: Preserve `#prc-platform-page-tpl`, `#prc-variant-cell-tpl`, `#prc-storyboard-page-tpl`, and `#prc-frame-cell-tpl` with their canonical slots.
+- `social.inner_render_slot`: Wrap the source social iframe and every creative iframe inside `#prc-variant-cell-tpl` and `#prc-frame-cell-tpl` with `[data-sol-prc-slot]` so cloned platform and storyboard cells expose a selectable inner render frame.
 - `social.pages`: Provide `main[data-sol-prc-pages]`; the social builder may populate its page children at runtime.
 
 #### SHOULD
@@ -356,6 +365,11 @@ The target accept-time prepass rejects non-HTML, missing or duplicate L0/L1,
 cross-profile markers, absent marked creative slots, invalid config JSON,
 reserved namespace use, and removed core field IDs. Platform-owned seed keys,
 legacy v1 annotation hosts, and unavailable fonts warn during migration.
+
+Independently of the prepass, the proof-font lock runs on view and on every
+bake/save: a family with no reachable url-only face, no Helvetica stand-in,
+and no Fontsource slug covering every used weight rejects the bake. Passing
+the lock is what makes workspace and export text identical.
 
 Migration aliases may map v1 seams to v2 during compose:
 
