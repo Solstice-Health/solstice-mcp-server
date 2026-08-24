@@ -11,7 +11,9 @@ without importing it:
 - ``n_cg_operation_messages`` — chat + document versions on an operation.
   ``type`` ∈ {text, html, pdf, blueprint}; document rows (html/pdf) carry an
   ``intent`` ∈ {draft, final}. Timeline and head identity match Backend:
-  ``created_at`` then ``id`` (NULLS FIRST). ``version_number`` is an optional
+  ``created_at`` then ``id`` (NULLS FIRST). Paired user-pill + document writes
+  stamp the document 1µs later so a UUID ``id`` tiebreak cannot invert chat
+  order. ``version_number`` is an optional
   S3-path label on MCP writes, not the sort key. HTML bodies live in tenant
   S3 under ``cg_operation_msg_html/...``; the ``content`` column holds either
   inline HTML or that S3 key. Baked proofs live under
@@ -39,7 +41,7 @@ from __future__ import annotations
 
 import logging
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from typing import Any
 from uuid import UUID, uuid4
@@ -854,6 +856,8 @@ def bake_prc_template_to_operation(
         )
         base_pos = (max_pos or -1) + 1
         now = datetime.now(UTC)
+        # Backend sorts (created_at, id); 1µs gap so UUID tiebreak cannot invert the pair.
+        doc_at = now + timedelta(microseconds=1)
         intent = "draft"
         session.add(
             CgOperationMessage(
@@ -895,10 +899,10 @@ def bake_prc_template_to_operation(
                     intent=intent,
                     s3_key=creative_key,
                     message_id=message_id,
-                    now=now,
+                    now=doc_at,
                     file_name=locked.file_name,
                 ),
-                created_at=now,
+                created_at=doc_at,
                 deleted_at=None,
             )
         )
@@ -2236,6 +2240,8 @@ def commit_operation_version(
         )
         base_pos = (max_pos or -1) + 1
         now = datetime.now(UTC)
+        # Backend sorts (created_at, id); 1µs gap so UUID tiebreak cannot invert the pair.
+        doc_at = now + timedelta(microseconds=1)
         pill = CgOperationMessage(
             id=str(uuid4()),
             operation_id=operation_id,
@@ -2268,9 +2274,9 @@ def commit_operation_version(
             position=base_pos + 1,
             message_metadata=_doc_message_metadata(
                 kind=kind, version=next_v, intent=intent, s3_key=s3_key,
-                message_id=message_id, now=now, file_name=file_name,
+                message_id=message_id, now=doc_at, file_name=file_name,
             ),
-            created_at=now,
+            created_at=doc_at,
             deleted_at=None,
         )
         session.add(pill)
