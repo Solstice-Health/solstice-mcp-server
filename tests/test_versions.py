@@ -184,6 +184,14 @@ def test_commit_member_creates_final_version(app_harness: AppHarness, mint_token
     assert pill[0] == "text"
     assert pill[1] is None
     assert pill[3] == "Save new version"
+    with app_harness.session_factory(TENANT) as session:
+        ordered = session.scalars(
+            select(CgOperationMessage).where(
+                CgOperationMessage.operation_id == OP_A1,
+                CgOperationMessage.deleted_at.is_(None),
+            ).order_by(CgOperationMessage.position)
+        ).all()
+        assert ordered[-2].created_at < ordered[-1].created_at
 
 
 def test_commit_staff_creates_draft_version(app_harness: AppHarness, mint_token):

@@ -747,6 +747,7 @@ def test_create_prc_template_bakes_a_draft_operation_version(
         assert feedback is not None
         assert feedback.version_number is None
         assert feedback.position == row.position - 1
+        assert feedback.created_at < row.created_at
         assert feedback.message_metadata["kind"] == "user_feedback"
 
 
