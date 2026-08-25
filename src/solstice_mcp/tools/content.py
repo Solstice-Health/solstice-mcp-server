@@ -411,6 +411,11 @@ def register_content_tools(
         HTML. ``fetch`` is ignored (kept so older callers do not error). Catalog
         ``solstice_prc_template`` HTML is not a substitute for the bake.
 
+        BANNER and SOCIAL creatives are ONE canvas holding one complete
+        ``<!DOCTYPE html>`` document per dimension, concatenated — not one
+        document. Split on the declarations and edit each separately; editing
+        the canvas as a single document changes only the first dimension.
+
         Gated at MEMBER on the operation's brand. Draft visibility is enforced
         here too: a non-staff caller cannot retrieve a draft message's URL
         (a presigned URL is a read capability). SOLSTICE_STAFF sees drafts;
@@ -623,6 +628,13 @@ def register_content_tools(
         ONCE whether they want the HTML viewable next to the PDF in Solstice;
         pass True only on an explicit yes. Never pass True for non-HTML
         sources (InDesign, ZIP, PPTX) — the call will be rejected.
+
+        A BANNER or SOCIAL html commit is checked before the row lands: the
+        canvas must carry one ``<!DOCTYPE html>`` declaration per HTML document.
+        A document uploaded without one merges into the dimension before it, so
+        the commit is rejected rather than persisting a canvas that has lost a
+        size. Do not build the canvas by parsing and re-serializing — element
+        serialization drops the declaration.
 
         ``file_name`` MUST be a bare filename only (e.g. ``"1022.html"``,
         ``"apretude_banner_v6.pdf"``) and must match the value passed to

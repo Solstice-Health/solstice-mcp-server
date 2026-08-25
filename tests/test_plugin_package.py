@@ -86,6 +86,7 @@ def test_shared_skill_is_portable_and_action_focused() -> None:
     skill_dir = PLUGIN / "skills" / PLUGIN_NAME
     references = {
         "actions.md",
+        "banner-canvas.md",
         "data-model.md",
         "errors.md",
         "memory.md",

@@ -57,7 +57,14 @@ Process the queue one operation at a time:
 1. **Fetch** — find the latest final HTML version via
    `solstice_operation_messages`, then `solstice_operation_html`, then GET
    the returned `url`.
-2. **Swap the ISI block**:
+2. **Split first if the asset is a banner or social.** Those are multi-document:
+   one complete `<!DOCTYPE html>` document per dimension, concatenated. Split on
+   the declarations and treat each document separately — a six-dimension banner
+   needs six swaps, and a canvas edited as one blob loses every dimension after
+   the first. Re-join with a blank line, every document keeping its declaration.
+   See [Banner and social canvas format](../../solstice-platform/references/banner-canvas.md).
+   Email is a single document; skip this step.
+3. **Swap the ISI block** (in each document):
    - Locate the region by its headings — the block starting at
      "IMPORTANT SAFETY INFORMATION" (often paired with an INDICATION heading)
      through the end of that safety section. Banner/social assets may mark it
@@ -67,19 +74,21 @@ Process the queue one operation at a time:
      document's own wrapper/table structure and styles so the block renders
      native to the asset.
    - Everything outside the ISI stays byte-identical except the extras the
-     user enabled.
-3. **Apply extras** — date pairs, subject/preheader, job codes, manual pairs —
+     user enabled — including each document's `<!DOCTYPE html>` and the blank
+     lines between documents. Edit the text; do not parse and re-serialize the
+     document, which drops the declaration.
+4. **Apply extras** — date pairs, subject/preheader, job codes, manual pairs —
    each outside the ISI block.
-4. **Preview** — show the user what changed (before/after of the ISI region
+5. **Preview** — show the user what changed (before/after of the ISI region
    and each extra). Ask: accept, reject (skip this operation, no write), or
    redo with corrections.
-5. **Land on accept** — only after approval:
+6. **Land on accept** — only after approval:
    `solstice_prepare_operation_version` with `type="html"` and a bare
    `file_name` → PUT the HTML bytes → `solstice_commit_operation_version`
    with the unchanged prepare values. Report the committed version number and
    server-derived intent. If the caller is Solstice staff (intent `draft`),
    offer `solstice_approve_operation_version` to publish it.
-6. Move to the next operation. A failure on one operation never blocks the
+7. Move to the next operation. A failure on one operation never blocks the
    rest — record it and continue.
 
 ## Wrap-up
