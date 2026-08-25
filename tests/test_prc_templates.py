@@ -861,6 +861,41 @@ def test_create_prc_template_bakes_over_inline_cap_via_presign(
     assert baked["html_size_bytes"] > 2_000_000
 
 
+def test_create_prc_template_copies_oversize_creative_without_download(
+    app_harness: AppHarness,
+    mint_token,
+):
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "email"
+        session.commit()
+
+    creative_key = f"cg_operation_msg_html/{OP_A1}/v2/m3/v2.html"
+    huge = b"<html>" + (b"c" * 2_100_000) + b"</html>"
+    app_harness.s3.put("test-bucket-a", creative_key, huge)
+    app_harness.s3.mark_too_large("test-bucket-a", creative_key)
+
+    baked = tool_payload(
+        _create_call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            template_key="",
+            content_type="email",
+            name="",
+            confirmed=True,
+            operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token),
+            publish_target="operation",
+            operation_id=OP_A1,
+        )
+    )
+    assert app_harness.s3.objects[("test-bucket-a", baked["s3_key"])] == huge
+    assert not any(key == creative_key for _, key, _ in app_harness.s3.download_calls)
+    assert any(src == creative_key for _, src, _, _ in app_harness.s3.copy_calls)
+
+
 def test_bake_copies_newest_created_at_html_not_highest_version_number(
     app_harness: AppHarness,
     mint_token,

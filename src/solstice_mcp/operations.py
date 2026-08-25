@@ -59,7 +59,7 @@ from solstice_mcp.brands import (
     role_satisfies,
 )
 from solstice_mcp.requests import complete_pending_requests_for_operation
-from solstice_mcp.storage import S3Error, S3ObjectMissing, S3ObjectTooLarge, S3Reader
+from solstice_mcp.storage import S3Error, S3ObjectMissing, S3Reader
 from solstice_mcp.tenants import Base, SessionFactory, TenantRegistry, tenant_session
 
 logger = logging.getLogger(__name__)
@@ -776,7 +776,6 @@ def bake_prc_template_to_operation(
     registry: TenantRegistry,
     session_factory: SessionFactory,
     s3: S3Reader,
-    max_inline_bytes: int,
 ) -> dict[str, Any]:
     """Append a draft version that copies the creative and stores an operation bake.
 
@@ -833,21 +832,19 @@ def bake_prc_template_to_operation(
         head_content = head.content or ""
         if _looks_like_s3_key(head_content):
             try:
-                creative = s3.download(bucket, head_content, max_inline_bytes)
+                s3.copy_object(bucket, head_content, creative_key, "text/html")
             except S3ObjectMissing:
                 raise ToolError("not_found: current html object missing in s3") from None
-            except S3ObjectTooLarge:
-                raise ToolError("too_large: current html exceeds inline limit") from None
             except S3Error as exc:
-                raise ToolError(f"not_available: s3 read failed: {exc}") from exc
+                raise ToolError(f"not_available: s3 write failed: {exc}") from exc
         else:
             creative = head_content.encode("utf-8")
             if not creative.strip():
                 raise ToolError("invalid_state: current html document is empty")
-        try:
-            s3.put(bucket, creative_key, creative, "text/html")
-        except S3Error as exc:
-            raise ToolError(f"not_available: s3 write failed: {exc}") from exc
+            try:
+                s3.put(bucket, creative_key, creative, "text/html")
+            except S3Error as exc:
+                raise ToolError(f"not_available: s3 write failed: {exc}") from exc
         max_pos = session.scalar(
             select(func.max(CgOperationMessage.position)).where(
                 CgOperationMessage.operation_id == parsed_operation_id,
@@ -1033,7 +1030,6 @@ def create_prc_template_version(
             registry=registry,
             session_factory=session_factory,
             s3=s3,
-            max_inline_bytes=max_inline_bytes,
         )
 
     library: dict[str, Any] | None = None

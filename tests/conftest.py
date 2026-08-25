@@ -239,6 +239,7 @@ class FakeS3:
         self.presign_put_calls: list[tuple[str, str, int, str]] = []
         self.head_calls: list[tuple[str, str]] = []
         self.download_calls: list[tuple[str, str, int]] = []
+        self.copy_calls: list[tuple[str, str, str, str]] = []
         self.too_large_keys: set[tuple[str, str]] = set()
         self.missing_on_download: set[tuple[str, str]] = set()
 
@@ -285,6 +286,19 @@ class FakeS3:
 
             raise S3ObjectMissing(key)
         return self.objects[(bucket, key)]
+
+    def copy_object(
+        self, bucket: str, source_key: str, dest_key: str, content_type: str
+    ) -> None:
+        from solstice_mcp.storage import S3ObjectMissing
+
+        self.copy_calls.append((bucket, source_key, dest_key, content_type))
+        if (bucket, source_key) in self.missing_on_download:
+            raise S3ObjectMissing(source_key)
+        body = self.objects.get((bucket, source_key))
+        if body is None:
+            raise S3ObjectMissing(source_key)
+        self.objects[(bucket, dest_key)] = body
 
 
 @pytest.fixture

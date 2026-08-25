@@ -50,7 +50,12 @@ class S3Reader(Protocol):
         """Return object size in bytes, or None if the object is absent."""
 
     def put(self, bucket: str, key: str, body: bytes, content_type: str) -> None:
-        """Write object bytes. Used for server-side PRC proof bakes."""
+        """Write object bytes. Used for leftover inline-HTML creatives."""
+
+    def copy_object(
+        self, bucket: str, source_key: str, dest_key: str, content_type: str
+    ) -> None:
+        """Server-side copy. Used to duplicate a creative onto the next version key."""
 
     def list_keys(self, bucket: str, prefix: str, *, max_keys: int = 2000) -> list[str]:
         """Return object keys under ``prefix``, capped at ``max_keys``."""
@@ -102,6 +107,27 @@ class TenantS3:
             )
         except Exception as exc:
             raise S3Error(f"put_object failed for {key!r}: {exc}") from exc
+
+    def copy_object(
+        self, bucket: str, source_key: str, dest_key: str, content_type: str
+    ) -> None:
+        from botocore.exceptions import ClientError
+
+        try:
+            self._client.copy_object(
+                Bucket=bucket,
+                CopySource={"Bucket": bucket, "Key": source_key},
+                Key=dest_key,
+                ContentType=content_type,
+                MetadataDirective="REPLACE",
+            )
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in {"NoSuchKey", "404"}:
+                raise S3ObjectMissing(source_key) from exc
+            raise S3Error(
+                f"copy_object failed for {source_key!r} -> {dest_key!r}: {exc}"
+            ) from exc
 
     def head(self, bucket: str, key: str) -> int | None:
         from botocore.exceptions import ClientError
