@@ -129,7 +129,7 @@ def test_figma_to_solstice_skill_is_portable_and_human_in_loop() -> None:
     assert "solstice_commit_operation_version" in workflow
 
 
-def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts() -> None:
+def test_prc_template_recreation_skill_carries_renderer_contract() -> None:
     skill_name = "prc-template-recreation"
     skill_dir = PLUGIN / "skills" / skill_name
     text = (skill_dir / "SKILL.md").read_text()
@@ -141,11 +141,13 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
     description = fields["description"].lower()
     for trigger in ("pdf", "figma", "email", "banner", "social"):
         assert trigger in description
+    assert "without fetching a previous" in description
 
     body_lower = body.lower()
     for phrase in (
         "no write until approval",
-        "filter exemplars by exact content type",
+        "do not fetch a previous template",
+        "do not call `solstice_prc_template(..., fetch=true)`",
         "proof template",
         "creative html",
         "untrusted content",
@@ -164,8 +166,12 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "source page",
         "repair before operation validation",
         "validator is a final",
+        "source design is the visual authority",
+        "metadata only",
+        "classified profile",
     ):
         assert phrase in body_lower
+    assert "use the contract v2 banner shape" not in body_lower
 
     references = {"reconstruction-workflow.md", "renderer-contract.md"}
     assert {path.name for path in (skill_dir / "references").glob("*.md")} == references
@@ -174,17 +180,11 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
 
     workflow = (skill_dir / "references" / "reconstruction-workflow.md").read_text().lower()
     for phrase in (
-        "same-content-type exemplar rule",
-        "operation summaries omit `content_type`",
-        "solstice_list_projects",
-        "solstice_project_info",
-        "keep only operation ids where content_type == detected email|banner|social",
-        "never fall back across content types",
-        "solstice_list_operations",
-        "solstice_operation_messages",
+        "no previous-template lookup",
+        "do not call `solstice_prc_template(..., fetch=true)`",
+        "do not walk `solstice_list_projects`",
         "solstice_operation_html",
         "prc_proof_url",
-        "solstice_prc_template(..., fetch=true)",
         "solstice_list_public_fonts",
         "solstice_create_prc_template_version(..., confirmed=true)",
         "never combine those choices into one question",
@@ -193,16 +193,17 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "defaults to published",
         "reserved",
         "auto-resolving keys are rejected",
-        "operation, brand, environment, then platform precedence",
-        "returned `prc_template_versions` html",
         "#sol-prc-config",
-        "__prc_field_overrides",
         "unique `data-sol-prc-page` ids",
         "repair loop, not a one-shot validator",
         "mcp validation is the final write gate",
+        "author the look from the source design",
     ):
         assert phrase in workflow
     assert "#prc-cover-data" not in workflow
+    assert "same-content-type exemplar rule" not in workflow
+    assert "returned `prc_template_versions` html" not in workflow
+    assert "digest exemplars via subagent" not in workflow
 
     contract = (skill_dir / "references" / "renderer-contract.md").read_text()
     for seam in (
@@ -223,6 +224,9 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "`common.hosted_fonts`",
     ):
         assert seam in contract
+    assert "banner-standard-srcdoc-shell" not in contract
+    assert "do not copy layout, palette, typography, or chrome from a live catalog" in contract.lower()
+    assert "exemplar" not in contract.lower()
 
     authoring_guidance = "\n".join((body, workflow, contract)).lower()
     for stale_annotation_model in ("cross-page", "re-home", "nearest page"):

@@ -310,13 +310,13 @@ there is no Python copy of these rules.
 - `banner.fields`: Put primary editable banner values on the first section, mirrors on clones, and cumulative duration in `data-sol-prc-derived`, using the same canonical field IDs across all rendered dimensions.
 
 #### SHOULD
-- `banner.standard_shape`: Start from the annotation-free v2 form of the banner-standard-srcdoc-shell exemplar and preserve its section, adapter, clone-template, and slot shape.
+- `banner.standard_shape`: Preserve the Contract v2 banner section, adapter, clone-template, and slot shape from this profile's MUST rules; do not copy layout, palette, typography, or chrome from a live catalog or operation template.
 - `banner.hollow_seed`: Keep the config presentation-only; let the platform inject title, dimensions, scenes, expansion settings, and tenant/auth data.
 
 #### MUST NOT
 - `banner.authored_clones`: Author multiple dimension sections or per-operation banner documents in the template.
 - `banner.platform_seed`: Seed title, dimensions, scenes, expand_endpoint, expand_model, tenant, or auth values.
-- `banner.annotation_engine`: Retain or create the exemplar's compatibility callout overlay, callout CSS, annotation position store, or geometry engine.
+- `banner.annotation_engine`: Author a callout overlay, callout CSS, annotation position store, or geometry engine.
 
 ### Social
 
