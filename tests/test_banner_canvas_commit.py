@@ -134,3 +134,14 @@ def test_email_documents_are_not_gated(app_harness: AppHarness, mint_token):
     payload = tool_payload(_commit(app_harness, token, op_id, "<html><body>no doctype</body></html>"))
 
     assert payload["version_number"] == 1
+
+
+def test_whitespace_padded_banner_type_is_still_gated(app_harness: AppHarness, mint_token):
+    """Create persists the raw content_type; the gate must strip before matching."""
+    token = mint_token(sub=STAFF_SUB)
+    op_id = _operation(app_harness, token, "BANNER ")
+
+    canvas = "\n\n".join([doc("300x250"), doc("320x50", doctype=False)])
+    result = _result(_commit(app_harness, token, op_id, canvas))
+
+    assert result.get("isError") is True, result

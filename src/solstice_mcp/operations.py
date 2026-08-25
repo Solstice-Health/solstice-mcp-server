@@ -178,7 +178,7 @@ def _validate_banner_canvas(html: str, content_type: str) -> None:
     committing a FIX to an already-broken asset — a corrected canvas has its
     declarations.
     """
-    if content_type.lower() not in _MULTI_DOC_CONTENT_TYPES:
+    if content_type.strip().lower() not in _MULTI_DOC_CONTENT_TYPES:
         return
     documents = len(_HTML_OPEN_RE.findall(html))
     doctypes = len(_DOCTYPE_RE.findall(html))
@@ -2173,6 +2173,7 @@ def commit_operation_version(
         if op is None:
             raise ToolError("not_authorized: unknown operation")
         brand_id = op.brand_id
+        operation_content_type = op.content_type or ""
     identity = require_brand_role(
         subject, tenant_slug, brand_id,
         min_role=UserRole.MEMBER,
@@ -2254,6 +2255,17 @@ def commit_operation_version(
             "bound_version_number": bound_version_number,
             "asset_url": build_asset_url(tenant_slug, operation_id),
         }
+    # Download and validate banner/social canvases before the operation-row
+    # lock so the S3 transfer is not held under FOR UPDATE. Matches
+    # bake_prc_template_to_operation / _load_uploaded_operation_bake.
+    if kind == "html" and operation_content_type.strip().lower() in _MULTI_DOC_CONTENT_TYPES:
+        preview_size = s3.head(bucket, s3_key)
+        if preview_size is None:
+            raise ToolError("not_found: object not uploaded - PUT to the upload_url first")
+        _validate_banner_canvas(
+            _download_uploaded_html(bucket=bucket, s3_key=s3_key, size=preview_size, s3=s3),
+            operation_content_type,
+        )
     with tenant_session(tenant_slug, session_factory) as session:
         locked = session.scalar(
             select(CgOperation).where(
@@ -2283,11 +2295,6 @@ def commit_operation_version(
         size = s3.head(bucket, s3_key)
         if size is None:
             raise ToolError("not_found: object not uploaded - PUT to the upload_url first")
-        if kind == "html" and (locked.content_type or "").lower() in _MULTI_DOC_CONTENT_TYPES:
-            _validate_banner_canvas(
-                _download_uploaded_html(bucket=bucket, s3_key=s3_key, size=size, s3=s3),
-                locked.content_type or "",
-            )
         max_pos = session.scalar(
             select(func.max(CgOperationMessage.position)).where(
                 CgOperationMessage.operation_id == operation_id,
