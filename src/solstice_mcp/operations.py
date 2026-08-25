@@ -40,6 +40,7 @@ Backend-Server does NOT enforce on its own GET /messages route):
 from __future__ import annotations
 
 import logging
+import re
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
@@ -148,6 +149,60 @@ def _validate_operation_prc_bake(html: str, content_type: str) -> None:
             "operation bake with matching profile, an export marker, page markers, and "
             "creative srcdoc; a catalog template shell is not an operation bake"
         )
+
+
+# Canvas content types: one complete <!DOCTYPE html> document per dimension,
+# concatenated. Same grammar for both.
+_MULTI_DOC_CONTENT_TYPES = {"banner", "social"}
+_DOCTYPE_RE = re.compile(r"<!DOCTYPE\s+html", re.IGNORECASE)
+_HTML_OPEN_RE = re.compile(r"<html\b", re.IGNORECASE)
+
+
+def _validate_banner_canvas(html: str, content_type: str) -> None:
+    """Require one ``<!DOCTYPE html>`` declaration per HTML document.
+
+    This server writes the tenant bucket and message table directly — it does
+    not pass through Backend-Server — so it is its own gate. The rule is narrow
+    on purpose: a document that reached us without its declaration is read as a
+    continuation of its predecessor by every doctype-keyed consumer, so the
+    canvas quietly loses a dimension. Anything else about the HTML is the
+    author's business.
+
+    A single document missing its declaration is rejected too, even though
+    nothing can merge into it yet: the next adapt-to-other-sizes run appends a
+    second dimension, and the defect only becomes visible once it has already
+    cost a size.
+
+    Deliberately not auto-repaired: the bytes are the caller's upload, and an
+    agent told what is wrong writes the next one correctly. Nothing here blocks
+    committing a FIX to an already-broken asset — a corrected canvas has its
+    declarations.
+    """
+    if content_type.lower() not in _MULTI_DOC_CONTENT_TYPES:
+        return
+    documents = len(_HTML_OPEN_RE.findall(html))
+    doctypes = len(_DOCTYPE_RE.findall(html))
+    if documents == 0 or doctypes >= documents:
+        return
+    raise ToolError(
+        f"invalid_request: {content_type} canvas has {documents} HTML document(s) but only "
+        f"{doctypes} <!DOCTYPE html> declaration(s). Each dimension must be a complete "
+        "document opening with <!DOCTYPE html>; without it consumers that split on the "
+        "declaration merge it into the previous dimension and the canvas loses a size."
+    )
+
+
+def _download_uploaded_html(*, bucket: str, s3_key: str, size: int, s3: S3Reader) -> str:
+    """Read back a just-uploaded document for validation."""
+    try:
+        # ponytail: loads the canvas into MCP memory; stream-parse if process OOM
+        return s3.download(bucket, s3_key, size).decode("utf-8", errors="replace")
+    except S3ObjectMissing:
+        raise ToolError(
+            "not_found: object not uploaded - PUT to the upload_url first"
+        ) from None
+    except S3Error as exc:
+        raise ToolError(f"not_available: s3 read failed: {exc}") from exc
 
 
 def _validate_prc_template_bake_s3_key(key: str, operation_id: str) -> str:
@@ -2228,6 +2283,11 @@ def commit_operation_version(
         size = s3.head(bucket, s3_key)
         if size is None:
             raise ToolError("not_found: object not uploaded - PUT to the upload_url first")
+        if kind == "html" and (locked.content_type or "").lower() in _MULTI_DOC_CONTENT_TYPES:
+            _validate_banner_canvas(
+                _download_uploaded_html(bucket=bucket, s3_key=s3_key, size=size, s3=s3),
+                locked.content_type or "",
+            )
         max_pos = session.scalar(
             select(func.max(CgOperationMessage.position)).where(
                 CgOperationMessage.operation_id == operation_id,

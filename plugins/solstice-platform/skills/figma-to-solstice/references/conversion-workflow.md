@@ -42,8 +42,15 @@ If no exemplar exists, match a reasonable self-contained HTML document and still
 
 ## 3. Convert
 
-Produce **one** self-contained HTML document:
+Produce a self-contained HTML document:
 
+- **Email, and any single-size asset:** one document.
+- **Banner or social with more than one dimension:** one complete
+  `<!DOCTYPE html>` document per dimension, concatenated with a blank line
+  between them, each stamped with its size. Never wrap the sizes in an outer
+  document. See [Banner and social canvas format](../../solstice-platform/references/banner-canvas.md)
+  — `solstice_commit_operation_version` rejects a canvas whose documents have
+  merged.
 - Match the exemplar's document structure and brand chrome when available.
 - Apply brand rules and design bible constraints (colors, typography, spacing).
 - Place ISI / safety content from `isi` / `drug_info` where the exemplar places them.

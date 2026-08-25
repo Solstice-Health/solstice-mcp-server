@@ -35,6 +35,7 @@ On authentication or access errors, give the safe next step without exposing res
 
 - [Action sequences and defaults](references/actions.md)
 - [Operation types: create vs edit](references/operation-types.md)
+- [Banner and social canvas format](references/banner-canvas.md)
 - [Solstice data and access model](references/data-model.md)
 - [Errors and user wording](references/errors.md)
 - [Memory policy and safe wording](references/memory.md)
