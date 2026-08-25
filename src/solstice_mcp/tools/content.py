@@ -283,10 +283,9 @@ def register_content_tools(
         that operation, publish to the library, or both.
 
         By default returns metadata and field configuration without the
-        potentially large HTML body. Set ``fetch=True`` only when inspecting
-        or repairing that exact resolved template. Do not fetch catalog HTML
-        as a visual or structural reference when recreating a proof from a
-        PDF, Figma file, or screenshot. A brand opt-out (``enabled=false``
+        potentially large HTML body. Set ``fetch=True`` when the template HTML
+        is needed as a structural exemplar (IDs, slots, builders). Do not copy
+        layout, palette, or typography from it. A brand opt-out (``enabled=false``
         with no pinned template) returns ``not_found`` instead of falling
         through to a default.
 

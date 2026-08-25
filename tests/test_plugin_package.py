@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 PLUGIN = ROOT / "plugins" / "solstice-platform"
 PLUGIN_NAME = "solstice-platform"
-PLUGIN_VERSION = "0.3.18"
+PLUGIN_VERSION = "0.3.19"
 # Cursor/Claude → ECS direct (full tools/list). Codex → AgentCore (Cedar/OBO).
 ECS_URL = "https://api.solsticehealth.co/mcp"
 GATEWAY_URL = (
@@ -129,7 +129,7 @@ def test_figma_to_solstice_skill_is_portable_and_human_in_loop() -> None:
     assert "solstice_commit_operation_version" in workflow
 
 
-def test_prc_template_recreation_skill_carries_renderer_contract() -> None:
+def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts() -> None:
     skill_name = "prc-template-recreation"
     skill_dir = PLUGIN / "skills" / skill_name
     text = (skill_dir / "SKILL.md").read_text()
@@ -141,13 +141,12 @@ def test_prc_template_recreation_skill_carries_renderer_contract() -> None:
     description = fields["description"].lower()
     for trigger in ("pdf", "figma", "email", "banner", "social"):
         assert trigger in description
-    assert "without fetching a previous" in description
 
     body_lower = body.lower()
     for phrase in (
         "no write until approval",
-        "do not fetch a previous template",
-        "do not call `solstice_prc_template(..., fetch=true)`",
+        "filter exemplars by exact content type",
+        "exemplars are structural only",
         "proof template",
         "creative html",
         "untrusted content",
@@ -166,12 +165,10 @@ def test_prc_template_recreation_skill_carries_renderer_contract() -> None:
         "source page",
         "repair before operation validation",
         "validator is a final",
-        "source design is the visual authority",
-        "metadata only",
-        "classified profile",
+        "another brand",
+        "visually inspect against the source",
     ):
         assert phrase in body_lower
-    assert "use the contract v2 banner shape" not in body_lower
 
     references = {"reconstruction-workflow.md", "renderer-contract.md"}
     assert {path.name for path in (skill_dir / "references").glob("*.md")} == references
@@ -180,11 +177,17 @@ def test_prc_template_recreation_skill_carries_renderer_contract() -> None:
 
     workflow = (skill_dir / "references" / "reconstruction-workflow.md").read_text().lower()
     for phrase in (
-        "no previous-template lookup",
-        "do not call `solstice_prc_template(..., fetch=true)`",
-        "do not walk `solstice_list_projects`",
+        "same-content-type exemplar rule",
+        "operation summaries omit `content_type`",
+        "solstice_list_projects",
+        "solstice_project_info",
+        "keep only operation ids where content_type == detected email|banner|social",
+        "never fall back across content types",
+        "solstice_list_operations",
+        "solstice_operation_messages",
         "solstice_operation_html",
         "prc_proof_url",
+        "solstice_prc_template(..., fetch=true)",
         "solstice_list_public_fonts",
         "solstice_create_prc_template_version(..., confirmed=true)",
         "never combine those choices into one question",
@@ -193,17 +196,19 @@ def test_prc_template_recreation_skill_carries_renderer_contract() -> None:
         "defaults to published",
         "reserved",
         "auto-resolving keys are rejected",
+        "operation, brand, environment, then platform precedence",
+        "returned `prc_template_versions` html",
         "#sol-prc-config",
+        "__prc_field_overrides",
         "unique `data-sol-prc-page` ids",
         "repair loop, not a one-shot validator",
         "mcp validation is the final write gate",
-        "author the look from the source design",
+        "another brand's design assets",
+        "visual inspect against the reference",
     ):
         assert phrase in workflow
     assert "#prc-cover-data" not in workflow
-    assert "same-content-type exemplar rule" not in workflow
-    assert "returned `prc_template_versions` html" not in workflow
-    assert "digest exemplars via subagent" not in workflow
+    assert "no previous-template lookup" not in workflow
 
     contract = (skill_dir / "references" / "renderer-contract.md").read_text()
     for seam in (
