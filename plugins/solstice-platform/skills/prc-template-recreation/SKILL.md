@@ -30,7 +30,7 @@ creative into one document.
    builders, and injection mechanics — never layout, palette, typography, or
    page composition. When converting an existing Solstice asset, that
    operation's baked proof (`prc_proof_url` from
-   `solstice_operation_html` on the source html message; GET the URL) is
+   `solstice_operation_html` with the source HTML row's `id`; GET the URL) is
    the visual authority. Catalog `html_template` from `solstice_prc_template`
    is seams only. Do not substitute a catalog or generic shell for a missing
    bake — stop. When the source design is itself a proof sheet (header
@@ -123,7 +123,8 @@ creative into one document.
    `solstice_prc_template(..., fetch=true)` with the exact classified content
    type for the effective `prc_template_versions` proof-shell exemplar (seams
    only). When converting an existing operation, list html messages, pick the
-   source bake row, and call `solstice_operation_html`: `url` is the creative,
+   source bake row, and call `solstice_operation_html` with that row's `id`
+   (not its nullable `message_id` column): `url` is the creative,
    `prc_proof_url` is the bake — GET those URLs for the bodies. Fetch a final HTML creative
    exemplar only after its operation metadata matches that same content type
    exactly. Do not read the whole exemplar into the main context: save it to a

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -48,9 +48,10 @@ def _tool_error_text(response) -> str:
 
 def test_list_projects_for_brand_member(app_harness: AppHarness, mint_token):
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
-        params={"name": "solstice_list_projects",
-                "arguments": {"tenant_slug": "tenant_a", "brand_id": BRAND_A1}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_list_projects", "arguments": {"tenant_slug": "tenant_a", "brand_id": BRAND_A1}},
     )
     payload = tool_payload(response)
     names = {p["name"] for p in payload["projects"]}
@@ -64,9 +65,10 @@ def test_list_projects_for_brand_member(app_harness: AppHarness, mint_token):
 def test_list_projects_denied_for_non_member_brand(app_harness: AppHarness, mint_token):
     # SHARED is not on BRAND_A3 (only OTHER is).
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
-        params={"name": "solstice_list_projects",
-                "arguments": {"tenant_slug": "tenant_a", "brand_id": BRAND_A3}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_list_projects", "arguments": {"tenant_slug": "tenant_a", "brand_id": BRAND_A3}},
     )
     assert "not_authorized" in _tool_error_text(response)
 
@@ -78,9 +80,10 @@ def test_list_projects_denied_for_non_member_brand(app_harness: AppHarness, mint
 
 def test_project_info_returns_dir_map(app_harness: AppHarness, mint_token):
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
-        params={"name": "solstice_project_info",
-                "arguments": {"tenant_slug": "tenant_a", "project_id": PROJECT_P1}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_project_info", "arguments": {"tenant_slug": "tenant_a", "project_id": PROJECT_P1}},
     )
     payload = tool_payload(response)
     assert payload["status"] == "ok"
@@ -96,18 +99,23 @@ def test_project_info_unknown_id_is_uniform_not_authorized(app_harness: AppHarne
     # brands the caller is not a member of, so a tenant member cannot use this
     # tool as an existence oracle to enumerate other brands' project ids.
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
-        params={"name": "solstice_project_info",
-                "arguments": {"tenant_slug": "tenant_a", "project_id": "00000000-0000-0000-0000-000000009999"}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={
+            "name": "solstice_project_info",
+            "arguments": {"tenant_slug": "tenant_a", "project_id": "00000000-0000-0000-0000-000000009999"},
+        },
     )
     assert "not_authorized" in _tool_error_text(response)
 
 
 def test_project_info_empty_project_returns_empty_dir_map(app_harness: AppHarness, mint_token):
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
-        params={"name": "solstice_project_info",
-                "arguments": {"tenant_slug": "tenant_a", "project_id": PROJECT_P2}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_project_info", "arguments": {"tenant_slug": "tenant_a", "project_id": PROJECT_P2}},
     )
     payload = tool_payload(response)
     assert payload["dir_map"] == {"items": []}
@@ -120,9 +128,10 @@ def test_project_info_empty_project_returns_empty_dir_map(app_harness: AppHarnes
 
 def test_list_operations_for_brand_member(app_harness: AppHarness, mint_token):
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
-        params={"name": "solstice_list_operations",
-                "arguments": {"tenant_slug": "tenant_a", "brand_id": BRAND_A1}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_list_operations", "arguments": {"tenant_slug": "tenant_a", "brand_id": BRAND_A1}},
     )
     payload = tool_payload(response)
     ids = {op["id"] for op in payload["operations"]}
@@ -132,9 +141,10 @@ def test_list_operations_for_brand_member(app_harness: AppHarness, mint_token):
 
 def test_list_operations_denied_for_non_member_brand(app_harness: AppHarness, mint_token):
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
-        params={"name": "solstice_list_operations",
-                "arguments": {"tenant_slug": "tenant_a", "brand_id": BRAND_A3}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_list_operations", "arguments": {"tenant_slug": "tenant_a", "brand_id": BRAND_A3}},
     )
     assert "not_authorized" in _tool_error_text(response)
 
@@ -146,9 +156,10 @@ def test_list_operations_denied_for_non_member_brand(app_harness: AppHarness, mi
 
 def test_operation_info_ok_for_member(app_harness: AppHarness, mint_token):
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
-        params={"name": "solstice_operation_info",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_operation_info", "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
     )
     payload = tool_payload(response)
     assert payload["status"] == "ok"
@@ -163,9 +174,10 @@ def test_operation_info_denied_for_brand_user_is_not_on(app_harness: AppHarness,
     # operation_id must NOT grant access — the server resolves brand_id from the
     # row and re-checks SHARED's own membership.
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
-        params={"name": "solstice_operation_info",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A3}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_operation_info", "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A3}},
     )
     assert "not_authorized" in _tool_error_text(response)
 
@@ -174,9 +186,13 @@ def test_operation_info_unknown_id_is_uniform_not_authorized(app_harness: AppHar
     # Uniform with the cross-brand deny above: unknown ids and inaccessible
     # ids are indistinguishable (no existence oracle).
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
-        params={"name": "solstice_operation_info",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": "00000000-0000-0000-0000-000000009999"}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={
+            "name": "solstice_operation_info",
+            "arguments": {"tenant_slug": "tenant_a", "operation_id": "00000000-0000-0000-0000-000000009999"},
+        },
     )
     assert "not_authorized" in _tool_error_text(response)
 
@@ -189,9 +205,10 @@ def test_operation_info_unknown_id_is_uniform_not_authorized(app_harness: AppHar
 def test_messages_non_staff_sees_final_only(app_harness: AppHarness, mint_token):
     # SHARED is ADMIN on BRAND_A1 — not staff — so draft document rows are hidden.
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
-        params={"name": "solstice_operation_messages",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_operation_messages", "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
     )
     payload = tool_payload(response)
     intents = [(m["message_id"], m["type"], m["intent"]) for m in payload["messages"]]
@@ -207,9 +224,10 @@ def test_messages_non_staff_sees_final_only(app_harness: AppHarness, mint_token)
 def test_messages_staff_sees_drafts(app_harness: AppHarness, mint_token):
     # STAFF_SUB is SOLSTICE_STAFF on BRAND_A1 — sees everything including drafts.
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=STAFF_SUB),
-        params={"name": "solstice_operation_messages",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=STAFF_SUB),
+        params={"name": "solstice_operation_messages", "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
     )
     payload = tool_payload(response)
     intents = [(m["message_id"], m["type"], m["intent"]) for m in payload["messages"]]
@@ -225,9 +243,10 @@ def test_messages_staff_sees_drafts(app_harness: AppHarness, mint_token):
 def test_messages_member_role_also_hides_drafts(app_harness: AppHarness, mint_token):
     # OTHER is MEMBER on BRAND_A1 (non-staff) — drafts hidden.
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=OTHER_SUB),
-        params={"name": "solstice_operation_messages",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=OTHER_SUB),
+        params={"name": "solstice_operation_messages", "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
     )
     payload = tool_payload(response)
     assert {m["message_id"] for m in payload["messages"]} == {"m1", "m2", "m4"}
@@ -235,9 +254,10 @@ def test_messages_member_role_also_hides_drafts(app_harness: AppHarness, mint_to
 
 def test_messages_text_content_returned_inline(app_harness: AppHarness, mint_token):
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
-        params={"name": "solstice_operation_messages",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A2}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_operation_messages", "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A2}},
     )
     payload = tool_payload(response)
     msg = payload["messages"][0]
@@ -247,9 +267,10 @@ def test_messages_text_content_returned_inline(app_harness: AppHarness, mint_tok
 
 def test_messages_html_returns_s3_key_not_body(app_harness: AppHarness, mint_token):
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
-        params={"name": "solstice_operation_messages",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_operation_messages", "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
     )
     payload = tool_payload(response)
     html_msg = next(m for m in payload["messages"] if m["type"] == "html")
@@ -261,18 +282,23 @@ def test_messages_denied_for_brand_user_is_not_on(app_harness: AppHarness, mint_
     # SHARED calling messages on OP_A3 (BRAND_A3) — not a member. The brand_id is
     # resolved from the operation row, not from an argument.
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
-        params={"name": "solstice_operation_messages",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A3}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_operation_messages", "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A3}},
     )
     assert "not_authorized" in _tool_error_text(response)
 
 
 def test_messages_unknown_operation_denied(app_harness: AppHarness, mint_token):
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
-        params={"name": "solstice_operation_messages",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": "00000000-0000-0000-0000-000000009999"}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={
+            "name": "solstice_operation_messages",
+            "arguments": {"tenant_slug": "tenant_a", "operation_id": "00000000-0000-0000-0000-000000009999"},
+        },
     )
     assert "not_authorized" in _tool_error_text(response)
 
@@ -284,16 +310,22 @@ def test_messages_unknown_operation_denied(app_harness: AppHarness, mint_token):
 
 def test_list_operation_messages_unit_hides_drafts_for_non_staff(app_harness: AppHarness):
     msgs = list_operation_messages(
-        SHARED_SUB, "tenant_a", OP_A1,
-        registry=app_harness.registry, session_factory=app_harness.session_factory,
+        SHARED_SUB,
+        "tenant_a",
+        OP_A1,
+        registry=app_harness.registry,
+        session_factory=app_harness.session_factory,
     )
     assert [m["message_id"] for m in msgs] == ["m1", "m2", "m4"]
 
 
 def test_list_operation_messages_unit_shows_drafts_for_staff(app_harness: AppHarness):
     msgs = list_operation_messages(
-        STAFF_SUB, "tenant_a", OP_A1,
-        registry=app_harness.registry, session_factory=app_harness.session_factory,
+        STAFF_SUB,
+        "tenant_a",
+        OP_A1,
+        registry=app_harness.registry,
+        session_factory=app_harness.session_factory,
     )
     assert [m["message_id"] for m in msgs] == ["m1", "m2", "m3", "m4"]
 
@@ -301,8 +333,11 @@ def test_list_operation_messages_unit_shows_drafts_for_staff(app_harness: AppHar
 def test_list_operation_messages_unit_denies_non_member(app_harness: AppHarness):
     with pytest.raises(Exception, match="not_authorized"):
         list_operation_messages(
-            SHARED_SUB, "tenant_a", OP_A3,
-            registry=app_harness.registry, session_factory=app_harness.session_factory,
+            SHARED_SUB,
+            "tenant_a",
+            OP_A3,
+            registry=app_harness.registry,
+            session_factory=app_harness.session_factory,
         )
 
 
@@ -311,32 +346,36 @@ def test_list_operation_messages_unit_denies_non_member(app_harness: AppHarness)
 # ---------------------------------------------------------------------------
 
 
+MSG_M2_ID = "00000000-0000-0000-0000-000000000502"
+MSG_M3_ID = "00000000-0000-0000-0000-000000000503"
+
+
 def test_messages_marks_staff_head_as_the_newest_document(app_harness: AppHarness, mint_token):
     # OP_A1 documents in timeline order: m2 (final), m3 (draft). Staff see both,
-    # so the head is the draft m3 — the genuinely newest row.
+    # so the head is the draft m3 — the genuinely newest row. Address is row id.
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=STAFF_SUB),
-        params={"name": "solstice_operation_messages",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=STAFF_SUB),
+        params={"name": "solstice_operation_messages", "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
     )
     payload = tool_payload(response)
-    assert payload["head_message_id"] == "m3"
+    assert payload["head_message_id"] == MSG_M3_ID
     heads = [m["message_id"] for m in payload["messages"] if m.get("is_head")]
     assert heads == ["m3"]
 
 
-def test_messages_head_for_non_staff_is_the_newest_visible_document(
-    app_harness: AppHarness, mint_token
-):
+def test_messages_head_for_non_staff_is_the_newest_visible_document(app_harness: AppHarness, mint_token):
     # The draft m3 is hidden from a non-staff caller, so their head is m2. This is
     # the asymmetry the commit-time confirmation gate exists to cover.
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
-        params={"name": "solstice_operation_messages",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_operation_messages", "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
     )
     payload = tool_payload(response)
-    assert payload["head_message_id"] == "m2"
+    assert payload["head_message_id"] == MSG_M2_ID
     heads = [m["message_id"] for m in payload["messages"] if m.get("is_head")]
     assert heads == ["m2"]
 
@@ -345,48 +384,122 @@ def test_messages_flag_is_head_only_on_document_rows(app_harness: AppHarness, mi
     # Timeline is text(m1), html(m2), html(m3), blueprint(m4). Only html/pdf rows
     # can be a version, so only they carry is_head — and exactly one of them does.
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=STAFF_SUB),
-        params={"name": "solstice_operation_messages",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=STAFF_SUB),
+        params={"name": "solstice_operation_messages", "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
     )
     messages = tool_payload(response)["messages"]
-    assert [(m["message_id"], m.get("is_head")) for m in messages] == [
-        ("m1", None),
-        ("m2", False),
-        ("m3", True),
-        ("m4", None),
+    assert [(m["message_id"], m.get("is_head"), m.get("display_version")) for m in messages] == [
+        ("m1", None, None),
+        ("m2", False, 1),
+        ("m3", True, 2),
+        ("m4", None, None),
     ]
-    # Non-document rows do not carry the key at all.
+    # Non-document rows do not carry the keys at all.
     assert "is_head" not in next(m for m in messages if m["message_id"] == "m1")
+    assert "display_version" not in next(m for m in messages if m["message_id"] == "m1")
     assert "is_head" not in next(m for m in messages if m["message_id"] == "m4")
+    assert "display_version" not in next(m for m in messages if m["message_id"] == "m4")
 
 
-def test_messages_publish_no_version_number_at_all(app_harness: AppHarness, mint_token):
-    # The list order IS the version order and the frontend derives its own label
-    # from it, so any number here would be a second source of truth (SOL-3251).
+def test_messages_member_display_version_counts_only_visible_documents(app_harness: AppHarness, mint_token):
+    # Draft m3 is hidden, so the member's only html row is V1 (matches FE client).
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=STAFF_SUB),
-        params={"name": "solstice_operation_messages",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_operation_messages", "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
     )
-    for message in tool_payload(response)["messages"]:
-        assert "document_version" not in message
+    html = [m for m in tool_payload(response)["messages"] if m["type"] == "html"]
+    assert [(m["message_id"], m["display_version"], m["is_head"]) for m in html] == [
+        ("m2", 1, True),
+    ]
 
 
-def test_messages_no_longer_publish_the_dead_ordering_columns(
-    app_harness: AppHarness, mint_token
-):
+def test_member_display_versions_use_legacy_metadata_intent_fallback(app_harness: AppHarness, mint_token):
+    with app_harness.session_factory("tenant_a") as session:
+        session.add_all(
+            [
+                CgOperationMessage(
+                    id="00000000-0000-0000-0000-000000000590",
+                    operation_id=OP_A1,
+                    message_id="legacy-metadata-draft",
+                    type="html",
+                    content="cg_operation_html/legacy-draft.html",
+                    intent=None,
+                    message_metadata={"versionIntent": "draft"},
+                    created_at=datetime.now(UTC) + timedelta(days=1),
+                    deleted_at=None,
+                ),
+                CgOperationMessage(
+                    id="00000000-0000-0000-0000-000000000591",
+                    operation_id=OP_A1,
+                    message_id="legacy-metadata-final",
+                    type="pdf",
+                    content="approved_pdfs/legacy-final.pdf",
+                    intent=None,
+                    message_metadata={"versionIntent": "final"},
+                    created_at=datetime.now(UTC) + timedelta(days=2),
+                    deleted_at=None,
+                ),
+            ]
+        )
+        session.commit()
+
+    member = tool_payload(
+        rpc(
+            app_harness,
+            "tools/call",
+            token=mint_token(sub=SHARED_SUB),
+            params={
+                "name": "solstice_operation_messages",
+                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1},
+            },
+        )
+    )
+    member_docs = [m for m in member["messages"] if m["type"] in {"html", "pdf"}]
+    assert [(m["message_id"], m["intent"], m["display_version"]) for m in member_docs] == [
+        ("m2", "final", 1),
+        ("legacy-metadata-final", "final", 2),
+    ]
+    assert member["head_message_id"] == "00000000-0000-0000-0000-000000000591"
+
+    staff = tool_payload(
+        rpc(
+            app_harness,
+            "tools/call",
+            token=mint_token(sub=STAFF_SUB),
+            params={
+                "name": "solstice_operation_messages",
+                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1},
+            },
+        )
+    )
+    staff_docs = [m for m in staff["messages"] if m["type"] in {"html", "pdf"}]
+    assert [(m["message_id"], m["intent"], m["display_version"]) for m in staff_docs] == [
+        ("m2", "final", 1),
+        ("m3", "draft", 2),
+        ("legacy-metadata-draft", "draft", 3),
+        ("legacy-metadata-final", "final", 4),
+    ]
+
+
+def test_messages_do_not_publish_dead_db_version_columns(app_harness: AppHarness, mint_token):
     # version_number / position are dead: the Backend stopped writing them when
     # row identity replaced numeric versions, so publishing them handed the agent
-    # a sort key that points at stale rows (SOL-3251).
+    # a sort key that points at stale rows (SOL-3251). display_version is computed
+    # over the visible list, not those columns.
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=STAFF_SUB),
-        params={"name": "solstice_operation_messages",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=STAFF_SUB),
+        params={"name": "solstice_operation_messages", "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
     )
     for message in tool_payload(response)["messages"]:
         assert "version_number" not in message
         assert "position" not in message
+        assert "document_version" not in message
 
 
 LEGACY_HEAD_ROW_ID = "00000000-0000-0000-0000-000000000598"
@@ -411,52 +524,112 @@ def _add_legacy_head(app_harness: AppHarness, message_id):
         session.commit()
 
 
+def test_head_message_id_is_the_row_id_even_when_message_id_is_set(app_harness: AppHarness, mint_token):
+    # Canonical address is n_cg_operation_messages.id. The message_id column
+    # stays on the payload but is not what head_message_id publishes.
+    payload = tool_payload(
+        rpc(
+            app_harness,
+            "tools/call",
+            token=mint_token(sub=STAFF_SUB),
+            params={
+                "name": "solstice_operation_messages",
+                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1},
+            },
+        )
+    )
+    head = next(m for m in payload["messages"] if m.get("is_head"))
+    assert head["message_id"] == "m3"
+    assert head["id"] == MSG_M3_ID
+    assert payload["head_message_id"] == MSG_M3_ID
+    assert payload["head_message_id"] != head["message_id"]
+
+
 @pytest.mark.parametrize("blank", [None, ""])
-def test_head_message_id_falls_back_to_the_row_id(
-    app_harness: AppHarness, mint_token, blank
-):
+def test_head_message_id_falls_back_to_the_row_id(app_harness: AppHarness, mint_token, blank):
     # 48 live prod operations have a head document row with a NULL/empty
     # message_id. Publishing null there would leave the head unaddressable, and
     # the commit compare-and-swap would demand a base nobody can name.
     _add_legacy_head(app_harness, blank)
-    payload = tool_payload(rpc(
-        app_harness, "tools/call", token=mint_token(sub=STAFF_SUB),
-        params={"name": "solstice_operation_messages",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
-    ))
+    payload = tool_payload(
+        rpc(
+            app_harness,
+            "tools/call",
+            token=mint_token(sub=STAFF_SUB),
+            params={
+                "name": "solstice_operation_messages",
+                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1},
+            },
+        )
+    )
     assert payload["head_message_id"] == LEGACY_HEAD_ROW_ID
     head = next(m for m in payload["messages"] if m.get("is_head"))
     assert head["id"] == LEGACY_HEAD_ROW_ID
 
 
-def test_operation_html_accepts_the_row_id_for_a_legacy_head(
-    app_harness: AppHarness, mint_token
-):
+def test_operation_html_accepts_the_row_id_for_a_legacy_head(app_harness: AppHarness, mint_token):
     # The id handed out as head_message_id must be readable, or an agent would be
     # told to edit a version it cannot fetch.
     _add_legacy_head(app_harness, None)
-    payload = tool_payload(rpc(
-        app_harness, "tools/call", token=mint_token(sub=STAFF_SUB),
-        params={"name": "solstice_operation_html",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1,
-                              "message_id": LEGACY_HEAD_ROW_ID}},
-    ))
+    payload = tool_payload(
+        rpc(
+            app_harness,
+            "tools/call",
+            token=mint_token(sub=STAFF_SUB),
+            params={
+                "name": "solstice_operation_html",
+                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1, "message_id": LEGACY_HEAD_ROW_ID},
+            },
+        )
+    )
     assert payload["s3_key"].endswith("legacy.html")
 
 
-def test_message_lookup_tolerates_a_non_uuid_identifier(
-    app_harness: AppHarness, mint_token
-):
+def test_message_lookup_tolerates_a_non_uuid_identifier(app_harness: AppHarness, mint_token):
     # Guard for a Postgres-only failure: `id` is a uuid column, so querying it
     # with a non-UUID string is a cast error, not a miss. SQLite would tolerate
     # it, so without this the bug ships green. Expect a clean not_found.
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=STAFF_SUB),
-        params={"name": "solstice_operation_html",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1,
-                              "message_id": "definitely-not-a-uuid"}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=STAFF_SUB),
+        params={
+            "name": "solstice_operation_html",
+            "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1, "message_id": "definitely-not-a-uuid"},
+        },
     )
     assert "not_found" in _tool_error_text(response)
+
+
+def test_message_lookup_rejects_row_id_legacy_id_collision(app_harness: AppHarness, mint_token):
+    with app_harness.session_factory("tenant_a") as session:
+        session.add(
+            CgOperationMessage(
+                id="00000000-0000-0000-0000-000000000597",
+                operation_id=OP_A1,
+                message_id=MSG_M2_ID,
+                type="html",
+                content="cg_operation_msg_html/collision.html",
+                intent="final",
+                created_at=datetime.now(UTC) + timedelta(days=1),
+                deleted_at=None,
+            )
+        )
+        session.commit()
+    response = rpc(
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=STAFF_SUB),
+        params={
+            "name": "solstice_operation_html",
+            "arguments": {
+                "tenant_slug": "tenant_a",
+                "operation_id": OP_A1,
+                "message_id": MSG_M2_ID,
+            },
+        },
+    )
+    assert "ambiguous message identifier" in _tool_error_text(response)
 
 
 def test_dead_ordering_columns_are_unmapped(app_harness: AppHarness):
@@ -467,14 +640,13 @@ def test_dead_ordering_columns_are_unmapped(app_harness: AppHarness):
     assert not hasattr(CgOperationMessage, "position")
 
 
-def test_messages_head_is_none_when_operation_has_no_documents(
-    app_harness: AppHarness, mint_token
-):
+def test_messages_head_is_none_when_operation_has_no_documents(app_harness: AppHarness, mint_token):
     # OP_A2 is chat-only.
     response = rpc(
-        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
-        params={"name": "solstice_operation_messages",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A2}},
+        app_harness,
+        "tools/call",
+        token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_operation_messages", "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A2}},
     )
     payload = tool_payload(response)
     assert payload["head_message_id"] is None
@@ -501,18 +673,27 @@ def test_head_follows_created_at_not_insertion_order(app_harness: AppHarness):
         )
         session.commit()
     msgs = list_operation_messages(
-        STAFF_SUB, "tenant_a", OP_A1,
-        registry=app_harness.registry, session_factory=app_harness.session_factory,
+        STAFF_SUB,
+        "tenant_a",
+        OP_A1,
+        registry=app_harness.registry,
+        session_factory=app_harness.session_factory,
     )
     assert [m["message_id"] for m in msgs if m.get("is_head")] == ["m3"]
-    # It sorts to the FRONT by created_at, despite being inserted last.
-    assert [m["message_id"] for m in msgs if m["type"] == "html"] == ["m99", "m2", "m3"]
+    html = [m for m in msgs if m["type"] == "html"]
+    assert [m["message_id"] for m in html] == ["m99", "m2", "m3"]
+    assert [m["display_version"] for m in html] == [1, 2, 3]
+    assert "/v99/" in html[0]["s3_key"]  # S3 labels are not display versions.
+    assert html[-1]["is_head"] is True
 
 
 def test_list_projects_for_brand_unit(app_harness: AppHarness):
     page = list_projects_for_brand(
-        SHARED_SUB, "tenant_a", BRAND_A1,
-        registry=app_harness.registry, session_factory=app_harness.session_factory,
+        SHARED_SUB,
+        "tenant_a",
+        BRAND_A1,
+        registry=app_harness.registry,
+        session_factory=app_harness.session_factory,
     )
     assert {p["name"] for p in page["projects"]} == {"Project P1", "Project P2"}
     assert page["has_more"] is False
@@ -521,8 +702,11 @@ def test_list_projects_for_brand_unit(app_harness: AppHarness):
 
 def test_get_project_info_unit_returns_dir_map(app_harness: AppHarness):
     info = get_project_info(
-        SHARED_SUB, "tenant_a", PROJECT_P1,
-        registry=app_harness.registry, session_factory=app_harness.session_factory,
+        SHARED_SUB,
+        "tenant_a",
+        PROJECT_P1,
+        registry=app_harness.registry,
+        session_factory=app_harness.session_factory,
     )
     assert info is not None
     assert info["brand_id"] == BRAND_A1
@@ -531,8 +715,11 @@ def test_get_project_info_unit_returns_dir_map(app_harness: AppHarness):
 
 def test_get_operation_info_unit(app_harness: AppHarness):
     info = get_operation_info(
-        SHARED_SUB, "tenant_a", OP_A1,
-        registry=app_harness.registry, session_factory=app_harness.session_factory,
+        SHARED_SUB,
+        "tenant_a",
+        OP_A1,
+        registry=app_harness.registry,
+        session_factory=app_harness.session_factory,
     )
     assert info is not None
     assert info["brand_id"] == BRAND_A1
@@ -540,8 +727,11 @@ def test_get_operation_info_unit(app_harness: AppHarness):
 
 def test_list_operations_for_brand_unit(app_harness: AppHarness):
     page = list_operations_for_brand(
-        SHARED_SUB, "tenant_a", BRAND_A1,
-        registry=app_harness.registry, session_factory=app_harness.session_factory,
+        SHARED_SUB,
+        "tenant_a",
+        BRAND_A1,
+        registry=app_harness.registry,
+        session_factory=app_harness.session_factory,
     )
     assert {op["id"] for op in page["operations"]} == {OP_A1, OP_A2}
     assert page["has_more"] is False
@@ -549,16 +739,24 @@ def test_list_operations_for_brand_unit(app_harness: AppHarness):
 
 def test_list_operations_respects_limit(app_harness: AppHarness):
     page = list_operations_for_brand(
-        SHARED_SUB, "tenant_a", BRAND_A1,
-        limit=1, offset=0,
-        registry=app_harness.registry, session_factory=app_harness.session_factory,
+        SHARED_SUB,
+        "tenant_a",
+        BRAND_A1,
+        limit=1,
+        offset=0,
+        registry=app_harness.registry,
+        session_factory=app_harness.session_factory,
     )
     assert page["count"] == 1
     assert page["has_more"] is True
     page2 = list_operations_for_brand(
-        SHARED_SUB, "tenant_a", BRAND_A1,
-        limit=1, offset=1,
-        registry=app_harness.registry, session_factory=app_harness.session_factory,
+        SHARED_SUB,
+        "tenant_a",
+        BRAND_A1,
+        limit=1,
+        offset=1,
+        registry=app_harness.registry,
+        session_factory=app_harness.session_factory,
     )
     assert page2["count"] == 1
     assert page2["has_more"] is False
@@ -574,10 +772,13 @@ def test_list_operations_respects_limit(app_harness: AppHarness):
 
 def _call_html(harness, mint_token, *, sub=SHARED_SUB, op=OP_A1, msg="m2", fetch=False):
     return rpc(
-        harness, "tools/call", token=mint_token(sub=sub),
-        params={"name": "solstice_operation_html",
-                "arguments": {"tenant_slug": "tenant_a", "operation_id": op,
-                              "message_id": msg, "fetch": fetch}},
+        harness,
+        "tools/call",
+        token=mint_token(sub=sub),
+        params={
+            "name": "solstice_operation_html",
+            "arguments": {"tenant_slug": "tenant_a", "operation_id": op, "message_id": msg, "fetch": fetch},
+        },
     )
 
 
@@ -589,6 +790,8 @@ def test_html_returns_presigned_url_without_body(app_harness: AppHarness, mint_t
     assert "prc_proof_html" not in payload
     assert payload["s3_key"].startswith("cg_operation_msg_html/")
     assert payload["intent"] == "final"
+    assert payload["id"] == MSG_M2_ID
+    assert payload["message_id"] == "m2"
     assert payload["prc_proof_url"] is None
     assert app_harness.s3.download_calls == []
 
@@ -632,8 +835,12 @@ def test_html_non_html_message_rejected(app_harness: AppHarness, mint_token):
 
 def test_html_unit_staff_presign_draft(app_harness: AppHarness):
     result = get_operation_html(
-        STAFF_SUB, "tenant_a", OP_A1, "m3",
-        registry=app_harness.registry, session_factory=app_harness.session_factory,
+        STAFF_SUB,
+        "tenant_a",
+        OP_A1,
+        "m3",
+        registry=app_harness.registry,
+        session_factory=app_harness.session_factory,
         s3=app_harness.s3,
     )
     assert result["intent"] == "draft"
@@ -644,8 +851,12 @@ def test_html_unit_staff_presign_draft(app_harness: AppHarness):
 def test_html_unit_non_staff_denied_draft(app_harness: AppHarness):
     with pytest.raises(Exception, match="not_authorized"):
         get_operation_html(
-            SHARED_SUB, "tenant_a", OP_A1, "m3",
-            registry=app_harness.registry, session_factory=app_harness.session_factory,
+            SHARED_SUB,
+            "tenant_a",
+            OP_A1,
+            "m3",
+            registry=app_harness.registry,
+            session_factory=app_harness.session_factory,
             s3=app_harness.s3,
         )
 

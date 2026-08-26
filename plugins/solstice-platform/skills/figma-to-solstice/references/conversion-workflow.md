@@ -35,8 +35,8 @@ Resolve workspace and brand using the `solstice-platform` skill sequence (`solst
 4. Format exemplar (strongly preferred):
    - `solstice_list_operations` for the brand
    - pick one final HTML asset of the same content type (email, banner, etc.)
-   - `solstice_operation_messages` → find a final `html` message
-   - `solstice_operation_html` only for that exemplar, then GET `url` to match structure (footer/ISI placement, references style, document chrome)
+   - `solstice_operation_messages` → find a final `html` row
+   - `solstice_operation_html` with that row's `id` (not its nullable `message_id` column), then GET `url` to match structure (footer/ISI placement, references style, document chrome)
 
 If no exemplar exists, match a reasonable self-contained HTML document and still honor brand rules + ISI from `solstice_brand_rules`.
 

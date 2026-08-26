@@ -4,7 +4,7 @@
 - A **brand** belongs to a workspace. The server returns only brands where the signed-in user has a live membership.
 - A **project** belongs to a brand and may contain a folder map whose leaves point to content review operations.
 - A **content review** is an operation with metadata, conversation messages, and document versions.
-- A **message** may contain text or refer to an HTML, PDF, or blueprint document. HTML bodies may be returned as time-limited links or fetched on explicit request.
+- A **message** may contain text or refer to an HTML, PDF, or blueprint document. Its row `id` is the canonical address; `message_id` is a nullable legacy/storage field. Visible HTML/PDF rows have a computed `display_version` matching the user's Solstice stepper. HTML bodies may be returned as time-limited links or fetched on explicit request.
 - A **request** records one user ask (save to project, change request, approval request) with status `pending`, `completed`, or `dismissed`. Requests reference an operation but outlive it and are never deleted — staff may only dismiss them, with a reason.
 
 The server derives access from the OAuth token and checks it again on each request. Brand roles are `MEMBER`, `ADMIN`, and `SOLSTICE_STAFF`. Roles are brand-specific, not workspace-wide.

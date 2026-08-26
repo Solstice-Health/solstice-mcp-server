@@ -109,11 +109,7 @@ def _load_prc_template_rules(profile: str) -> dict[str, Any]:
         raise ToolError(f"contract_error: renderer contract has no rules for {normalized_profile}")
 
     rules = {
-        rule_type: [
-            rule
-            for scope_name in scopes
-            for rule in parsed[scope_name][rule_type]
-        ]
+        rule_type: [rule for scope_name in scopes for rule in parsed[scope_name][rule_type]]
         for rule_type in rule_headings.values()
     }
     if any(not entries for entries in rules.values()):
@@ -237,19 +233,21 @@ def register_content_tools(
     def solstice_operation_messages(tenant_slug: str, operation_id: str) -> dict[str, Any]:
         """Return an operation's chat + document-version summaries. Read-only; gated at MEMBER.
 
-        Messages come back oldest first, so the list order IS the version order.
-        The CURRENT document version is the one flagged ``is_head``, repeated as
-        the top-level ``head_message_id`` — use it whenever the user says "the
-        latest / current version". Do NOT sort or renumber the rows yourself.
-        There is deliberately no version number: a document's identity is its
-        ``message_id``, which is what ``solstice_operation_html`` reads and what
-        ``solstice_commit_operation_version`` takes as ``base_message_id``.
+        Messages come back oldest first. HTML/PDF rows carry ``display_version``
+        (1, 2, … among rows you can see — the same V the Solstice stepper shows)
+        and ``is_head`` on the current one, repeated as top-level
+        ``head_message_id``. That value is the row's ``id`` (PK), not the
+        nullable ``message_id`` column. When the user says "the latest / current
+        version", report ``V{display_version}`` of the head row and use
+        ``head_message_id`` for reads and commits. Do NOT parse ``v{n}`` from
+        S3 keys (those are leftover path segments and will not match the UI).
+        Do NOT sort or renumber the rows yourself.
 
         Intent visibility is enforced server-side: SOLSTICE_STAFF sees draft and
         final document messages; MEMBER and ADMIN see final only. There is no
-        intent/role argument — the filter is derived from your token. Numbering and
-        the head are computed over the rows you can see, so a non-staff caller's
-        head can be older than a staff caller's.
+        intent/role argument — the filter is derived from your token. Numbering
+        and the head are computed over the rows you can see, so a non-staff
+        caller's V labels and head can differ from a staff caller's.
         """
         messages = list_operation_messages(
             require_subject(),
@@ -259,10 +257,7 @@ def register_content_tools(
             session_factory=session_factory,
         )
         head = next((m for m in messages if m.get("is_head")), None)
-        # Legacy document rows can have a NULL/empty message_id; fall back to the
-        # row id so the head is always addressable. Every tool that takes a
-        # message identifier accepts either form.
-        head_message_id = (head.get("message_id") or head.get("id")) if head else None
+        head_message_id = head.get("id") if head else None
         return {
             "tenant_slug": tenant_slug,
             "operation_id": operation_id,
@@ -321,9 +316,7 @@ def register_content_tools(
             session_factory=session_factory,
         )
         if template is None:
-            raise ToolError(
-                f"not_found: no PRC template for content_type {content_type.strip().lower()!r}"
-            )
+            raise ToolError(f"not_found: no PRC template for content_type {content_type.strip().lower()!r}")
         return {
             "status": "ok",
             "tenant_slug": tenant_slug,
@@ -422,8 +415,10 @@ def register_content_tools(
         """Return presigned GET URLs for one operation HTML message.
 
         To read the CURRENT version, pass the ``head_message_id`` from
-        ``solstice_operation_messages``. If you intend to edit and save it back,
-        keep that id — it is the ``base_message_id`` the commit requires.
+        ``solstice_operation_messages`` (the row ``id``). If you intend to edit
+        and save it back, keep that id — it is the ``base_message_id`` the
+        commit requires. The user-facing label is ``V{display_version}`` on
+        that row, not a number in the S3 key.
 
         Mirrors Backend ``content-url``: ``url`` / ``s3_key`` are the creative;
         ``prc_proof_url`` / ``prc_proof_s3_key`` are the bake when present.
@@ -561,6 +556,9 @@ def register_content_tools(
         the file bytes directly to upload_url, then call
         solstice_commit_operation_version with the returned s3_key. Gated at
         MEMBER on the operation's brand.
+        The returned ``message_id`` is an upload-key UUID embedded in ``s3_key``;
+        it is not the document row address. After commit, use the response's
+        ``head_message_id`` / ``id`` (the new row PK).
         ``type`` is ``html``, ``pdf``, or ``source`` (design source file for
         edit operations only — records a metadata pointer, not a version;
         ``file_name`` is required for source uploads).
@@ -636,16 +634,18 @@ def register_content_tools(
         also complete the upload contract (is_html_saved, approved_pdf_s3_key,
         status) automatically.
 
-        ``base_message_id`` — the ``message_id`` of the version you actually read
-        and edited. REQUIRED whenever ``solstice_operation_messages`` gave you a
-        ``head_message_id``; omit it only when that was null (no readable version
-        yet). Your read, your edit, and this commit
-        can span many turns, and in that window the Solstice UI, another agent, or
-        a staff approval may add a new version. Committing without declaring your
-        base would silently bury it. If the head moved you get
-        ``conflict: not_latest_document`` — re-read solstice_operation_messages,
-        reapply your change on top of the new ``head_message_id``, and commit that.
-        Never re-send a base you did not read this session.
+        ``base_message_id`` — the row ``id`` of the version you actually read
+        and edited (``head_message_id`` from ``solstice_operation_messages``).
+        REQUIRED whenever that call gave you a ``head_message_id``; omit it only
+        when that was null (no readable version yet). Your read, your edit, and
+        this commit can span many turns, and in that window the Solstice UI,
+        another agent, or a staff approval may add a new version. Committing
+        without declaring your base would silently bury it. If the head moved
+        you get ``conflict: not_latest_document`` — re-read
+        solstice_operation_messages, reapply your change on top of the new
+        ``head_message_id``, and commit that. Never re-send a base you did not
+        read this session. The leftover ``message_id`` column is still accepted
+        if passed, but reads always publish the row ``id``.
 
         ``confirmed`` — leave False on the first attempt. If the call comes back
         ``confirmation_required``, a newer version exists that your token cannot
@@ -657,7 +657,7 @@ def register_content_tools(
         ``show_source_on_ui`` — source commits only, and only when the source
         file is HTML. When True, the source is bound to the operation's
         published (else latest) document version — returned as
-        ``bound_message_id`` — so the Solstice asset page shows a PDF↔Source
+        ``bound_message_id`` (the row ``id``) — so the Solstice asset page shows a PDF↔Source
         toggle: the user can flip between the PDF and the rendered HTML.
         Commit the pdf version BEFORE the source commit. For a
         PDF edit operation whose user supplied an HTML source, ASK the user
@@ -673,7 +673,10 @@ def register_content_tools(
         instruction-like text will cause the call to be denied. Keep the
         user's intent in your own reasoning, not in this argument.
 
-        The response includes ``asset_url`` — the operation's Solstice page.
+        The response includes ``id`` / ``head_message_id`` for the newly inserted
+        row. Use that value as the next ``base_message_id``; ``message_id`` remains
+        the upload-key UUID for compatibility. The response also includes
+        ``asset_url`` — the operation's Solstice page.
         End your user-facing reply with ``[Open asset in Solstice](<asset_url>)``
         instead of handing the user the operation UUID.
         """
@@ -758,8 +761,10 @@ def register_content_tools(
         """Approve a draft document version: flip its intent from draft to final.
 
         Requires SOLSTICE_STAFF on the operation's brand. The target message
-        must be an html or pdf document version (find message_ids via
-        solstice_operation_messages). A real draft→final flip also closes the
+        must be an html or pdf document version. Pass the row ``id`` from
+        ``solstice_operation_messages`` (for the current draft this equals
+        ``head_message_id``); the nullable ``message_id`` column is accepted
+        only for compatibility. A real draft→final flip also closes the
         two things that keep brand members on "Your asset is being prepared."
         — pending change-request batches and pending admin requests on the
         operation. Approving an already-final version is an idempotent no-op.

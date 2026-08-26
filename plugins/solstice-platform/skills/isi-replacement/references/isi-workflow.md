@@ -54,8 +54,9 @@ stays off:
 
 Process the queue one operation at a time:
 
-1. **Fetch** — call `solstice_operation_messages` and take `head_message_id`,
-   the current version. Check that row's `intent`:
+1. **Fetch** — call `solstice_operation_messages` and take `head_message_id`
+   (the row `id` of the current version). Select the row where `is_head=true`
+   (equivalently `row.id == head_message_id`) and check its `intent`:
    - `final` — proceed. Pass the id to `solstice_operation_html` and GET the
      returned `url`. Keep the id; step 5 needs it as `base_message_id`.
    - `draft` — SKIP this operation and list it in the final summary as needing

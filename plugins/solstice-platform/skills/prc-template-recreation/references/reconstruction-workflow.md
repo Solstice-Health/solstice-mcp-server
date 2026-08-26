@@ -173,8 +173,9 @@ Then:
    - banner: same dimensions and static/animated behavior;
    - social: same platform and ratio.
 4. Call `solstice_operation_messages` for candidates.
-5. Keep only a final HTML message.
-6. Call `solstice_operation_html` for the one selected exemplar. `url` is
+5. Keep only a final HTML message row.
+6. Call `solstice_operation_html` with the selected row's `id` (not its
+   nullable `message_id` column). `url` is
    the creative. `prc_proof_url` is that message's baked proof when
    `prc_template_s3_key` is set. GET those URLs for the bodies.
 
