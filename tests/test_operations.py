@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -303,6 +304,209 @@ def test_list_operation_messages_unit_denies_non_member(app_harness: AppHarness)
             SHARED_SUB, "tenant_a", OP_A3,
             registry=app_harness.registry, session_factory=app_harness.session_factory,
         )
+
+
+# ---------------------------------------------------------------------------
+# document head identity (SOL-3251)
+# ---------------------------------------------------------------------------
+
+
+def test_messages_marks_staff_head_as_the_newest_document(app_harness: AppHarness, mint_token):
+    # OP_A1 documents in timeline order: m2 (final), m3 (draft). Staff see both,
+    # so the head is the draft m3 — the genuinely newest row.
+    response = rpc(
+        app_harness, "tools/call", token=mint_token(sub=STAFF_SUB),
+        params={"name": "solstice_operation_messages",
+                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
+    )
+    payload = tool_payload(response)
+    assert payload["head_message_id"] == "m3"
+    heads = [m["message_id"] for m in payload["messages"] if m.get("is_head")]
+    assert heads == ["m3"]
+
+
+def test_messages_head_for_non_staff_is_the_newest_visible_document(
+    app_harness: AppHarness, mint_token
+):
+    # The draft m3 is hidden from a non-staff caller, so their head is m2. This is
+    # the asymmetry the commit-time confirmation gate exists to cover.
+    response = rpc(
+        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_operation_messages",
+                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
+    )
+    payload = tool_payload(response)
+    assert payload["head_message_id"] == "m2"
+    heads = [m["message_id"] for m in payload["messages"] if m.get("is_head")]
+    assert heads == ["m2"]
+
+
+def test_messages_flag_is_head_only_on_document_rows(app_harness: AppHarness, mint_token):
+    # Timeline is text(m1), html(m2), html(m3), blueprint(m4). Only html/pdf rows
+    # can be a version, so only they carry is_head — and exactly one of them does.
+    response = rpc(
+        app_harness, "tools/call", token=mint_token(sub=STAFF_SUB),
+        params={"name": "solstice_operation_messages",
+                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
+    )
+    messages = tool_payload(response)["messages"]
+    assert [(m["message_id"], m.get("is_head")) for m in messages] == [
+        ("m1", None),
+        ("m2", False),
+        ("m3", True),
+        ("m4", None),
+    ]
+    # Non-document rows do not carry the key at all.
+    assert "is_head" not in next(m for m in messages if m["message_id"] == "m1")
+    assert "is_head" not in next(m for m in messages if m["message_id"] == "m4")
+
+
+def test_messages_publish_no_version_number_at_all(app_harness: AppHarness, mint_token):
+    # The list order IS the version order and the frontend derives its own label
+    # from it, so any number here would be a second source of truth (SOL-3251).
+    response = rpc(
+        app_harness, "tools/call", token=mint_token(sub=STAFF_SUB),
+        params={"name": "solstice_operation_messages",
+                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
+    )
+    for message in tool_payload(response)["messages"]:
+        assert "document_version" not in message
+
+
+def test_messages_no_longer_publish_the_dead_ordering_columns(
+    app_harness: AppHarness, mint_token
+):
+    # version_number / position are dead: the Backend stopped writing them when
+    # row identity replaced numeric versions, so publishing them handed the agent
+    # a sort key that points at stale rows (SOL-3251).
+    response = rpc(
+        app_harness, "tools/call", token=mint_token(sub=STAFF_SUB),
+        params={"name": "solstice_operation_messages",
+                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
+    )
+    for message in tool_payload(response)["messages"]:
+        assert "version_number" not in message
+        assert "position" not in message
+
+
+LEGACY_HEAD_ROW_ID = "00000000-0000-0000-0000-000000000598"
+
+
+def _add_legacy_head(app_harness: AppHarness, message_id):
+    """A newer document row whose FE message_id was never populated."""
+    with app_harness.session_factory("tenant_a") as session:
+        session.add(
+            CgOperationMessage(
+                id=LEGACY_HEAD_ROW_ID,
+                operation_id=OP_A1,
+                message_id=message_id,
+                author_id=None,
+                type="html",
+                content=f"cg_operation_msg_html/{OP_A1}/legacy/legacy.html",
+                intent="final",
+                created_at=datetime(2026, 7, 1, 12, 0, 0, tzinfo=UTC),  # newest
+                deleted_at=None,
+            )
+        )
+        session.commit()
+
+
+@pytest.mark.parametrize("blank", [None, ""])
+def test_head_message_id_falls_back_to_the_row_id(
+    app_harness: AppHarness, mint_token, blank
+):
+    # 48 live prod operations have a head document row with a NULL/empty
+    # message_id. Publishing null there would leave the head unaddressable, and
+    # the commit compare-and-swap would demand a base nobody can name.
+    _add_legacy_head(app_harness, blank)
+    payload = tool_payload(rpc(
+        app_harness, "tools/call", token=mint_token(sub=STAFF_SUB),
+        params={"name": "solstice_operation_messages",
+                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1}},
+    ))
+    assert payload["head_message_id"] == LEGACY_HEAD_ROW_ID
+    head = next(m for m in payload["messages"] if m.get("is_head"))
+    assert head["id"] == LEGACY_HEAD_ROW_ID
+
+
+def test_operation_html_accepts_the_row_id_for_a_legacy_head(
+    app_harness: AppHarness, mint_token
+):
+    # The id handed out as head_message_id must be readable, or an agent would be
+    # told to edit a version it cannot fetch.
+    _add_legacy_head(app_harness, None)
+    payload = tool_payload(rpc(
+        app_harness, "tools/call", token=mint_token(sub=STAFF_SUB),
+        params={"name": "solstice_operation_html",
+                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1,
+                              "message_id": LEGACY_HEAD_ROW_ID}},
+    ))
+    assert payload["s3_key"].endswith("legacy.html")
+
+
+def test_message_lookup_tolerates_a_non_uuid_identifier(
+    app_harness: AppHarness, mint_token
+):
+    # Guard for a Postgres-only failure: `id` is a uuid column, so querying it
+    # with a non-UUID string is a cast error, not a miss. SQLite would tolerate
+    # it, so without this the bug ships green. Expect a clean not_found.
+    response = rpc(
+        app_harness, "tools/call", token=mint_token(sub=STAFF_SUB),
+        params={"name": "solstice_operation_html",
+                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A1,
+                              "message_id": "definitely-not-a-uuid"}},
+    )
+    assert "not_found" in _tool_error_text(response)
+
+
+def test_dead_ordering_columns_are_unmapped(app_harness: AppHarness):
+    # Structural guarantee behind SOL-3251: the columns still exist in the DB,
+    # but nothing in this server can read or write them, so no reader can
+    # accidentally sort on a stale number.
+    assert not hasattr(CgOperationMessage, "version_number")
+    assert not hasattr(CgOperationMessage, "position")
+
+
+def test_messages_head_is_none_when_operation_has_no_documents(
+    app_harness: AppHarness, mint_token
+):
+    # OP_A2 is chat-only.
+    response = rpc(
+        app_harness, "tools/call", token=mint_token(sub=SHARED_SUB),
+        params={"name": "solstice_operation_messages",
+                "arguments": {"tenant_slug": "tenant_a", "operation_id": OP_A2}},
+    )
+    payload = tool_payload(response)
+    assert payload["head_message_id"] is None
+    assert all(not m.get("is_head") for m in payload["messages"])
+
+
+def test_head_follows_created_at_not_insertion_order(app_harness: AppHarness):
+    # The regression itself, in the shape it actually reaches us: a row written
+    # LAST but dated EARLIER (a v99-style stale row, or a backfill) must not
+    # become the head. Ordering is created_at, so it slots in at the front.
+    with app_harness.session_factory("tenant_a") as session:
+        session.add(
+            CgOperationMessage(
+                id="00000000-0000-0000-0000-000000000599",
+                operation_id=OP_A1,
+                message_id="m99",
+                author_id=None,
+                type="html",
+                content=f"cg_operation_msg_html/{OP_A1}/v99/m99/v99.html",
+                intent="final",
+                created_at=datetime(2025, 6, 1, 12, 0, 0, tzinfo=UTC),  # OLDER than m2/m3
+                deleted_at=None,
+            )
+        )
+        session.commit()
+    msgs = list_operation_messages(
+        STAFF_SUB, "tenant_a", OP_A1,
+        registry=app_harness.registry, session_factory=app_harness.session_factory,
+    )
+    assert [m["message_id"] for m in msgs if m.get("is_head")] == ["m3"]
+    # It sorts to the FRONT by created_at, despite being inserted last.
+    assert [m["message_id"] for m in msgs if m["type"] == "html"] == ["m99", "m2", "m3"]
 
 
 def test_list_projects_for_brand_unit(app_harness: AppHarness):

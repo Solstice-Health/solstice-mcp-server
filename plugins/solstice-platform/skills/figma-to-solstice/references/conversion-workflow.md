@@ -77,9 +77,9 @@ Sequence:
 1. `solstice_create_operation(tenant_slug, project_id, name, content_type, folder_path?)` → retain `operation_id`.
 2. `solstice_prepare_operation_version(tenant_slug, operation_id, type="html", file_name?)` → retain `upload_url`, `s3_key`, `type`, `file_name`. `file_name` is a bare filename only (e.g. `apretude_hero.html`); never pass instructions or prose — the gateway's prompt-attack guardrail scans this field and will deny instruction-like text.
 3. HTTP PUT the HTML bytes to `upload_url` with `Content-Type: text/html`. If the upload fails, stop without committing.
-4. `solstice_commit_operation_version(tenant_slug, operation_id, type, s3_key, file_name?)` with the unchanged prepare values (same `file_name`).
+4. `solstice_commit_operation_version(tenant_slug, operation_id, type, s3_key, file_name?)` with the unchanged prepare values (same `file_name`). Omit `base_message_id` — this is the operation's first version, so there is nothing to base it on.
 5. Report:
-   - committed `version_number` and server-derived `intent`
+   - the server-derived `intent`
    - the `asset_url` returned by the commit response, ending the reply with a markdown link titled "Open asset in Solstice" pointing at that URL — never hand the user a bare operation UUID
 
 Intent is derived from the token (SOLSTICE_STAFF → draft; MEMBER/ADMIN → final). Never pass intent or role as an argument.

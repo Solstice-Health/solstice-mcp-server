@@ -237,9 +237,19 @@ def register_content_tools(
     def solstice_operation_messages(tenant_slug: str, operation_id: str) -> dict[str, Any]:
         """Return an operation's chat + document-version summaries. Read-only; gated at MEMBER.
 
+        Messages come back oldest first, so the list order IS the version order.
+        The CURRENT document version is the one flagged ``is_head``, repeated as
+        the top-level ``head_message_id`` — use it whenever the user says "the
+        latest / current version". Do NOT sort or renumber the rows yourself.
+        There is deliberately no version number: a document's identity is its
+        ``message_id``, which is what ``solstice_operation_html`` reads and what
+        ``solstice_commit_operation_version`` takes as ``base_message_id``.
+
         Intent visibility is enforced server-side: SOLSTICE_STAFF sees draft and
         final document messages; MEMBER and ADMIN see final only. There is no
-        intent/role argument — the filter is derived from your token.
+        intent/role argument — the filter is derived from your token. Numbering and
+        the head are computed over the rows you can see, so a non-staff caller's
+        head can be older than a staff caller's.
         """
         messages = list_operation_messages(
             require_subject(),
@@ -248,11 +258,17 @@ def register_content_tools(
             registry=registry,
             session_factory=session_factory,
         )
+        head = next((m for m in messages if m.get("is_head")), None)
+        # Legacy document rows can have a NULL/empty message_id; fall back to the
+        # row id so the head is always addressable. Every tool that takes a
+        # message identifier accepts either form.
+        head_message_id = (head.get("message_id") or head.get("id")) if head else None
         return {
             "tenant_slug": tenant_slug,
             "operation_id": operation_id,
             "messages": messages,
             "count": len(messages),
+            "head_message_id": head_message_id,
         }
 
     @read_only_tool
@@ -405,6 +421,10 @@ def register_content_tools(
     ) -> dict[str, Any]:
         """Return presigned GET URLs for one operation HTML message.
 
+        To read the CURRENT version, pass the ``head_message_id`` from
+        ``solstice_operation_messages``. If you intend to edit and save it back,
+        keep that id — it is the ``base_message_id`` the commit requires.
+
         Mirrors Backend ``content-url``: ``url`` / ``s3_key`` are the creative;
         ``prc_proof_url`` / ``prc_proof_s3_key`` are the bake when present.
         Download those URLs when you need the body — the payload never inlines
@@ -537,10 +557,10 @@ def register_content_tools(
     ) -> dict[str, Any]:
         """Prepare a new HTML or PDF version upload on an operation. Step 1 of 2.
 
-        Returns a presigned PUT URL and target s3_key for the next version (v1
-        if the operation has no document versions, else max+1). Upload the file
-        bytes directly to upload_url, then call solstice_commit_operation_version
-        with the returned s3_key. Gated at MEMBER on the operation's brand.
+        Returns a presigned PUT URL and target s3_key for the next version. Upload
+        the file bytes directly to upload_url, then call
+        solstice_commit_operation_version with the returned s3_key. Gated at
+        MEMBER on the operation's brand.
         ``type`` is ``html``, ``pdf``, or ``source`` (design source file for
         edit operations only — records a metadata pointer, not a version;
         ``file_name`` is required for source uploads).
@@ -601,6 +621,8 @@ def register_content_tools(
         s3_key: str,
         file_name: str | None = None,
         show_source_on_ui: bool = False,
+        base_message_id: str | None = None,
+        confirmed: bool = False,
     ) -> dict[str, Any]:
         """Commit a new version row after uploading to S3. Step 2 of 2.
 
@@ -614,11 +636,30 @@ def register_content_tools(
         also complete the upload contract (is_html_saved, approved_pdf_s3_key,
         status) automatically.
 
+        ``base_message_id`` — the ``message_id`` of the version you actually read
+        and edited. REQUIRED whenever ``solstice_operation_messages`` gave you a
+        ``head_message_id``; omit it only when that was null (no readable version
+        yet). Your read, your edit, and this commit
+        can span many turns, and in that window the Solstice UI, another agent, or
+        a staff approval may add a new version. Committing without declaring your
+        base would silently bury it. If the head moved you get
+        ``conflict: not_latest_document`` — re-read solstice_operation_messages,
+        reapply your change on top of the new ``head_message_id``, and commit that.
+        Never re-send a base you did not read this session.
+
+        ``confirmed`` — leave False on the first attempt. If the call comes back
+        ``confirmation_required``, a newer version exists that your token cannot
+        read, so re-reading will not help and retrying would loop. Tell the user
+        their edit is not based on the latest version and that saving it will
+        supersede that newer version, then pass True only on an explicit yes.
+        Never set it pre-emptively.
+
         ``show_source_on_ui`` — source commits only, and only when the source
         file is HTML. When True, the source is bound to the operation's
-        published (else latest) document version so the Solstice asset page
-        shows a PDF↔Source toggle: the user can flip between the PDF and the
-        rendered HTML. Commit the pdf version BEFORE the source commit. For a
+        published (else latest) document version — returned as
+        ``bound_message_id`` — so the Solstice asset page shows a PDF↔Source
+        toggle: the user can flip between the PDF and the rendered HTML.
+        Commit the pdf version BEFORE the source commit. For a
         PDF edit operation whose user supplied an HTML source, ASK the user
         ONCE whether they want the HTML viewable next to the PDF in Solstice;
         pass True only on an explicit yes. Never pass True for non-HTML
@@ -644,6 +685,8 @@ def register_content_tools(
             s3_key,
             file_name,
             show_source_on_ui,
+            base_message_id,
+            confirmed,
             registry=registry,
             session_factory=session_factory,
             s3=s3,

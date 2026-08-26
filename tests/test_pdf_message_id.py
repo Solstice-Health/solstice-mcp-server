@@ -43,6 +43,11 @@ def _create_edit_pdf(harness: AppHarness, token: str) -> str:
 
 
 def _land_pdf(harness: AppHarness, token: str, op_id: str, file_name: str) -> dict[str, Any]:
+    """Read-then-commit, the way an agent must: declare the head it is building on."""
+    base = tool_payload(_call(
+        harness, token, "solstice_operation_messages",
+        {"tenant_slug": TENANT, "operation_id": op_id},
+    ))["head_message_id"]
     prep = tool_payload(_call(
         harness, token, "solstice_prepare_operation_version",
         {"tenant_slug": TENANT, "operation_id": op_id, "type": "pdf", "file_name": file_name},
@@ -51,16 +56,16 @@ def _land_pdf(harness: AppHarness, token: str, op_id: str, file_name: str) -> di
     return tool_payload(_call(
         harness, token, "solstice_commit_operation_version",
         {"tenant_slug": TENANT, "operation_id": op_id, "type": "pdf",
-         "s3_key": prep["s3_key"], "file_name": file_name},
+         "s3_key": prep["s3_key"], "file_name": file_name, "base_message_id": base},
     ))
 
 
-def _doc_row(harness: AppHarness, op_id: str, version: int) -> CgOperationMessage:
+def _doc_row(harness: AppHarness, op_id: str, message_id: str) -> CgOperationMessage:
     with harness.session_factory(TENANT) as session:
         row = session.scalar(
             select(CgOperationMessage).where(
                 CgOperationMessage.operation_id == op_id,
-                CgOperationMessage.version_number == version,
+                CgOperationMessage.message_id == message_id,
                 CgOperationMessage.deleted_at.is_(None),
             )
         )
@@ -74,7 +79,7 @@ def test_pdf_commit_returns_real_message_id(app_harness: AppHarness, mint_token)
     op_id = _create_edit_pdf(app_harness, token)
     payload = _land_pdf(app_harness, token, op_id, "ids.pdf")
     assert payload["message_id"], "pdf commit must mint a non-empty message_id"
-    row = _doc_row(app_harness, op_id, 1)
+    row = _doc_row(app_harness, op_id, payload["message_id"])
     assert row.message_id == payload["message_id"]
     # FE version stepper identity: metadata.id must match the row message_id.
     assert (row.message_metadata or {}).get("id") == payload["message_id"]
@@ -101,4 +106,4 @@ def test_pdf_draft_approvable_via_returned_message_id(app_harness: AppHarness, m
     payload = tool_payload(response)
     assert payload["intent"] == "final"
     assert payload["already_final"] is False
-    assert _doc_row(app_harness, op_id, 1).intent == "final"
+    assert _doc_row(app_harness, op_id, committed["message_id"]).intent == "final"

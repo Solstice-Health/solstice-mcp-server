@@ -715,7 +715,6 @@ def test_create_prc_template_bakes_a_draft_operation_version(
         )
     )
     assert baked["publish_target"] == "operation"
-    assert baked["version_number"] == 3
     assert baked["intent"] == "draft"
     assert baked["prc_template_s3_key"].startswith(f"cg_operation_prc_template/{OP_A1}/")
     proof = app_harness.s3.objects[("test-bucket-a", baked["prc_template_s3_key"])]
@@ -731,7 +730,7 @@ def test_create_prc_template_bakes_a_draft_operation_version(
         row = session.scalar(
             select(CgOperationMessage).where(
                 CgOperationMessage.operation_id == OP_A1,
-                CgOperationMessage.version_number == 3,
+                CgOperationMessage.message_id == baked["message_id"],
             )
         )
         assert row is not None
@@ -745,8 +744,8 @@ def test_create_prc_template_bakes_a_draft_operation_version(
             )
         )
         assert feedback is not None
-        assert feedback.version_number is None
-        assert feedback.position == row.position - 1
+        # The chat pill must sort BEFORE the document row it introduces; ordering
+        # is created_at then id, so the pair cannot share a timestamp.
         assert feedback.created_at < row.created_at
         assert feedback.message_metadata["kind"] == "user_feedback"
 
@@ -913,9 +912,7 @@ def test_bake_copies_newest_created_at_html_not_highest_version_number(
                 author_id=None,
                 type="html",
                 content=later_key,
-                version_number=None,
                 intent="draft",
-                position=99,
                 created_at=datetime(2026, 8, 19, 12, 0, 0, tzinfo=UTC),
                 deleted_at=None,
             )
@@ -1080,7 +1077,7 @@ def test_create_prc_template_both_bakes_then_appends_library(
         row = session.scalar(
             select(CgOperationMessage).where(
                 CgOperationMessage.operation_id == OP_A1,
-                CgOperationMessage.version_number == 3,
+                CgOperationMessage.message_id == payload["operation_bake"]["message_id"],
             )
         )
         assert row is not None

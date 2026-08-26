@@ -13,10 +13,16 @@ without importing it:
   ``intent`` ∈ {draft, final}. Timeline and head identity match Backend:
   ``created_at`` then ``id`` (NULLS FIRST). Paired user-pill + document writes
   stamp the document 1µs later so a UUID ``id`` tiebreak cannot invert chat
-  order. ``version_number`` is an optional
-  S3-path label on MCP writes, not the sort key. HTML bodies live in tenant
-  S3 under ``cg_operation_msg_html/...``; the ``content`` column holds either
-  inline HTML or that S3 key. Baked proofs live under
+  order. A document's identity is its ``message_id``; the current version is
+  the one flagged ``is_head``. No version NUMBER is published anywhere — the
+  list order is the version order and the frontend derives its own display
+  label from it, so a number here would only be a second source of truth to
+  disagree with. The DB ``version_number`` / ``position`` columns are dead (the
+  Backend stopped writing them when row identity replaced numeric versions);
+  this module leaves them unmapped and never reads, writes, or publishes them.
+  HTML bodies live in tenant S3 under ``cg_operation_msg_html/...``; the
+  ``content`` column holds either inline HTML or that S3 key.
+  Baked proofs live under
   ``cg_operation_prc_template/...`` on ``prc_template_s3_key``.
   ``solstice_operation_html`` signs both; callers GET the URLs for the
   bodies.
@@ -40,6 +46,7 @@ Backend-Server does NOT enforce on its own GET /messages route):
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
@@ -74,6 +81,10 @@ def _clamp_list_limit(limit: int) -> int:
 
 def _clamp_list_offset(offset: int) -> int:
     return max(0, int(offset))
+
+# Document rows carry a version; text/blueprint rows never do. Same set as the
+# Backend's ``_DOCUMENT_ROW_TYPES`` (message_table_repository).
+_DOCUMENT_ROW_TYPES = ("html", "pdf")
 
 _HTML_S3_KEY_PREFIX = "cg_operation_msg_html"
 _PRC_TEMPLATE_S3_KEY_PREFIX = "cg_operation_prc_template"
@@ -279,6 +290,13 @@ class CgOperationMessage(Base):
     ``message_metadata`` (``metadata`` is reserved by SQLAlchemy's Base); we do
     not select it here because it is a large blob and not needed for read
     summaries.
+
+    The DB still has ``version_number`` and ``position`` columns, deliberately
+    left unmapped: the Backend dropped both from its own model and its INSERT
+    when row identity replaced numeric versions, so they are NULL on ~85-90% of
+    live rows. Mapping them would only let a reader sort on a stale number.
+    Order by ``created_at`` then ``id``; see ``_summarize_message_timeline`` for
+    the derived display label.
     """
 
     __tablename__ = "n_cg_operation_messages"
@@ -289,9 +307,7 @@ class CgOperationMessage(Base):
     author_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), nullable=True)
     type: Mapped[str] = mapped_column(String)
     content: Mapped[str | None] = mapped_column(String, nullable=True)
-    version_number: Mapped[int | None] = mapped_column(nullable=True)
     intent: Mapped[str | None] = mapped_column(String, nullable=True)
-    position: Mapped[int] = mapped_column()
     # The DB column ``metadata`` (jsonb in prod) is mapped to ``message_metadata``
     # and loaded deferred so read queries never pull the blob. The write path
     # (version commit) populates it; reads in this module never access it.
@@ -374,36 +390,59 @@ def _operation_summary(op: CgOperation) -> dict[str, Any]:
     }
 
 
-def _message_summary(msg: CgOperationMessage) -> dict[str, Any]:
+def _message_summary(
+    msg: CgOperationMessage,
+    *,
+    is_head: bool = False,
+) -> dict[str, Any]:
     """Project one message row to a read summary.
 
     For ``text``: return the content inline (chat is the agent-readable payload).
     For ``html`` / ``pdf``: return the S3 key when ``content`` is one, else an
-    ``inline`` flag; never return the body (deferred to a future tool).
+    ``inline`` flag; never return the body (deferred to a future tool). Document
+    rows also carry ``is_head`` — this row is the current version.
     For ``blueprint``: return existence only (the JSON payload is large).
+
+    No version number is published. The list order IS the version order, and the
+    frontend derives its own display label from that list; emitting a number here
+    would just be a second source of truth to disagree with it.
     """
     base = {
         "id": msg.id,
         "message_id": msg.message_id,
         "type": msg.type,
         "intent": msg.intent,
-        "version_number": msg.version_number,
         "author_id": msg.author_id,
-        "position": msg.position,
         "created_at": _iso(msg.created_at),
     }
     if msg.type == "text":
         return {**base, "content": msg.content}
-    if msg.type in ("html", "pdf"):
+    if msg.type in _DOCUMENT_ROW_TYPES:
         extra = {}
         if msg.prc_template_s3_key:
             extra["prc_template_s3_key"] = msg.prc_template_s3_key
+        document = {"is_head": is_head}
         if _looks_like_s3_key(msg.content):
-            return {**base, "s3_key": msg.content, "body": None, **extra}
-        return {**base, "s3_key": None, "inline": True, "body": None, **extra}
+            return {**base, **document, "s3_key": msg.content, "body": None, **extra}
+        return {**base, **document, "s3_key": None, "inline": True, "body": None, **extra}
     if msg.type == "blueprint":
         return {**base, "has_blueprint": True, "body": None}
     return base
+
+
+def _summarize_message_timeline(
+    rows: Sequence[CgOperationMessage],
+) -> list[dict[str, Any]]:
+    """Project an ordered timeline and mark the head document row.
+
+    ``rows`` must already be in Backend timeline order
+    (``_MESSAGE_ORDER_OLDEST_FIRST``) and already filtered to what this caller may
+    see, so the head is the newest document the same user sees in the UI. Only
+    ``html`` / ``pdf`` rows can be the head; ``text`` / ``blueprint`` never are.
+    """
+    document_indexes = [i for i, msg in enumerate(rows) if msg.type in _DOCUMENT_ROW_TYPES]
+    head_index = document_indexes[-1] if document_indexes else None
+    return [_message_summary(msg, is_head=i == head_index) for i, msg in enumerate(rows)]
 
 
 def _normalized_uuid(value: Any) -> str | None:
@@ -688,7 +727,6 @@ def _latest_operation_bake(session, operation_id: str) -> dict[str, Any] | None:
         "message_id": latest.message_id,
         "row_id": latest.id,
         "prc_template_s3_key": latest.prc_template_s3_key,
-        "version_number": latest.version_number,
         "created_at": _iso(latest.created_at),
     }
 
@@ -701,6 +739,82 @@ def _latest_html_creative(session, operation_id: str) -> CgOperationMessage | No
         CgOperationMessage.type == "html",
         CgOperationMessage.deleted_at.is_(None),
     )
+
+
+def _head_document(session, operation_id: str) -> CgOperationMessage | None:
+    """The operation's current document version, ignoring who may see it."""
+    return _latest_message(
+        session,
+        CgOperationMessage.operation_id == operation_id,
+        CgOperationMessage.type.in_(_DOCUMENT_ROW_TYPES),
+        CgOperationMessage.deleted_at.is_(None),
+    )
+
+
+def _visible_head_document(
+    session, operation_id: str, *, staff: bool
+) -> CgOperationMessage | None:
+    """The current document version as THIS caller sees it.
+
+    Mirrors the read filter in ``list_operation_messages``: staff see every
+    document row, MEMBER / ADMIN never see ``draft`` ones. When the two heads
+    differ, the newest content is invisible to the caller.
+    """
+    if staff:
+        return _head_document(session, operation_id)
+    return _latest_message(
+        session,
+        CgOperationMessage.operation_id == operation_id,
+        CgOperationMessage.type.in_(_DOCUMENT_ROW_TYPES),
+        CgOperationMessage.deleted_at.is_(None),
+        or_(
+            CgOperationMessage.intent.is_(None),
+            CgOperationMessage.intent != "draft",
+        ),
+    )
+
+
+def _identifies(row: CgOperationMessage, candidate: str) -> bool:
+    """True when ``candidate`` names this row.
+
+    Accepts the FE-facing ``message_id`` (what reads publish as
+    ``head_message_id``) or the row id, so a legacy row with a NULL
+    ``message_id`` is still addressable. Pure Python comparison — no SQL — so an
+    arbitrary candidate string is safe here.
+    """
+    return candidate in {row.message_id, row.id}
+
+
+def _find_message(
+    session, operation_id: str, candidate: str, *, lock: bool = False
+) -> CgOperationMessage | None:
+    """Resolve one live message on this operation by ``message_id``, else row id.
+
+    Legacy document rows can carry a NULL or empty ``message_id``, and for those
+    the read path publishes the row id as ``head_message_id`` — so every tool
+    that takes a message identifier has to accept either form or those rows
+    become unaddressable.
+
+    The row-id branch runs only when the candidate parses as a UUID. ``id`` is a
+    uuid column, so comparing a non-UUID string against it is a Postgres cast
+    error rather than a miss (SQLite would silently tolerate it, which is how
+    such a bug reaches production green).
+    """
+    def _select(*where: Any):
+        stmt = select(CgOperationMessage).where(
+            CgOperationMessage.operation_id == operation_id,
+            CgOperationMessage.deleted_at.is_(None),
+            *where,
+        )
+        return session.scalar(stmt.with_for_update() if lock else stmt)
+
+    msg = _select(CgOperationMessage.message_id == candidate)
+    if msg is not None:
+        return msg
+    row_id = _normalized_uuid(candidate)
+    if row_id is None:
+        return None
+    return _select(CgOperationMessage.id == row_id)
 
 
 def prepare_prc_template_bake(
@@ -783,9 +897,10 @@ def bake_prc_template_to_operation(
     ``cg_operation_msg_html/...``; the proof lands at
     ``cg_operation_prc_template/{operation_id}/{row_id}.html`` and is stamped
     on ``n_cg_operation_messages.prc_template_s3_key``. Head creative is
-    newest ``created_at`` then ``id``. Stamped ``version_number`` is
-    max(existing)+1 for the S3 key label (same as ``commit_operation_version``),
-    not identity. The bake must already be PUT to ``operation_bake_s3_key``.
+    newest ``created_at`` then ``id``. The stamped version is the document-row
+    count + 1 — a display label for the S3 key (same as
+    ``commit_operation_version``), not identity. The bake must already be PUT to
+    ``operation_bake_s3_key``.
     """
     parsed_operation_id = _normalized_uuid(operation_id)
     if parsed_operation_id is None:
@@ -820,15 +935,8 @@ def bake_prc_template_to_operation(
             raise ToolError(
                 "invalid_state: operation has no html document to attach a proof bake to"
             )
-        max_v = session.scalar(
-            select(func.max(CgOperationMessage.version_number)).where(
-                CgOperationMessage.operation_id == parsed_operation_id,
-                CgOperationMessage.deleted_at.is_(None),
-            )
-        )
-        next_v = (max_v or 0) + 1
         message_id = str(uuid4())
-        creative_key = _version_s3_key("html", parsed_operation_id, next_v, message_id, locked.file_name)
+        creative_key = _version_s3_key("html", parsed_operation_id, message_id, locked.file_name)
         head_content = head.content or ""
         if _looks_like_s3_key(head_content):
             try:
@@ -845,13 +953,6 @@ def bake_prc_template_to_operation(
                 s3.put(bucket, creative_key, creative, "text/html")
             except S3Error as exc:
                 raise ToolError(f"not_available: s3 write failed: {exc}") from exc
-        max_pos = session.scalar(
-            select(func.max(CgOperationMessage.position)).where(
-                CgOperationMessage.operation_id == parsed_operation_id,
-                CgOperationMessage.deleted_at.is_(None),
-            )
-        )
-        base_pos = (max_pos or -1) + 1
         now = datetime.now(UTC)
         # Backend sorts (created_at, id); 1µs gap so UUID tiebreak cannot invert the pair.
         doc_at = now + timedelta(microseconds=1)
@@ -864,9 +965,7 @@ def bake_prc_template_to_operation(
                 author_id=identity.user_id,
                 type="text",
                 content="PRC template update",
-                version_number=None,
                 intent=None,
-                position=base_pos,
                 message_metadata={
                     "id": str(uuid4()),
                     "timestamp": now.isoformat(),
@@ -886,13 +985,10 @@ def bake_prc_template_to_operation(
                 author_id=None,
                 type="html",
                 content=creative_key,
-                version_number=next_v,
                 intent=intent,
-                position=base_pos + 1,
                 prc_template_s3_key=bake_key,
                 message_metadata=_doc_message_metadata(
                     kind="html",
-                    version=next_v,
                     intent=intent,
                     s3_key=creative_key,
                     message_id=message_id,
@@ -907,7 +1003,6 @@ def bake_prc_template_to_operation(
         session.commit()
     return {
         "operation_id": parsed_operation_id,
-        "version_number": next_v,
         "intent": intent,
         "message_id": message_id,
         "s3_key": creative_key,
@@ -1449,10 +1544,16 @@ def list_operation_messages(
 ) -> list[dict[str, Any]]:
     """Return an operation's chat + document-version summaries.
 
+    Oldest first, in Backend timeline order (``created_at`` then ``id``). The
+    document row flagged ``is_head`` is the current version. Callers must not
+    order document rows themselves.
+
     Intent visibility is enforced server-side from the subject's brand role:
     SOLSTICE_STAFF sees draft + final; MEMBER / ADMIN see final only (drafts
     excluded). The role is derived from the JWT subject — there is no
-    ``intent`` or ``role`` argument the caller can use to bypass this.
+    ``intent`` or ``role`` argument the caller can use to bypass this. Because
+    the numbering and the head are computed over the rows this caller may see, a
+    member's head can be an older row than a staff caller's.
     """
     with tenant_session(tenant_slug, session_factory) as session:
         op = session.scalar(
@@ -1485,7 +1586,7 @@ def list_operation_messages(
             )
         stmt = stmt.order_by(*_MESSAGE_ORDER_OLDEST_FIRST)
         rows = session.scalars(stmt).all()
-    return [_message_summary(m) for m in rows]
+    return _summarize_message_timeline(rows)
 
 
 def get_operation_html(
@@ -1529,18 +1630,11 @@ def get_operation_html(
     )
     staff = role_satisfies(identity.role, UserRole.SOLSTICE_STAFF)
     with tenant_session(tenant_slug, session_factory) as session:
-        msg = session.scalar(
-            select(CgOperationMessage).where(
-                CgOperationMessage.operation_id == operation_id,
-                CgOperationMessage.message_id == message_id,
-                CgOperationMessage.deleted_at.is_(None),
-            )
-        )
+        msg = _find_message(session, operation_id, message_id)
         if msg is None:
             raise ToolError("not_found: unknown message")
         msg_type = msg.type
         msg_intent = msg.intent
-        msg_version = msg.version_number
         msg_content = msg.content
         bake_key = msg.prc_template_s3_key
     if msg_intent == "draft" and not staff:
@@ -1556,7 +1650,6 @@ def get_operation_html(
         "message_id": message_id,
         "type": msg_type,
         "intent": msg_intent,
-        "version_number": msg_version,
         "url": None,
         "s3_key": None,
         "prc_proof_url": None,
@@ -1777,16 +1870,10 @@ def approve_operation_version(
         registry=registry, session_factory=session_factory,
     )
     with tenant_session(tenant_slug, session_factory) as session:
-        msg = session.scalar(
-            select(CgOperationMessage).where(
-                CgOperationMessage.operation_id == operation_id,
-                CgOperationMessage.message_id == message_id,
-                CgOperationMessage.deleted_at.is_(None),
-            ).with_for_update()
-        )
+        msg = _find_message(session, operation_id, message_id, lock=True)
         if msg is None:
             raise ToolError("not_found: unknown message")
-        if msg.type not in ("html", "pdf"):
+        if msg.type not in _DOCUMENT_ROW_TYPES:
             raise ToolError(
                 f"invalid_message: type {msg.type!r} is not a document (html/pdf) version"
             )
@@ -1794,7 +1881,6 @@ def approve_operation_version(
             return {
                 "operation_id": operation_id,
                 "message_id": message_id,
-                "version_number": msg.version_number,
                 "intent": "final",
                 "already_final": True,
                 "change_requests_resolved": 0,
@@ -1831,11 +1917,9 @@ def approve_operation_version(
             resolved_message_id=msg.id,
         )
         session.commit()
-        version_number = msg.version_number
     return {
         "operation_id": operation_id,
         "message_id": message_id,
-        "version_number": version_number,
         "intent": "final",
         "already_final": False,
         "change_requests_resolved": resolved,
@@ -1852,7 +1936,7 @@ def _sanitize_file_name(file_name: str | None) -> str:
     return base.replace(" ", "_")
 
 
-_VERSION_KINDS = ("html", "pdf")
+_VERSION_KINDS = _DOCUMENT_ROW_TYPES
 # "source" is not a version: it uploads the design source file (InDesign,
 # ZIP, PPTX, HTML...) alongside an edit operation's working document. It
 # shares the prepare/commit tool pair but writes a metadata pointer
@@ -1868,40 +1952,54 @@ def _require_upload_kind(kind: str) -> None:
 
 
 def _version_s3_key(
-    kind: str, operation_id: str, version: int, message_id: str, file_name: str | None
+    kind: str, operation_id: str, message_id: str, file_name: str | None
 ) -> str:
-    if kind == "html":
-        return f"cg_operation_msg_html/{operation_id}/v{version}/{message_id}/v{version}.html"
-    return f"approved_pdfs/{operation_id}/v{version}_{_sanitize_file_name(file_name) or f'v{version}.pdf'}"
+    """Storage key for one document version, keyed by the row's own id.
 
+    No version number in the path. The old ``v{n}`` segment came from a mutable
+    row count, which meant two prepares on the same operation produced the SAME
+    key — and for pdf, whose key carried no message_id at all, the second upload
+    silently overwrote the first caller's committed document. Row identity is
+    unique per prepare and never shifts.
 
-def _validate_version_key(
-    kind: str, s3_key: str, operation_id: str, version: int
-) -> str:
-    """Strictly validate a client-supplied s3_key for a committed version.
-
-    Returns the message_id embedded in the key (html) or "" (pdf). Raises
-    ToolError on any deviation from the expected shape so a caller cannot
-    target an arbitrary key, another operation, or a stale version segment.
+    Mirrors the Backend's own shapes: ``cg_operation_msg_html/{op}/{row}.html``
+    (operation_duplicate) and ``approved_pdfs/{op}/{id}_{name}``
+    (content_gen_sqlalchemy upload).
     """
     if kind == "html":
-        prefix = f"cg_operation_msg_html/{operation_id}/v{version}/"
-        suffix = f"/v{version}.html"
+        return f"cg_operation_msg_html/{operation_id}/{message_id}.html"
+    return f"approved_pdfs/{operation_id}/{message_id}_{_sanitize_file_name(file_name) or 'document.pdf'}"
+
+
+def _validate_version_key(kind: str, s3_key: str, operation_id: str) -> str:
+    """Validate a client-supplied s3_key and return the message_id it names.
+
+    Shape- and operation-scoped so a caller cannot target another operation or an
+    arbitrary object. Deliberately depends on NO row count: a version landing
+    between prepare and commit must not invalidate a key the caller has already
+    uploaded to, and reporting that as ``invalid_key`` hid the real cause.
+    """
+    if kind == "html":
+        prefix = f"cg_operation_msg_html/{operation_id}/"
+        suffix = ".html"
         if not (s3_key.startswith(prefix) and s3_key.endswith(suffix)):
-            raise ToolError("invalid_key: key does not match the prepared version")
+            raise ToolError(
+                "invalid_key: not a prepared html version key for this operation"
+            )
         message_id = s3_key[len(prefix) : -len(suffix)]
-        if not message_id or "/" in message_id:
-            raise ToolError("invalid_key: malformed message_id segment")
-        return message_id
-    if kind == "pdf":
-        prefix = f"approved_pdfs/{operation_id}/v{version}_"
+    elif kind == "pdf":
+        prefix = f"approved_pdfs/{operation_id}/"
         if not s3_key.startswith(prefix):
-            raise ToolError("invalid_key: key does not match the prepared version")
-        suffix = s3_key[len(prefix) :]
-        if not suffix or "/" in suffix:
-            raise ToolError("invalid_key: malformed pdf file name segment")
-        return ""
-    raise ToolError(f"invalid_key: unsupported type {kind!r}")
+            raise ToolError(
+                "invalid_key: not a prepared pdf version key for this operation"
+            )
+        # `{message_id}_{file name}` — the id is a UUID, so it has no underscore.
+        message_id = s3_key[len(prefix) :].split("_", 1)[0]
+    else:
+        raise ToolError(f"invalid_key: unsupported type {kind!r}")
+    if "/" in message_id or _normalized_uuid(message_id) is None:
+        raise ToolError("invalid_key: malformed message_id segment")
+    return message_id
 
 
 def _validate_source_key(s3_key: str, operation_id: str) -> None:
@@ -1930,7 +2028,6 @@ def _is_html_source_name(name: str) -> bool:
 def _doc_message_metadata(
     *,
     kind: str,
-    version: int,
     intent: str,
     s3_key: str,
     message_id: str,
@@ -1940,12 +2037,17 @@ def _doc_message_metadata(
     """Mirror the Backend-Server bot document-message metadata shape so the
     frontend renders an MCP-created version identically to a UI-created one.
 
-    ``type: "bot"`` is required: the FE version stepper
-    (isDocumentVersionMessage) reads the message ``type`` from this metadata
-    blob, not the DB ``type`` column, and drops any document row that isn't
-    ``type == "bot"``. Without it an MCP-created version is invisible in the UI.
-    ``htmlDocumentLastVersion`` mirrors BE (build_final_document_bot_metadata):
-    the *previous* version number, i.e. version - 1.
+    ``type: "bot"`` and ``isFinalDocument`` are required: the FE version stepper
+    (isDocumentVersionMessage, shared/content-document/pdf-document-message.ts)
+    reads both from this metadata blob, not the DB ``type`` column, and drops any
+    document row missing them. Without them an MCP-created version is invisible in
+    the UI.
+
+    No numeric version keys are written. Backend
+    ``build_final_document_bot_metadata`` stamps only ``versionIntent`` — row
+    identity and canonical order replaced ``documentVersion`` /
+    ``htmlDocumentVersion`` / ``htmlDocumentLastVersion``, so writing them here
+    would revive a number no reader trusts.
 
     PDF versions additionally carry ``approved_pdf_s3_key`` — the FE version
     history and Apryse viewer resolve each PDF version from the message
@@ -1955,9 +2057,6 @@ def _doc_message_metadata(
         "timestamp": now.isoformat(),
         "type": "bot",
         "isFinalDocument": True,
-        "documentVersion": version,
-        "htmlDocumentVersion": version,
-        "htmlDocumentLastVersion": version - 1,
         "versionIntent": intent,
         "finalContentS3Key": s3_key,
         "finalContent": "",
@@ -1986,8 +2085,9 @@ def prepare_operation_version(
     tenant S3 at the returned ``upload_url``, then calls
     ``commit_operation_version`` with the returned ``s3_key`` to insert the DB
     row. Authorization is gated at MEMBER on the operation's brand (resolved
-    from the row). No version row is created here; the version number is
-    recomputed at commit under an operation-row lock.
+    from the row). No version row is created here; the key is keyed by the
+    ``message_id`` minted now, so a version landing before the commit cannot
+    invalidate it.
 
     ``kind="source"`` prepares a design source-file upload instead of a
     document version: the key targets ``sourcefiles/{operation_id}/`` and the
@@ -2030,28 +2130,18 @@ def prepare_operation_version(
         return {
             "operation_id": operation_id,
             "type": kind,
-            "version_number": None,
             "message_id": None,
             "s3_key": key,
             "upload_url": upload_url,
             "expires_in": presign_expiry,
         }
-    with tenant_session(tenant_slug, session_factory) as session:
-        max_v = session.scalar(
-            select(func.max(CgOperationMessage.version_number)).where(
-                CgOperationMessage.operation_id == operation_id,
-                CgOperationMessage.deleted_at.is_(None),
-            )
-        )
-    next_v = (max_v or 0) + 1
     message_id = str(uuid4())
-    key = _version_s3_key(kind, operation_id, next_v, message_id, file_name)
+    key = _version_s3_key(kind, operation_id, message_id, file_name)
     content_type = "text/html" if kind == "html" else "application/pdf"
     upload_url = s3.presign_put(bucket, key, presign_expiry, content_type)
     return {
         "operation_id": operation_id,
         "type": kind,
-        "version_number": next_v,
         "message_id": message_id,
         "s3_key": key,
         "upload_url": upload_url,
@@ -2067,6 +2157,8 @@ def commit_operation_version(
     s3_key: str,
     file_name: str | None,
     show_source_on_ui: bool = False,
+    base_message_id: str | None = None,
+    confirmed: bool = False,
     *,
     registry: TenantRegistry,
     session_factory: SessionFactory,
@@ -2084,6 +2176,22 @@ def commit_operation_version(
     SOLSTICE_STAFF -> ``draft``; MEMBER / ADMIN -> ``final``. There is no
     ``intent`` argument — the filter is derived from the token, mirroring the
     read-side rule.
+
+    ``base_message_id`` is the document the caller actually read and edited, and
+    it makes this a compare-and-swap. Required whenever the operation already has
+    a document version; omitted for the first one. An agent's read-edit-commit
+    spans several turns of conversation, and in that window the frontend, another
+    agent, or a staff publish can land a new version — committing blind would
+    bury it. If the caller's base is no longer the head, the write is refused
+    with ``conflict: not_latest_document`` so the caller re-reads and reapplies.
+    Mirrors the Backend's own 409 contract (``operations_routes.undo``).
+
+    ``confirmed`` covers the one conflict a re-read cannot resolve: when the
+    newer head is a ``draft`` and the caller is not staff, re-reading still hides
+    it, so retrying would loop. There the refusal is ``confirmation_required``
+    and proceeding is an explicit user decision. That check runs after key and
+    upload validation, so no draft's existence is disclosed for a request that
+    was going to fail anyway.
 
     ``kind="source"`` commits a design source-file upload instead: it sets
     ``operation_metadata.sourcefile_s3_key`` on the operation row and inserts
@@ -2124,6 +2232,9 @@ def commit_operation_version(
         registry=registry, session_factory=session_factory,
     )
     intent = "draft" if identity.role == UserRole.SOLSTICE_STAFF else "final"
+    # Same predicate the read path uses, so "what this caller can see" means the
+    # same thing on both sides of a read-edit-commit.
+    staff = role_satisfies(identity.role, UserRole.SOLSTICE_STAFF)
     tenant_config = registry.get(tenant_slug)
     bucket = tenant_config.s3_bucket if tenant_config is not None else ""
     if not bucket:
@@ -2141,7 +2252,7 @@ def commit_operation_version(
         size = s3.head(bucket, s3_key)
         if size is None:
             raise ToolError("not_found: object not uploaded - PUT to the upload_url first")
-        bound_version_number: int | None = None
+        bound_message_id: str | None = None
         with tenant_session(tenant_slug, session_factory) as session:
             locked = session.scalar(
                 select(CgOperation).where(
@@ -2167,10 +2278,10 @@ def commit_operation_version(
                 # the PDF↔Source toggle. Mirrors Backend-Server
                 # select_source_html_target_message: published (final) head
                 # wins, else the latest document of any intent. Head is
-                # created_at then id, not version_number.
+                # created_at then id.
                 docs = (
                     CgOperationMessage.operation_id == operation_id,
-                    CgOperationMessage.type.in_(("html", "pdf")),
+                    CgOperationMessage.type.in_(_DOCUMENT_ROW_TYPES),
                     CgOperationMessage.deleted_at.is_(None),
                 )
                 target = _latest_message(
@@ -2187,7 +2298,7 @@ def commit_operation_version(
                 message_metadata["source_html_s3_key"] = s3_key
                 message_metadata["show_source_on_ui"] = True
                 target.message_metadata = message_metadata
-                bound_version_number = target.version_number
+                bound_message_id = target.message_id
             session.commit()
         return {
             "operation_id": operation_id,
@@ -2196,7 +2307,7 @@ def commit_operation_version(
             "sourcefile_s3_key": s3_key,
             "size": size,
             "show_source_on_ui": show_source_on_ui,
-            "bound_version_number": bound_version_number,
+            "bound_message_id": bound_message_id,
             "asset_url": build_asset_url(tenant_slug, operation_id),
         }
     with tenant_session(tenant_slug, session_factory) as session:
@@ -2207,34 +2318,58 @@ def commit_operation_version(
         )
         if locked is None:
             raise ToolError("not_authorized: unknown operation")
-        max_v = session.scalar(
-            select(func.max(CgOperationMessage.version_number)).where(
-                CgOperationMessage.operation_id == operation_id,
-                CgOperationMessage.deleted_at.is_(None),
+        # Compare-and-swap first: a stale base also makes the prepared s3_key
+        # stale, so checking it here reports the real cause instead of a
+        # misleading invalid_key.
+        visible_head = _visible_head_document(session, operation_id, staff=staff)
+        true_head = _head_document(session, operation_id)
+        if visible_head is None:
+            # Nothing this caller can see to base an edit on: either the first
+            # version, or every document is a draft they cannot read.
+            if base_message_id:
+                raise ToolError(
+                    "invalid_request: you have no readable document version on this "
+                    "operation - omit base_message_id"
+                )
+        elif not base_message_id:
+            raise ToolError(
+                "invalid_request: base_message_id is required - pass the "
+                "message_id of the version you read and edited (the head_message_id "
+                "from solstice_operation_messages) so a version added while you "
+                "were working is not overwritten"
             )
-        )
-        next_v = (max_v or 0) + 1
-        message_id = _validate_version_key(kind, s3_key, operation_id, next_v)
-        if not message_id:
-            # PDF keys don't embed a message_id (html keys do), so mint one at
-            # commit. Without it the row lands with message_id "" — the FE
-            # version stepper keys versions by metadata.id, so empty ids
-            # collide across versions (several rows marked "Current",
-            # navigation broken), and solstice_approve_operation_version
-            # cannot address the row.
-            message_id = str(uuid4())
-        # Confirm the client uploaded. Done under the operation-row lock so a
-        # concurrent committer cannot land between validation and insert.
+        elif not _identifies(visible_head, base_message_id):
+            raise ToolError(
+                "conflict: not_latest_document - the version you edited is no "
+                "longer the current one; a newer version was added while you were "
+                "working. Re-read solstice_operation_messages, reapply your change "
+                "to the new head_message_id, and commit that"
+            )
+        # Both key shapes now carry the message_id minted at prepare, so the id
+        # the caller was handed is the id that lands. Previously pdf keys carried
+        # none and commit minted a second one, so the prepare-time id named a row
+        # that never existed.
+        message_id = _validate_version_key(kind, s3_key, operation_id)
         size = s3.head(bucket, s3_key)
         if size is None:
             raise ToolError("not_found: object not uploaded - PUT to the upload_url first")
-        max_pos = session.scalar(
-            select(func.max(CgOperationMessage.position)).where(
-                CgOperationMessage.operation_id == operation_id,
-                CgOperationMessage.deleted_at.is_(None),
+        # The caller's base IS their visible head, but a newer row exists that
+        # they cannot read — so re-reading would hand them the same stale base
+        # and a retry would loop. Only an explicit user decision gets past this.
+        if not confirmed and true_head is not None and (
+            visible_head is None or true_head.id != visible_head.id
+        ):
+            # Wording is deliberately generic: it must warn that the edit is not
+            # based on the latest version, without telling a non-staff caller
+            # that the newer row is specifically an unapproved draft. That the
+            # read path hides drafts is the RBAC rule; naming the intent class
+            # here would hand back what the read withheld.
+            raise ToolError(
+                "confirmation_required: a newer version of this asset exists "
+                "that your token cannot read, so the version you edited is not "
+                "the latest. Committing adds yours on top of it. Ask the user "
+                "whether to go ahead anyway, then retry with confirmed=true"
             )
-        )
-        base_pos = (max_pos or -1) + 1
         now = datetime.now(UTC)
         # Backend sorts (created_at, id); 1µs gap so UUID tiebreak cannot invert the pair.
         doc_at = now + timedelta(microseconds=1)
@@ -2245,9 +2380,7 @@ def commit_operation_version(
             author_id=identity.user_id,
             type="text",
             content="Save new version",
-            version_number=None,
             intent=None,
-            position=base_pos,
             message_metadata={
                 "id": str(uuid4()),
                 "timestamp": now.isoformat(),
@@ -2265,11 +2398,9 @@ def commit_operation_version(
             author_id=None,
             type=kind,
             content=s3_key,
-            version_number=next_v,
             intent=intent,
-            position=base_pos + 1,
             message_metadata=_doc_message_metadata(
-                kind=kind, version=next_v, intent=intent, s3_key=s3_key,
+                kind=kind, intent=intent, s3_key=s3_key,
                 message_id=message_id, now=doc_at, file_name=file_name,
             ),
             created_at=doc_at,
@@ -2303,7 +2434,6 @@ def commit_operation_version(
     return {
         "operation_id": operation_id,
         "type": kind,
-        "version_number": next_v,
         "intent": intent,
         "message_id": message_id,
         "s3_key": s3_key,

@@ -44,12 +44,15 @@ the append-only landing path. Do **not** attempt to call the Backend-Server
    faithfully; optional edit instructions applied once, before the batch.
 3. **Extras** — ask once about date/copyright updates, email subject/preheader,
    Veeva job codes, and manual find→replace pairs. Default is no extra changes.
-4. **Per operation** — GET the HTML from `solstice_operation_html`'s `url`,
-   swap the ISI block, apply the extras, show a before/after preview, and wait
-   for accept / reject / redo.
-5. **Land on accept** — prepare → PUT → commit (`type="html"`); report the
-   version and server-derived intent; staff drafts can then be approved with
-   `solstice_approve_operation_version`. Reject = skip, no write.
+4. **Per operation** — take `head_message_id` from `solstice_operation_messages`
+   and keep it; GET the HTML from `solstice_operation_html`'s `url`, swap the ISI
+   block, apply the extras, show a before/after preview, and wait for accept /
+   reject / redo.
+5. **Land on accept** — prepare → PUT → commit (`type="html"`) with
+   `base_message_id` set to the id from step 4; report the server-derived intent;
+   staff drafts can then be approved with `solstice_approve_operation_version`.
+   Reject = skip, no write. Any conflict or confirmation refusal = skip and
+   report; never force a write in a batch.
 6. **Summarize the batch** — accepted / skipped / failed per operation.
 
 See the detailed protocol:

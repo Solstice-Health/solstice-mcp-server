@@ -160,8 +160,7 @@ def test_create_edit_denied_for_non_member(app_harness: AppHarness, mint_token):
 def test_edit_html_commit_sets_is_html_saved(app_harness: AppHarness, mint_token):
     token = mint_token(sub=SHARED_SUB)  # ADMIN -> final intent
     op_id = tool_payload(_create_edit(app_harness, token, "html"))["operation_id"]
-    committed = _land_version(app_harness, token, op_id, "html", "doc.html")
-    assert committed["version_number"] == 1
+    _land_version(app_harness, token, op_id, "html", "doc.html")
     op = _operation(app_harness, op_id)
     assert op is not None
     assert op.is_html_saved is True
@@ -230,7 +229,6 @@ def test_source_attach_sets_metadata_pointer(app_harness: AppHarness, mint_token
          "file_name": "design source.zip"},
     ))
     assert prep["s3_key"] == f"sourcefiles/{op_id}/design_source.zip"
-    assert prep["version_number"] is None
     app_harness.s3.put(BUCKET, prep["s3_key"], b"zip-bytes")
 
     committed = tool_payload(_call(

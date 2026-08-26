@@ -220,7 +220,7 @@ def test_approve_flips_draft_to_final(app_harness: AppHarness, mint_token):
     )
     payload = tool_payload(response)
     assert payload["intent"] == "final"
-    assert payload["version_number"] == 2
+    assert payload["message_id"] == "m3"
     assert payload["already_final"] is False
     assert _message(app_harness, OP_A1, "m3").intent == "final"
 
@@ -235,7 +235,8 @@ def test_approve_updates_version_intent_metadata(app_harness: AppHarness, mint_t
     app_harness.s3.put(BUCKET, prep["s3_key"], b"<html>v3</html>")
     commit = tool_payload(_call(
         app_harness, token, "solstice_commit_operation_version",
-        {"tenant_slug": TENANT, "operation_id": OP_A1, "type": "html", "s3_key": prep["s3_key"]},
+        {"tenant_slug": TENANT, "operation_id": OP_A1, "type": "html",
+         "s3_key": prep["s3_key"], "base_message_id": "m3"},  # staff's head on OP_A1
     ))
     assert commit["intent"] == "draft"
     payload = tool_payload(_call(

@@ -492,34 +492,34 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
             CgOperationMessage(
                 id="00000000-0000-0000-0000-000000000501", operation_id=OP_A1,
                 message_id="m1", author_id=USER_A_SHARED, type="text", content="hello",
-                version_number=None, intent=None, position=0,
+                intent=None,
                 created_at=datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC), deleted_at=None,
             ),
             CgOperationMessage(
                 id="00000000-0000-0000-0000-000000000502", operation_id=OP_A1,
                 message_id="m2", author_id=None, type="html",
                 content=f"cg_operation_msg_html/{OP_A1}/v1/m2/v1.html",
-                version_number=1, intent="final", position=1,
+                intent="final",
                 created_at=datetime(2026, 1, 1, 12, 0, 2, tzinfo=UTC), deleted_at=None,
             ),
             CgOperationMessage(
                 id="00000000-0000-0000-0000-000000000503", operation_id=OP_A1,
                 message_id="m3", author_id=None, type="html",
                 content=f"cg_operation_msg_html/{OP_A1}/v2/m3/v2.html",
-                version_number=2, intent="draft", position=2,
+                intent="draft",
                 created_at=datetime(2026, 1, 1, 12, 0, 3, tzinfo=UTC), deleted_at=None,
             ),
             CgOperationMessage(
                 id="00000000-0000-0000-0000-000000000504", operation_id=OP_A1,
                 message_id="m4", author_id=None, type="blueprint", content="{}",
-                version_number=None, intent=None, position=3,
+                intent=None,
                 created_at=datetime(2026, 1, 1, 12, 0, 4, tzinfo=UTC), deleted_at=None,
             ),
             # op_a2 chat: one text message.
             CgOperationMessage(
                 id="00000000-0000-0000-0000-000000000510", operation_id=OP_A2,
                 message_id="m10", author_id=USER_A_SHARED, type="text", content="hi from op a2",
-                version_number=None, intent=None, position=0,
+                intent=None,
                 created_at=datetime(2026, 1, 2, 12, 0, 1, tzinfo=UTC), deleted_at=None,
             ),
             # Admin requests. Pending rows on two different brands (A1 + A3)
@@ -547,7 +547,7 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
                 request_metadata={"comments": [{"text": "fix headline"}], "additional_comment": "asap"},
                 resolved_by_user_id=USER_A_STAFF,
                 resolved_at=datetime(2026, 1, 4, 15, 0, 0, tzinfo=UTC),
-                resolved_version_number=2,
+                resolved_message_id="00000000-0000-0000-0000-000000000502",
                 created_at=datetime(2026, 1, 4, 12, 0, 0, tzinfo=UTC), deleted_at=None,
             ),
             AdminRequest(

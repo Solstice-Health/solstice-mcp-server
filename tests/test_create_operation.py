@@ -210,7 +210,6 @@ def test_create_then_add_v1_version(app_harness: AppHarness, mint_token):
         app_harness, token, "solstice_prepare_operation_version",
         {"tenant_slug": TENANT, "operation_id": op_id, "type": "html", "file_name": "doc.html"},
     ))
-    assert prep["version_number"] == 1
     app_harness.s3.put(BUCKET, prep["s3_key"], b"<html>v1</html>")
 
     committed = tool_payload(_call(
@@ -218,5 +217,4 @@ def test_create_then_add_v1_version(app_harness: AppHarness, mint_token):
         {"tenant_slug": TENANT, "operation_id": op_id, "type": "html",
          "s3_key": prep["s3_key"], "file_name": "doc.html"},
     ))
-    assert committed["version_number"] == 1
     assert committed["intent"] == "final"

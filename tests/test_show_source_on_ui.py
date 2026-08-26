@@ -48,9 +48,18 @@ def _create_edit_pdf(harness: AppHarness, token: str) -> str:
     return payload["operation_id"]
 
 
+def _head_message_id(harness: AppHarness, token: str, op_id: str) -> str | None:
+    return tool_payload(_call(
+        harness, token, "solstice_operation_messages",
+        {"tenant_slug": TENANT, "operation_id": op_id},
+    ))["head_message_id"]
+
+
 def _land_version(
     harness: AppHarness, token: str, op_id: str, kind: str, file_name: str
 ) -> dict[str, Any]:
+    """Read-then-commit, the way an agent must: declare the head it is building on."""
+    base = _head_message_id(harness, token, op_id)
     prep = tool_payload(_call(
         harness, token, "solstice_prepare_operation_version",
         {"tenant_slug": TENANT, "operation_id": op_id, "type": kind, "file_name": file_name},
@@ -59,7 +68,7 @@ def _land_version(
     return tool_payload(_call(
         harness, token, "solstice_commit_operation_version",
         {"tenant_slug": TENANT, "operation_id": op_id, "type": kind,
-         "s3_key": prep["s3_key"], "file_name": file_name},
+         "s3_key": prep["s3_key"], "file_name": file_name, "base_message_id": base},
     ))
 
 
@@ -78,12 +87,12 @@ def _commit_source(
     )
 
 
-def _doc_metadata(harness: AppHarness, op_id: str, version: int) -> dict[str, Any]:
+def _doc_metadata(harness: AppHarness, op_id: str, message_id: str) -> dict[str, Any]:
     with harness.session_factory(TENANT) as session:
         row = session.scalar(
             select(CgOperationMessage).where(
                 CgOperationMessage.operation_id == op_id,
-                CgOperationMessage.version_number == version,
+                CgOperationMessage.message_id == message_id,
                 CgOperationMessage.deleted_at.is_(None),
             )
         )
@@ -94,14 +103,14 @@ def _doc_metadata(harness: AppHarness, op_id: str, version: int) -> dict[str, An
 def test_source_commit_with_flag_stamps_version_message(app_harness: AppHarness, mint_token):
     token = mint_token(sub=SHARED_SUB)  # ADMIN -> final intent
     op_id = _create_edit_pdf(app_harness, token)
-    _land_version(app_harness, token, op_id, "pdf", "toggle.pdf")
+    landed = _land_version(app_harness, token, op_id, "pdf", "toggle.pdf")
     source_key, response = _commit_source(
         app_harness, token, op_id, "source.html", show_source_on_ui=True
     )
     payload = tool_payload(response)
     assert payload["show_source_on_ui"] is True
-    assert payload["bound_version_number"] == 1
-    metadata = _doc_metadata(app_harness, op_id, 1)
+    assert payload["bound_message_id"] == landed["message_id"]
+    metadata = _doc_metadata(app_harness, op_id, landed["message_id"])
     assert metadata["source_html_s3_key"] == source_key
     assert metadata["show_source_on_ui"] is True
 
@@ -109,12 +118,12 @@ def test_source_commit_with_flag_stamps_version_message(app_harness: AppHarness,
 def test_source_commit_default_leaves_message_untouched(app_harness: AppHarness, mint_token):
     token = mint_token(sub=SHARED_SUB)
     op_id = _create_edit_pdf(app_harness, token)
-    _land_version(app_harness, token, op_id, "pdf", "toggle.pdf")
+    landed = _land_version(app_harness, token, op_id, "pdf", "toggle.pdf")
     _key, response = _commit_source(app_harness, token, op_id, "source.html")
     payload = tool_payload(response)
     assert payload["show_source_on_ui"] is False
-    assert payload["bound_version_number"] is None
-    metadata = _doc_metadata(app_harness, op_id, 1)
+    assert payload["bound_message_id"] is None
+    metadata = _doc_metadata(app_harness, op_id, landed["message_id"])
     assert "source_html_s3_key" not in metadata
     assert "show_source_on_ui" not in metadata
 
@@ -158,26 +167,26 @@ def test_flag_binds_published_version_over_draft(app_harness: AppHarness, mint_t
     member_token = mint_token(sub=SHARED_SUB)  # final intent
     staff_token = mint_token(sub=STAFF_SUB)  # draft intent
     op_id = _create_edit_pdf(app_harness, member_token)
-    _land_version(app_harness, member_token, op_id, "pdf", "v1.pdf")  # v1 final
-    _land_version(app_harness, staff_token, op_id, "pdf", "v2.pdf")  # v2 draft
+    v1 = _land_version(app_harness, member_token, op_id, "pdf", "v1.pdf")  # final
+    v2 = _land_version(app_harness, staff_token, op_id, "pdf", "v2.pdf")  # draft
     source_key, response = _commit_source(
         app_harness, member_token, op_id, "source.html", show_source_on_ui=True
     )
     payload = tool_payload(response)
-    assert payload["bound_version_number"] == 1
-    v1_metadata = _doc_metadata(app_harness, op_id, 1)
+    assert payload["bound_message_id"] == v1["message_id"]
+    v1_metadata = _doc_metadata(app_harness, op_id, v1["message_id"])
     assert v1_metadata["source_html_s3_key"] == source_key
     assert v1_metadata["show_source_on_ui"] is True
-    v2_metadata = _doc_metadata(app_harness, op_id, 2)
+    v2_metadata = _doc_metadata(app_harness, op_id, v2["message_id"])
     assert "show_source_on_ui" not in v2_metadata
 
 
-def test_flag_binds_newest_created_at_even_when_unnumbered(
-    app_harness: AppHarness, mint_token
-):
+def test_flag_binds_newest_created_at_document(app_harness: AppHarness, mint_token):
+    # A Backend-written row (no numeric version at all) is still the newest and
+    # must win the binding.
     token = mint_token(sub=SHARED_SUB)
     op_id = _create_edit_pdf(app_harness, token)
-    _land_version(app_harness, token, op_id, "pdf", "v1.pdf")
+    v1 = _land_version(app_harness, token, op_id, "pdf", "v1.pdf")
     later_id = str(uuid4())
     with app_harness.session_factory(TENANT) as session:
         session.add(
@@ -188,9 +197,7 @@ def test_flag_binds_newest_created_at_even_when_unnumbered(
                 author_id=None,
                 type="pdf",
                 content=f"approved_pdfs/{op_id}/later.pdf",
-                version_number=None,
                 intent="final",
-                position=99,
                 created_at=datetime.now(UTC) + timedelta(days=1),
                 deleted_at=None,
             )
@@ -200,12 +207,12 @@ def test_flag_binds_newest_created_at_even_when_unnumbered(
         app_harness, token, op_id, "source.html", show_source_on_ui=True
     )
     payload = tool_payload(response)
-    assert payload["bound_version_number"] is None
+    assert payload["bound_message_id"] == "later-pdf"
     with app_harness.session_factory(TENANT) as session:
         later = session.get(CgOperationMessage, later_id)
         assert later is not None
         metadata = dict(later.message_metadata or {})
     assert metadata["source_html_s3_key"] == source_key
     assert metadata["show_source_on_ui"] is True
-    v1_metadata = _doc_metadata(app_harness, op_id, 1)
+    v1_metadata = _doc_metadata(app_harness, op_id, v1["message_id"])
     assert "show_source_on_ui" not in v1_metadata

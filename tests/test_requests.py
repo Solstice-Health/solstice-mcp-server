@@ -84,7 +84,10 @@ def test_list_status_and_brand_filters(app_harness: AppHarness, mint_token):
     assert [r["id"] for r in completed["requests"]] == [REQ_COMPLETED_A1]
     assert completed["requests"][0]["comment_count"] == 1
     assert completed["requests"][0]["additional_comment"] == "asap"
-    assert completed["requests"][0]["resolved_version_number"] == 2
+    assert (
+        completed["requests"][0]["resolved_message_id"]
+        == "00000000-0000-0000-0000-000000000502"
+    )
 
     everything = tool_payload(_call(
         app_harness, token, "solstice_list_requests",

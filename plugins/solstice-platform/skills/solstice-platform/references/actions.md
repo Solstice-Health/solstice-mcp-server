@@ -66,7 +66,7 @@ An asset is an operation that appears as a file (a leaf) in a project's folder t
 2. Confirm the target project, the destination folder path (root when omitted), and the file name before creating. The folder must already exist — the server does not create folders.
 3. Determine the `content_type` (e.g. `EMAIL`, `BANNER`, `SOCIAL`). It is required: use the type the user explicitly stated, and if they did not state one, ask them before creating. Never guess or default — the MCP path has no later step that detects or fills it in, and an untyped asset renders incorrectly in the project view.
 4. Call `solstice_create_operation` with `tenant_slug`, `project_id`, `name`, `content_type`, and optional `folder_path`. Retain the returned `operation_id`.
-5. To give the new asset a first document, run the add-a-document-version workflow below with the returned `operation_id`; the prepared version will be v1.
+5. To give the new asset a first document, run the add-a-document-version workflow below with the returned `operation_id`. It is the asset's first document, so omit `base_message_id`.
 
 The owner is derived from your token; never pass a user ID or role. This write is append-only: it adds a new asset and one folder-tree entry and never overwrites anything.
 
@@ -77,9 +77,9 @@ Use when the user supplies an existing HTML or PDF to put into Solstice for revi
 1. Pick `kind` from the file: `html` → EDIT_HTML, `pdf` → EDIT_PDF. Confirm in plain words ("Edit an existing HTML/PDF").
 2. `kind="pdf"` only: the working PDF usually has a design source file (InDesign package, ZIP, PPTX, or HTML). If the user did not provide one, ask ONCE whether they have it. "I don't have it" is fine — proceed without. Do NOT ask this for `kind="html"`; ask nothing beyond file, name, content type.
 3. Call `solstice_create_edit_operation` with `tenant_slug`, `project_id`, `name`, `kind`, `content_type`, optional `folder_path`. Retain `operation_id`.
-4. Land the document: prepare → upload → commit with `type` = the kind. The commit completes the upload contract automatically (`is_html_saved`, `approved_pdf_s3_key`, `status`).
-5. If a source file was supplied: prepare → upload → commit again with `type="source"` and the source's bare `file_name`. This records the design source pointer; it is not a version.
-6. Report the committed version, server-derived intent, and (for pdf) whether a source file was attached.
+4. Land the document: prepare → upload → commit with `type` = the kind. Omit `base_message_id` — this is the asset's first version, so there is nothing to base it on. The commit completes the upload contract automatically (`is_html_saved`, `approved_pdf_s3_key`, `status`).
+5. If a source file was supplied: prepare → upload → commit again with `type="source"` and the source's bare `file_name`. This records the design source pointer; it is not a version, so it takes no `base_message_id`.
+6. Report the server-derived intent and (for pdf) whether a source file was attached.
 
 ## Add a document version
 
@@ -87,12 +87,18 @@ Only start this workflow when the user explicitly asks to add an HTML or PDF ver
 
 1. Resolve the workspace and review from returned results or a Solstice deep link. Ask when the target is ambiguous.
 2. Confirm the target review, document type, and file name before preparing the upload.
-3. Call `solstice_prepare_operation_version` once and retain its exact `type`, `s3_key`, and `file_name`.
-4. Upload the supplied bytes to the returned URL. If the upload fails, stop without committing.
-5. Call `solstice_commit_operation_version` with the unchanged values from prepare only after the upload succeeds.
-6. Report the committed version number and server-derived intent.
+3. Call `solstice_operation_messages` and keep its `head_message_id` — the version you are building on. Skip only when the review has no document version yet.
+4. Call `solstice_prepare_operation_version` once and retain its exact `type`, `s3_key`, and `file_name`.
+5. Upload the supplied bytes to the returned URL. If the upload fails, stop without committing.
+6. Call `solstice_commit_operation_version` with the unchanged values from prepare, plus `base_message_id` set to the id from step 3, only after the upload succeeds.
+7. Report the server-derived intent.
 
-The workflow is append-only. Never substitute another key, retry commit automatically, overwrite an existing version, or accept a requested role or intent.
+The workflow is append-only. Never substitute another key, overwrite an existing version, or accept a requested role or intent. Never blind-retry a failed commit either — the two refusals below each have their own recovery.
+
+Two commit refusals have different recoveries:
+
+- `conflict: not_latest_document` — a new version landed while you were working. Re-read the review, reapply your change on top of the new `head_message_id`, and commit that. Never re-send the stale base.
+- `confirmation_required` — a newer version exists that your token cannot read, so re-reading will not help and retrying loops. Tell the user their edit is not based on the latest version and that saving supersedes that newer version, then pass `confirmed=true` only on an explicit yes. In a multi-asset batch, skip and report instead.
 
 ### `file_name` is a filename only
 
@@ -138,7 +144,7 @@ Operation / both: `solstice_prepare_prc_template_bake` → PUT to `upload_url` �
 `operation_bake_html`. The bake input must be the approved, self-contained
 Contract v2 operation proof with hydrated fields and creative `srcdoc`; never
 pass the reusable `html_template` shell in its place. The server is
-producer-neutral, copies the current creative to the next version number, and
+producer-neutral, copies the current creative onto a new version, and
 writes that freeze to `cg_operation_prc_template/{operation_id}/{row_id}.html`.
 
 ## Unsupported changes

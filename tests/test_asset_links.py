@@ -105,7 +105,8 @@ def test_commit_html_returns_asset_url(app_harness: AppHarness, mint_token):
     payload = tool_payload(_call(
         app_harness, token, "solstice_commit_operation_version",
         {"tenant_slug": TENANT, "operation_id": OP_A1, "type": "html",
-         "s3_key": prep["s3_key"], "file_name": "op_a1.html"},
+         "s3_key": prep["s3_key"], "file_name": "op_a1.html",
+         "base_message_id": "m2", "confirmed": True},
     ))
     assert payload["asset_url"] == _expected(OP_A1)
 
@@ -116,7 +117,8 @@ def test_commit_pdf_returns_asset_url(app_harness: AppHarness, mint_token):
     payload = tool_payload(_call(
         app_harness, token, "solstice_commit_operation_version",
         {"tenant_slug": TENANT, "operation_id": OP_A1, "type": "pdf",
-         "s3_key": prep["s3_key"], "file_name": "op_a1.pdf"},
+         "s3_key": prep["s3_key"], "file_name": "op_a1.pdf",
+         "base_message_id": "m2", "confirmed": True},
     ))
     assert payload["asset_url"] == _expected(OP_A1)
 

@@ -83,7 +83,9 @@ class AdminRequest(Base):
     resolved_by_user_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     resolved_message_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), nullable=True)
-    resolved_version_number: Mapped[int | None] = mapped_column(nullable=True)
+    # ``resolved_version_number`` is deliberately unmapped: the Backend dropped its
+    # NOT NULL and stopped writing it (the resolution is audited by
+    # ``resolved_message_id``, a row id), so it is NULL on anything recent.
     assigned_to: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -172,7 +174,7 @@ def _request_summary(
         "dismissal": meta.get("dismissal"),
         "resolved_by_user_id": row.resolved_by_user_id,
         "resolved_at": _iso(row.resolved_at),
-        "resolved_version_number": row.resolved_version_number,
+        "resolved_message_id": row.resolved_message_id,
         "created_at": _iso(row.created_at),
         "updated_at": _iso(row.updated_at),
     }

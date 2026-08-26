@@ -54,9 +54,19 @@ stays off:
 
 Process the queue one operation at a time:
 
-1. **Fetch** — find the latest final HTML version via
-   `solstice_operation_messages`, then `solstice_operation_html`, then GET
-   the returned `url`.
+1. **Fetch** — call `solstice_operation_messages` and take `head_message_id`,
+   the current version. Check that row's `intent`:
+   - `final` — proceed. Pass the id to `solstice_operation_html` and GET the
+     returned `url`. Keep the id; step 5 needs it as `base_message_id`.
+   - `draft` — SKIP this operation and list it in the final summary as needing
+     attention. ISI replacement never edits unapproved work, and an ISI applied
+     to the older final would bury the draft's edits. Staff must approve or
+     discard the draft first.
+   You will only ever see a `draft` head as Solstice staff; for everyone else the
+   server filters drafts out, so your head is always `final` even when a newer
+   draft exists. That case is invisible here and surfaces at step 5 instead.
+   Never scan for some other version to edit instead — the head is the only
+   version you may build on.
 2. **Swap the ISI block**:
    - Locate the region by its headings — the block starting at
      "IMPORTANT SAFETY INFORMATION" (often paired with an INDICATION heading)
@@ -76,15 +86,23 @@ Process the queue one operation at a time:
 5. **Land on accept** — only after approval:
    `solstice_prepare_operation_version` with `type="html"` and a bare
    `file_name` → PUT the HTML bytes → `solstice_commit_operation_version`
-   with the unchanged prepare values. Report the committed version number and
-   server-derived intent. If the caller is Solstice staff (intent `draft`),
-   offer `solstice_approve_operation_version` to publish it.
+   with the unchanged prepare values plus `base_message_id` set to the id from
+   step 1. Two refusals are possible, and in a batch **both mean skip**:
+   - `conflict: not_latest_document` — a version landed while you were working.
+   - `confirmation_required` — a newer version exists that your token cannot
+     read (the hidden-draft case step 1 cannot see). **Never** pass
+     `confirmed=true` here: doing so buries that version's edits, which is
+     exactly what rule 6 and step 1 forbid.
+   In both cases skip the operation and list it in the summary as needing
+   attention; do not reapply blindly across a batch. Otherwise report the
+   server-derived intent. If the caller is Solstice staff (intent `draft`), offer
+   `solstice_approve_operation_version` to publish it.
 6. Move to the next operation. A failure on one operation never blocks the
    rest — record it and continue.
 
 ## Wrap-up
 
-Summarize the batch: per operation — accepted (version + intent), skipped, or
+Summarize the batch: per operation — accepted (server-derived intent), skipped, or
 failed (why). Remind the user that rejected/failed operations were not
 modified.
 
