@@ -27,9 +27,7 @@ BUCKET = "test-bucket-a"
 
 def _call(harness: AppHarness, token: str, name: str, args: dict[str, Any]):
     return rpc(
-        harness,
-        "tools/call",
-        token=token,
+        harness, "tools/call", token=token,
         params={"name": name, "arguments": args},
     )
 
@@ -42,85 +40,50 @@ def _tool_error_text(response) -> str:
 
 
 def _create_edit_pdf(harness: AppHarness, token: str) -> str:
-    payload = tool_payload(
-        _call(
-            harness,
-            token,
-            "solstice_create_edit_operation",
-            {
-                "tenant_slug": TENANT,
-                "project_id": PROJECT_P2,
-                "name": "toggle.pdf",
-                "kind": "pdf",
-                "content_type": "EMAIL",
-            },
-        )
-    )
+    payload = tool_payload(_call(
+        harness, token, "solstice_create_edit_operation",
+        {"tenant_slug": TENANT, "project_id": PROJECT_P2, "name": "toggle.pdf",
+         "kind": "pdf", "content_type": "EMAIL"},
+    ))
     return payload["operation_id"]
 
 
 def _head_message_id(harness: AppHarness, token: str, op_id: str) -> str | None:
-    return tool_payload(
-        _call(
-            harness,
-            token,
-            "solstice_operation_messages",
-            {"tenant_slug": TENANT, "operation_id": op_id},
-        )
-    )["head_message_id"]
+    return tool_payload(_call(
+        harness, token, "solstice_operation_messages",
+        {"tenant_slug": TENANT, "operation_id": op_id},
+    ))["head_message_id"]
 
 
-def _land_version(harness: AppHarness, token: str, op_id: str, kind: str, file_name: str) -> dict[str, Any]:
+def _land_version(
+    harness: AppHarness, token: str, op_id: str, kind: str, file_name: str
+) -> dict[str, Any]:
     """Read-then-commit, the way an agent must: declare the head it is building on."""
     base = _head_message_id(harness, token, op_id)
-    prep = tool_payload(
-        _call(
-            harness,
-            token,
-            "solstice_prepare_operation_version",
-            {"tenant_slug": TENANT, "operation_id": op_id, "type": kind, "file_name": file_name},
-        )
-    )
+    prep = tool_payload(_call(
+        harness, token, "solstice_prepare_operation_version",
+        {"tenant_slug": TENANT, "operation_id": op_id, "type": kind, "file_name": file_name},
+    ))
     harness.s3.put(BUCKET, prep["s3_key"], b"file-bytes")
-    return tool_payload(
-        _call(
-            harness,
-            token,
-            "solstice_commit_operation_version",
-            {
-                "tenant_slug": TENANT,
-                "operation_id": op_id,
-                "type": kind,
-                "s3_key": prep["s3_key"],
-                "file_name": file_name,
-                "base_message_id": base,
-            },
-        )
-    )
+    return tool_payload(_call(
+        harness, token, "solstice_commit_operation_version",
+        {"tenant_slug": TENANT, "operation_id": op_id, "type": kind,
+         "s3_key": prep["s3_key"], "file_name": file_name, "base_message_id": base},
+    ))
 
 
-def _commit_source(harness: AppHarness, token: str, op_id: str, file_name: str, **extra):
-    prep = tool_payload(
-        _call(
-            harness,
-            token,
-            "solstice_prepare_operation_version",
-            {"tenant_slug": TENANT, "operation_id": op_id, "type": "source", "file_name": file_name},
-        )
-    )
+def _commit_source(
+    harness: AppHarness, token: str, op_id: str, file_name: str, **extra
+):
+    prep = tool_payload(_call(
+        harness, token, "solstice_prepare_operation_version",
+        {"tenant_slug": TENANT, "operation_id": op_id, "type": "source", "file_name": file_name},
+    ))
     harness.s3.put(BUCKET, prep["s3_key"], b"source-bytes")
     return prep["s3_key"], _call(
-        harness,
-        token,
-        "solstice_commit_operation_version",
-        {
-            "tenant_slug": TENANT,
-            "operation_id": op_id,
-            "type": "source",
-            "s3_key": prep["s3_key"],
-            "file_name": file_name,
-            **extra,
-        },
+        harness, token, "solstice_commit_operation_version",
+        {"tenant_slug": TENANT, "operation_id": op_id, "type": "source",
+         "s3_key": prep["s3_key"], "file_name": file_name, **extra},
     )
 
 
@@ -141,7 +104,9 @@ def test_source_commit_with_flag_stamps_version_message(app_harness: AppHarness,
     token = mint_token(sub=SHARED_SUB)  # ADMIN -> final intent
     op_id = _create_edit_pdf(app_harness, token)
     landed = _land_version(app_harness, token, op_id, "pdf", "toggle.pdf")
-    source_key, response = _commit_source(app_harness, token, op_id, "source.html", show_source_on_ui=True)
+    source_key, response = _commit_source(
+        app_harness, token, op_id, "source.html", show_source_on_ui=True
+    )
     payload = tool_payload(response)
     assert payload["show_source_on_ui"] is True
     assert payload["bound_message_id"] == landed["id"]
@@ -167,34 +132,24 @@ def test_flag_requires_html_source(app_harness: AppHarness, mint_token):
     token = mint_token(sub=SHARED_SUB)
     op_id = _create_edit_pdf(app_harness, token)
     _land_version(app_harness, token, op_id, "pdf", "toggle.pdf")
-    _key, response = _commit_source(app_harness, token, op_id, "design.zip", show_source_on_ui=True)
+    _key, response = _commit_source(
+        app_harness, token, op_id, "design.zip", show_source_on_ui=True
+    )
     assert "invalid_argument" in _tool_error_text(response)
 
 
 def test_flag_rejected_for_version_commits(app_harness: AppHarness, mint_token):
     token = mint_token(sub=SHARED_SUB)
     op_id = _create_edit_pdf(app_harness, token)
-    prep = tool_payload(
-        _call(
-            app_harness,
-            token,
-            "solstice_prepare_operation_version",
-            {"tenant_slug": TENANT, "operation_id": op_id, "type": "pdf", "file_name": "toggle.pdf"},
-        )
-    )
+    prep = tool_payload(_call(
+        app_harness, token, "solstice_prepare_operation_version",
+        {"tenant_slug": TENANT, "operation_id": op_id, "type": "pdf", "file_name": "toggle.pdf"},
+    ))
     app_harness.s3.put(BUCKET, prep["s3_key"], b"%PDF-1.4")
     response = _call(
-        app_harness,
-        token,
-        "solstice_commit_operation_version",
-        {
-            "tenant_slug": TENANT,
-            "operation_id": op_id,
-            "type": "pdf",
-            "s3_key": prep["s3_key"],
-            "file_name": "toggle.pdf",
-            "show_source_on_ui": True,
-        },
+        app_harness, token, "solstice_commit_operation_version",
+        {"tenant_slug": TENANT, "operation_id": op_id, "type": "pdf",
+         "s3_key": prep["s3_key"], "file_name": "toggle.pdf", "show_source_on_ui": True},
     )
     assert "invalid_argument" in _tool_error_text(response)
 
@@ -202,7 +157,9 @@ def test_flag_rejected_for_version_commits(app_harness: AppHarness, mint_token):
 def test_flag_requires_a_document_version(app_harness: AppHarness, mint_token):
     token = mint_token(sub=SHARED_SUB)
     op_id = _create_edit_pdf(app_harness, token)  # no versions landed yet
-    _key, response = _commit_source(app_harness, token, op_id, "source.html", show_source_on_ui=True)
+    _key, response = _commit_source(
+        app_harness, token, op_id, "source.html", show_source_on_ui=True
+    )
     assert "invalid_state" in _tool_error_text(response)
 
 
@@ -212,7 +169,9 @@ def test_flag_binds_published_version_over_draft(app_harness: AppHarness, mint_t
     op_id = _create_edit_pdf(app_harness, member_token)
     v1 = _land_version(app_harness, member_token, op_id, "pdf", "v1.pdf")  # final
     v2 = _land_version(app_harness, staff_token, op_id, "pdf", "v2.pdf")  # draft
-    source_key, response = _commit_source(app_harness, member_token, op_id, "source.html", show_source_on_ui=True)
+    source_key, response = _commit_source(
+        app_harness, member_token, op_id, "source.html", show_source_on_ui=True
+    )
     payload = tool_payload(response)
     assert payload["bound_message_id"] == v1["id"]
     v1_metadata = _doc_metadata(app_harness, op_id, v1["message_id"])
@@ -244,7 +203,9 @@ def test_flag_binds_newest_created_at_document(app_harness: AppHarness, mint_tok
             )
         )
         session.commit()
-    source_key, response = _commit_source(app_harness, token, op_id, "source.html", show_source_on_ui=True)
+    source_key, response = _commit_source(
+        app_harness, token, op_id, "source.html", show_source_on_ui=True
+    )
     payload = tool_payload(response)
     assert payload["bound_message_id"] == later_id
     with app_harness.session_factory(TENANT) as session:

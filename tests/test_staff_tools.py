@@ -31,9 +31,7 @@ BUCKET = "test-bucket-a"
 
 def _call(harness: AppHarness, token: str, name: str, args: dict[str, Any]):
     return rpc(
-        harness,
-        "tools/call",
-        token=token,
+        harness, "tools/call", token=token,
         params={"name": name, "arguments": args},
     )
 
@@ -98,8 +96,7 @@ def _message(harness: AppHarness, op_id: str, message_id: str) -> CgOperationMes
 
 def test_list_brand_users_as_staff(app_harness: AppHarness, mint_token):
     response = _call(
-        app_harness,
-        mint_token(sub=STAFF_SUB),
+        app_harness, mint_token(sub=STAFF_SUB),
         "solstice_list_brand_users",
         {"tenant_slug": TENANT, "brand_id": BRAND_A1},
     )
@@ -115,8 +112,7 @@ def test_list_brand_users_as_staff(app_harness: AppHarness, mint_token):
 def test_list_brand_users_denied_for_admin(app_harness: AppHarness, mint_token):
     # SHARED is ADMIN on BRAND_A1 — below the SOLSTICE_STAFF gate.
     response = _call(
-        app_harness,
-        mint_token(sub=SHARED_SUB),
+        app_harness, mint_token(sub=SHARED_SUB),
         "solstice_list_brand_users",
         {"tenant_slug": TENANT, "brand_id": BRAND_A1},
     )
@@ -130,8 +126,7 @@ def test_list_brand_users_denied_for_admin(app_harness: AppHarness, mint_token):
 
 def test_update_name_updates_row_and_dir_map_leaf(app_harness: AppHarness, mint_token):
     response = _call(
-        app_harness,
-        mint_token(sub=STAFF_SUB),
+        app_harness, mint_token(sub=STAFF_SUB),
         "solstice_update_operation",
         {"tenant_slug": TENANT, "operation_id": OP_A1, "name": "renamed.html"},
     )
@@ -145,8 +140,7 @@ def test_update_name_updates_row_and_dir_map_leaf(app_harness: AppHarness, mint_
 
 def test_update_content_type_sets_column_metadata_and_leaf(app_harness: AppHarness, mint_token):
     response = _call(
-        app_harness,
-        mint_token(sub=STAFF_SUB),
+        app_harness, mint_token(sub=STAFF_SUB),
         "solstice_update_operation",
         {"tenant_slug": TENANT, "operation_id": OP_A1, "content_type": "banner"},
     )
@@ -162,8 +156,7 @@ def test_update_content_type_sets_column_metadata_and_leaf(app_harness: AppHarne
 
 def test_update_owner_to_brand_member(app_harness: AppHarness, mint_token):
     response = _call(
-        app_harness,
-        mint_token(sub=STAFF_SUB),
+        app_harness, mint_token(sub=STAFF_SUB),
         "solstice_update_operation",
         {"tenant_slug": TENANT, "operation_id": OP_A1, "new_owner_user_id": USER_A_OTHER},
     )
@@ -175,8 +168,7 @@ def test_update_owner_to_brand_member(app_harness: AppHarness, mint_token):
 def test_update_owner_rejects_non_member(app_harness: AppHarness, mint_token):
     # USER_B_SHARED exists in tenant_b, not on BRAND_A1's team.
     response = _call(
-        app_harness,
-        mint_token(sub=STAFF_SUB),
+        app_harness, mint_token(sub=STAFF_SUB),
         "solstice_update_operation",
         {"tenant_slug": TENANT, "operation_id": OP_A1, "new_owner_user_id": USER_B_SHARED},
     )
@@ -186,8 +178,7 @@ def test_update_owner_rejects_non_member(app_harness: AppHarness, mint_token):
 
 def test_update_without_fields_is_rejected(app_harness: AppHarness, mint_token):
     response = _call(
-        app_harness,
-        mint_token(sub=STAFF_SUB),
+        app_harness, mint_token(sub=STAFF_SUB),
         "solstice_update_operation",
         {"tenant_slug": TENANT, "operation_id": OP_A1},
     )
@@ -196,8 +187,7 @@ def test_update_without_fields_is_rejected(app_harness: AppHarness, mint_token):
 
 def test_update_denied_for_admin(app_harness: AppHarness, mint_token):
     response = _call(
-        app_harness,
-        mint_token(sub=SHARED_SUB),
+        app_harness, mint_token(sub=SHARED_SUB),
         "solstice_update_operation",
         {"tenant_slug": TENANT, "operation_id": OP_A1, "name": "nope.html"},
     )
@@ -208,8 +198,7 @@ def test_update_denied_for_admin(app_harness: AppHarness, mint_token):
 def test_update_operation_without_project_skips_dir_map(app_harness: AppHarness, mint_token):
     # OP_A2 has project_id=None: the row updates, no dir_map to touch.
     response = _call(
-        app_harness,
-        mint_token(sub=STAFF_SUB),
+        app_harness, mint_token(sub=STAFF_SUB),
         "solstice_update_operation",
         {"tenant_slug": TENANT, "operation_id": OP_A2, "name": "standalone.html"},
     )
@@ -225,8 +214,7 @@ def test_update_operation_without_project_skips_dir_map(app_harness: AppHarness,
 def test_approve_flips_draft_to_final(app_harness: AppHarness, mint_token):
     # m3 is the seeded html draft v2 on OP_A1.
     response = _call(
-        app_harness,
-        mint_token(sub=STAFF_SUB),
+        app_harness, mint_token(sub=STAFF_SUB),
         "solstice_approve_operation_version",
         {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m3"},
     )
@@ -241,38 +229,21 @@ def test_approve_flips_draft_to_final(app_harness: AppHarness, mint_token):
 def test_approve_updates_version_intent_metadata(app_harness: AppHarness, mint_token):
     # Commit a fresh staff draft (which carries metadata), then approve it.
     token = mint_token(sub=STAFF_SUB)
-    prep = tool_payload(
-        _call(
-            app_harness,
-            token,
-            "solstice_prepare_operation_version",
-            {"tenant_slug": TENANT, "operation_id": OP_A1, "type": "html", "file_name": "v3.html"},
-        )
-    )
+    prep = tool_payload(_call(
+        app_harness, token, "solstice_prepare_operation_version",
+        {"tenant_slug": TENANT, "operation_id": OP_A1, "type": "html", "file_name": "v3.html"},
+    ))
     app_harness.s3.put(BUCKET, prep["s3_key"], b"<html>v3</html>")
-    commit = tool_payload(
-        _call(
-            app_harness,
-            token,
-            "solstice_commit_operation_version",
-            {
-                "tenant_slug": TENANT,
-                "operation_id": OP_A1,
-                "type": "html",
-                "s3_key": prep["s3_key"],
-                "base_message_id": "m3",
-            },  # staff's head on OP_A1
-        )
-    )
+    commit = tool_payload(_call(
+        app_harness, token, "solstice_commit_operation_version",
+        {"tenant_slug": TENANT, "operation_id": OP_A1, "type": "html",
+         "s3_key": prep["s3_key"], "base_message_id": "m3"},  # staff's head on OP_A1
+    ))
     assert commit["intent"] == "draft"
-    payload = tool_payload(
-        _call(
-            app_harness,
-            token,
-            "solstice_approve_operation_version",
-            {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": commit["message_id"]},
-        )
-    )
+    payload = tool_payload(_call(
+        app_harness, token, "solstice_approve_operation_version",
+        {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": commit["message_id"]},
+    ))
     assert payload["intent"] == "final"
     msg = _message(app_harness, OP_A1, commit["message_id"])
     assert msg.intent == "final"
@@ -282,8 +253,7 @@ def test_approve_updates_version_intent_metadata(app_harness: AppHarness, mint_t
 def test_approve_already_final_is_idempotent(app_harness: AppHarness, mint_token):
     # m2 is the seeded html final v1 on OP_A1.
     response = _call(
-        app_harness,
-        mint_token(sub=STAFF_SUB),
+        app_harness, mint_token(sub=STAFF_SUB),
         "solstice_approve_operation_version",
         {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m2"},
     )
@@ -308,22 +278,17 @@ def test_approve_closes_pending_change_requests(app_harness: AppHarness, mint_to
             "change_request_claim": {"admin_id": "someone"},
         },
     )
-    payload = tool_payload(
-        _call(
-            app_harness,
-            mint_token(sub=STAFF_SUB),
-            "solstice_approve_operation_version",
-            {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m3"},
-        )
-    )
+    payload = tool_payload(_call(
+        app_harness, mint_token(sub=STAFF_SUB),
+        "solstice_approve_operation_version",
+        {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m3"},
+    ))
     assert payload["already_final"] is False
     assert payload["change_requests_resolved"] == 2
     meta = _operation(app_harness, OP_A1).operation_metadata
     assert meta["campaign"] == "keep-me"
     assert [entry["status"] for entry in meta["change_request_history"]] == [
-        "approved",
-        "approved",
-        "approved",
+        "approved", "approved", "approved",
     ]
     assert "approved_at" in meta["change_request_history"][0]
     assert "approved_resubmit_metadata" not in meta
@@ -331,22 +296,18 @@ def test_approve_closes_pending_change_requests(app_harness: AppHarness, mint_to
 
 
 def test_approve_already_final_does_not_close_change_requests(
-    app_harness: AppHarness,
-    mint_token,
+    app_harness: AppHarness, mint_token,
 ):
     pending = {
         "change_request_history": [{"batch_id": "stuck", "status": "pending"}],
         "approved_resubmit_metadata": {"complex_document_change_request": True},
     }
     _set_operation_metadata(app_harness, OP_A1, pending)
-    payload = tool_payload(
-        _call(
-            app_harness,
-            mint_token(sub=STAFF_SUB),
-            "solstice_approve_operation_version",
-            {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m2"},
-        )
-    )
+    payload = tool_payload(_call(
+        app_harness, mint_token(sub=STAFF_SUB),
+        "solstice_approve_operation_version",
+        {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m2"},
+    ))
     assert payload["already_final"] is True
     assert payload["change_requests_resolved"] == 0
     meta = _operation(app_harness, OP_A1).operation_metadata
@@ -358,14 +319,11 @@ def test_approve_completes_pending_admin_requests(app_harness: AppHarness, mint_
     # A pending admin_requests row keeps the asset locked for non-admins even
     # once the version is final — approve has to close that lock too.
     already_resolved_at = _admin_request(app_harness, REQ_COMPLETED_A1).resolved_at
-    payload = tool_payload(
-        _call(
-            app_harness,
-            mint_token(sub=STAFF_SUB),
-            "solstice_approve_operation_version",
-            {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m3"},
-        )
-    )
+    payload = tool_payload(_call(
+        app_harness, mint_token(sub=STAFF_SUB),
+        "solstice_approve_operation_version",
+        {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m3"},
+    ))
     assert payload["requests_completed"] == 1
 
     row = _admin_request(app_harness, REQ_PENDING_A1)
@@ -380,31 +338,24 @@ def test_approve_completes_pending_admin_requests(app_harness: AppHarness, mint_
 
 
 def test_approve_already_final_leaves_pending_requests_alone(app_harness: AppHarness, mint_token):
-    payload = tool_payload(
-        _call(
-            app_harness,
-            mint_token(sub=STAFF_SUB),
-            "solstice_approve_operation_version",
-            {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m2"},
-        )
-    )
+    payload = tool_payload(_call(
+        app_harness, mint_token(sub=STAFF_SUB),
+        "solstice_approve_operation_version",
+        {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m2"},
+    ))
     assert payload["already_final"] is True
     assert payload["requests_completed"] == 0
     assert _admin_request(app_harness, REQ_PENDING_A1).status == "pending"
 
 
 def test_approve_with_no_change_request_history_is_noop_for_metadata(
-    app_harness: AppHarness,
-    mint_token,
+    app_harness: AppHarness, mint_token,
 ):
-    payload = tool_payload(
-        _call(
-            app_harness,
-            mint_token(sub=STAFF_SUB),
-            "solstice_approve_operation_version",
-            {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m3"},
-        )
-    )
+    payload = tool_payload(_call(
+        app_harness, mint_token(sub=STAFF_SUB),
+        "solstice_approve_operation_version",
+        {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m3"},
+    ))
     assert payload["already_final"] is False
     assert payload["change_requests_resolved"] == 0
     meta = _operation(app_harness, OP_A1).operation_metadata
@@ -414,8 +365,7 @@ def test_approve_with_no_change_request_history_is_noop_for_metadata(
 
 def test_approve_rejects_text_message(app_harness: AppHarness, mint_token):
     response = _call(
-        app_harness,
-        mint_token(sub=STAFF_SUB),
+        app_harness, mint_token(sub=STAFF_SUB),
         "solstice_approve_operation_version",
         {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m1"},
     )
@@ -424,8 +374,7 @@ def test_approve_rejects_text_message(app_harness: AppHarness, mint_token):
 
 def test_approve_denied_for_admin(app_harness: AppHarness, mint_token):
     response = _call(
-        app_harness,
-        mint_token(sub=SHARED_SUB),
+        app_harness, mint_token(sub=SHARED_SUB),
         "solstice_approve_operation_version",
         {"tenant_slug": TENANT, "operation_id": OP_A1, "message_id": "m3"},
     )

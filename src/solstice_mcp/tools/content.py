@@ -109,7 +109,11 @@ def _load_prc_template_rules(profile: str) -> dict[str, Any]:
         raise ToolError(f"contract_error: renderer contract has no rules for {normalized_profile}")
 
     rules = {
-        rule_type: [rule for scope_name in scopes for rule in parsed[scope_name][rule_type]]
+        rule_type: [
+            rule
+            for scope_name in scopes
+            for rule in parsed[scope_name][rule_type]
+        ]
         for rule_type in rule_headings.values()
     }
     if any(not entries for entries in rules.values()):
@@ -316,7 +320,9 @@ def register_content_tools(
             session_factory=session_factory,
         )
         if template is None:
-            raise ToolError(f"not_found: no PRC template for content_type {content_type.strip().lower()!r}")
+            raise ToolError(
+                f"not_found: no PRC template for content_type {content_type.strip().lower()!r}"
+            )
         return {
             "status": "ok",
             "tenant_slug": tenant_slug,

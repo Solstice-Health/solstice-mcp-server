@@ -10,7 +10,9 @@ PLUGIN_NAME = "solstice-platform"
 PLUGIN_VERSION = "0.3.22"
 # Cursor/Claude → ECS direct (full tools/list). Codex → AgentCore (Cedar/OBO).
 ECS_URL = "https://api.solsticehealth.co/mcp"
-GATEWAY_URL = "https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
+GATEWAY_URL = (
+    "https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
+)
 CURSOR_CLIENT_ID = "uoOiEXHZxyDBkkBEfnOQEp6IhqcnAgTP"
 SCOPES = {"mcp:connect", "openid", "email"}
 # Codex callback ID is SHA256-derived from the gateway URL (codex.mcp.json target).
@@ -348,4 +350,6 @@ def test_package_has_no_secrets_placeholders_or_duplicate_skill() -> None:
             assert forbidden.search(path.read_text()) is None, path
 
     assert not (ROOT / "integrations" / "cursor" / "solstice-platform").exists()
-    assert list(ROOT.glob("**/skills/solstice-platform/SKILL.md")) == [PLUGIN / "skills" / PLUGIN_NAME / "SKILL.md"]
+    assert list(ROOT.glob("**/skills/solstice-platform/SKILL.md")) == [
+        PLUGIN / "skills" / PLUGIN_NAME / "SKILL.md"
+    ]
