@@ -91,7 +91,8 @@ creative into one document.
    `solstice_brand_claims`. Do not infer medical, efficacy, or safety copy from
    a visual reference.
 15. **Hosted fonts and images.** Keep url-only `@font-face` already in the
-   bake. Then parse family + url from the current brand's `solstice_brand_rules`
+   bake; a font sheet counts only from `fonts.googleapis.com` or
+   `use.typekit.net`. Then parse family + url from the current brand's `solstice_brand_rules`
    `design_bible` `font_rules` / `social_font_rules`. Then
    `solstice_list_public_fonts(query=family)` and match `label` (filename after
    `{md5}_`). If the source is not from the current brand and that brand has

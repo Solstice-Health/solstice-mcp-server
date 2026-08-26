@@ -48,8 +48,8 @@ Every template starts with one declaration whose profile matches L1:
   - NEVER declare --prc-* CSS variables - runtime-owned
   - NEVER style outside the page box (backdrop, page gaps,
     centering, shadow, @page) - the platform paints those
-  - NEVER link external fonts or reference a family with no
-    hosted file - the proof-font lock rejects it at bake
+  - NEVER reference a family with no hosted file; font sheets
+    only from fonts.googleapis.com or use.typekit.net
   - Keep operation creative out of this file - it is injected
   Full rules: solstice_prc_template_rules via the Solstice MCP -->
 ```
@@ -199,8 +199,9 @@ A v2 template must never author:
 - the canvas outside the pages: a backdrop on `html` or `body`, the gap or
   margin between pages, page centering, or a page drop shadow;
 - `@page` or `@media print` rules, which set export pagination and geometry;
-- external font links such as `fonts.googleapis.com`. Use platform-listed or
-  inlined fonts;
+- an external font sheet from any host but `fonts.googleapis.com` or
+  `use.typekit.net`, whether by `<link rel="stylesheet">` or `@import`. Prefer
+  a platform-listed or inlined face: a pinned file needs no sheet at all;
 - `style#sol-prc-locked-fonts`, `style#sol-prc-hosted-faces`, and
   `sol-prc-`-prefixed font-family names, which the proof-font lock writes.
 
@@ -275,10 +276,10 @@ there is no Python copy of these rules.
 - `common.annotation_pages`: Provide unique page boundaries and real anchors; the runtime ignores creative anchors clipped outside the iframe viewport and keeps each callout and arrow endpoint bound to its source page.
 - `common.annotation_positions_in_bake`: After a callout drag or arrow-style change, freeze page-space pins in `script#sol-prc-annotation-positions` inside the operation bake; catalog templates must not include that script.
 - `common.layer_separation`: Keep reusable proof-template chrome separate from operation creative, values, and bake-resident runtime data.
-- `common.hosted_fonts`: Resolve every named font-family so the proof-font lock passes and view matches export: keep or add url-only `@font-face` with a reachable hosted file (never `local()`-only, which the lock strips), sourced in this order — `design_bible` `font_rules` / `social_font_rules` from `solstice_brand_rules`, then `solstice_list_public_fonts(query=family)`, then Fontsource only for a real slug of that family with every used weight present. Do not stand in a different family; only Helvetica / Helvetica Neue rewrite to Arial. The lock also walks creative srcdocs, and url-only faces hosted on the template propagate into them. Stop if none hit and name the family.
+- `common.hosted_fonts`: Resolve every named font-family so the proof-font lock passes and view matches export: keep or add url-only `@font-face` with a reachable hosted file (never `local()`-only, which the lock strips), sourced in this order — `design_bible` `font_rules` / `social_font_rules` from `solstice_brand_rules`, then `solstice_list_public_fonts(query=family)`, then Fontsource only for a real slug of that family with every used weight present. Do not stand in a different family; only Helvetica / Helvetica Neue rewrite to Arial. An external sheet (`<link rel="stylesheet">` or `@import`) counts as a face only from `fonts.googleapis.com` or `use.typekit.net` — both serve immutable, CORS-open files that answer HEAD without a referer — and the lock copies that face into `style#sol-prc-locked-fonts` so export loads the file rather than the sheet; a family only some other host faces is reported. The lock also walks creative srcdocs, and url-only faces hosted on the template propagate into them. Stop if none hit and name the family.
 
 #### SHOULD
-- `common.self_contained`: Keep CSS and portable assets inline and use only platform-listed or inlined fonts.
+- `common.self_contained`: Keep CSS and portable assets inline and use platform-listed or inlined fonts, or an allowlisted font sheet.
 - `common.compose_check`: Validate both interactive and export-shaped output against this contract before publishing; validation must not depend on a particular producer implementation.
 - `common.minimal_shell`: Author only layers L0-L5; let the platform supply values, creative, behavior, sizing, and annotations.
 - `common.annotation_theme`: If theming runtime annotations, use only the allowlisted `--sol-prc-annotation-color`, `--sol-prc-annotation-background`, `--sol-prc-annotation-text-color`, `--sol-prc-annotation-font`, `--sol-prc-annotation-padding`, `--sol-prc-annotation-radius`, `--sol-prc-annotation-border-width`, and `--sol-prc-annotation-line-width` variables; theming is optional.
@@ -292,7 +293,7 @@ there is no Python copy of these rules.
 - `common.catalog_positions`: Author `script#sol-prc-annotation-positions` in a reusable catalog template; only an operation bake may carry it after a drag.
 - `common.canvas_chrome`: Author the canvas outside the pages, including an html or body backdrop, the gap or margin between pages, page centering, or a page drop shadow.
 - `common.print_rules`: Author `@page` or `@media print` rules; the platform owns export pagination and print geometry.
-- `common.external_fonts`: Link external font services; use platform-listed or inlined fonts.
+- `common.external_fonts`: Link a font sheet from any host but `fonts.googleapis.com` or `use.typekit.net`; prefer platform-listed or inlined fonts.
 - `common.platform_values`: Seed platform-owned config keys or operation-specific values.
 - `common.template_language`: Add Handlebars, Jinja, Mustache, or another host-unrecognized template language.
 - `common.unmarked_fallback`: Depend on injection into unmarked iframes.
@@ -395,9 +396,11 @@ reserved namespace use, and removed core field IDs. Platform-owned seed keys,
 legacy v1 annotation hosts, and unavailable fonts warn during migration.
 
 Independently of the prepass, the proof-font lock runs on view and on every
-bake/save: a family with no reachable url-only face, no Helvetica stand-in,
-and no Fontsource slug covering every used weight rejects the bake. Passing
-the lock is what makes workspace and export text identical.
+bake/save: a family with no reachable url-only face, no face from an
+allowlisted sheet, no Helvetica stand-in, and no Fontsource slug is reported
+on the proof badge and in the save toast. Every path reports rather than
+rejects, so a report left unresolved ships a proof whose export can differ
+from VIEW. Passing the lock is what makes workspace and export text identical.
 
 Migration aliases may map v1 seams to v2 during compose:
 
