@@ -31,7 +31,7 @@ export through the same contract.
 | **L2 Pages** | Defines page rectangles and annotation boundaries | `main[data-sol-prc-pages]` containing `[data-sol-prc-page="ID"][data-sol-prc-page-type="cover\|render\|storyboard"]` |
 | **L3 Creative slots** | Marks only the iframes the platform hydrates | `iframe[data-sol-prc-creative="desktop\|mobile\|social\|banner"]` |
 | **L4 Config seed** | Supplies presentation-only JSON | one `script#sol-prc-config[type="application/json"]` |
-| **L5 Fields** | Marks editable, mirrored, and derived values | `data-sol-prc-field`, `data-sol-prc-mirror`, `data-sol-prc-derived`, and stable cover IDs |
+| **L5 Fields** | Marks editable and mirrored values | `data-sol-prc-field`, `data-sol-prc-mirror`, and stable cover IDs |
 | **Reserved** | Runtime-owned and forbidden in templates | the namespace listed below |
 
 ### L0 — Declaration
@@ -127,19 +127,27 @@ annotations.
 ### L5 — Fields
 
 - Every visible template value exposed to field editing carries exactly one
-  role: `data-sol-prc-field="FIELD_ID"`,
-  `data-sol-prc-mirror="FIELD_ID"`, or
-  `data-sol-prc-derived="FIELD_ID"`.
+  authoring role: `data-sol-prc-field="FIELD_ID"` or
+  `data-sol-prc-mirror="FIELD_ID"`. Those two are the whole authoring
+  vocabulary. `data-sol-prc-derived` is not a third choice — it is reserved for
+  values the runtime recomputes, and the banner cumulative duration
+  (`frame_cumulative_INDEX`) is the only one that exists. Never introduce a new
+  derived ID.
 - IDs are normalized canonical IDs for logical values. The same logical value
   uses the same exact `FIELD_ID` on every rendered page instance; page, clone,
   or dimension suffixes do not create new field identities.
 - `data-sol-prc-field` is the primary value owner and the only value-editable
-  role. Mirrors repeat that primary value and derived fields display runtime
-  computations. Mirrors and derived fields may be selected for field layout
-  and style controls, but their values are locked.
-- Repeated banner dimensions mirror the first section with the same canonical
-  `data-sol-prc-mirror="FIELD_ID"`. Computed banner cumulative durations use
-  `data-sol-prc-derived="frame_cumulative_INDEX"`.
+  role. A mirror repeats its primary's value on another rendered page; it is
+  selectable for layout and style edits, but its value is locked because the
+  primary already owns it. Every canonical ID that appears as a mirror must
+  have exactly one `data-sol-prc-field` primary — a canonical ID whose every
+  instance is a mirror is unreachable, and no reviewer can edit it.
+- Repeated instances mirror the first one under the same canonical
+  `data-sol-prc-mirror="FIELD_ID"`: banner dimensions mirror the first section,
+  social platform pages mirror the first platform page.
+- A value a builder fills in from the blueprint, the creative, or a scene index
+  is still authored copy. Stamp the first instance `data-sol-prc-field` so a
+  reviewer can correct it. Pre-populated is not computed.
 - Every node carrying a `data-sol-prc-*` editing marker — field, mirror,
   derived, inserted, or slot — is selectable, movable, and deletable in
   cover-edit with the standard engine chrome, on any content type's template.
@@ -174,6 +182,14 @@ A v2 template must never author:
   `.prc-connector-svg`, `.prc-render-stage`, `.callout-overlay`,
   `.callout-box`, `.callout-line`, `data-sol-prc-annotation-key`, or any
   script that computes callout geometry;
+- any `data-sol-prc-derived` ID other than the banner cumulative duration
+  (`frame_cumulative_INDEX`). Derived marks a value the runtime recomputes, not
+  one an author writes: the cumulative is a running sum of the duration fields
+  printed beside it, so a hand-edited value would contradict them on a reviewed
+  document. That single ID is the entire legitimate set. Authored copy —
+  anything a reviewer could reasonably want to change — is
+  `data-sol-prc-field` or `data-sol-prc-mirror`. Marking authored copy derived
+  locks it permanently and reports no authoring error;
 - `__prc_annotation_positions`, which is legacy operation draft data;
 - `__prc_field_overrides` or generated field-override CSS, which are legacy;
 - `script#sol-prc-annotation-positions` in a **catalog** template (operation
@@ -246,10 +262,12 @@ there is no Python copy of these rules.
 - `common.creative_slots`: Mark every intended creative iframe with one valid `data-sol-prc-creative` value; only marked iframes are creative slots.
 - `common.slot_marker`: Stamp the movable creative box with `data-sol-prc-slot` around the creative iframe, including iframe clones from banner and social templates. Engine Next selects that box (iframe interior maps to it); CSS class names are visual only and are not editor discovery.
 - `common.config`: Include exactly one parseable JSON object in `script#sol-prc-config[type="application/json"]`.
-- `common.fields`: Mark every visible word on the proof chrome — labels and values — with exactly one normalized `data-sol-prc-field`, `data-sol-prc-mirror`, or `data-sol-prc-derived` role and preserve existing stable IDs. Static readable text is a contract defect: wrap it as a field or delete it before publishing.
-- `common.visible_copy`: If any reviewer-visible chrome word is unmarked, an authoring agent MUST rewrite the template so that word is a field (or a mirror/derived of an existing canonical ID) before calling `solstice_create_prc_template_version`.
+- `common.fields`: Mark every visible word on the proof chrome — labels and values — with exactly one normalized `data-sol-prc-field` or `data-sol-prc-mirror` role and preserve existing stable IDs. Static readable text is a contract defect: wrap it as a field or delete it before publishing.
+- `common.visible_copy`: If any reviewer-visible chrome word is unmarked, an authoring agent MUST rewrite the template so that word is a field (or a mirror of an existing canonical ID) before calling `solstice_create_prc_template_version`.
 - `common.field_instances`: Use the same canonical field ID for the same logical value across every rendered page instance so one cover-edit applies to every match.
-- `common.field_value_ownership`: Make `data-sol-prc-field` the only value-editable role; keep mirrors and derived values locked while allowing their rendered instances to receive layout and style edits.
+- `common.field_value_ownership`: Make `data-sol-prc-field` the only value-editable role; keep mirrors locked while allowing their rendered instances to receive layout and style edits.
+- `common.field_primary_required`: Give every canonical field ID exactly one `data-sol-prc-field` primary instance. A canonical ID whose every rendered instance is a mirror is unreachable — no reviewer can edit the value on any page — and is a contract defect even though each instance carries a valid role.
+- `common.authored_value_roles`: Stamp any value a builder fills in from the blueprint, the creative, or a scene index as `data-sol-prc-field` on its first instance and `data-sol-prc-mirror` on the rest. Pre-populated at build time is not the same as computed at runtime; a builder helper that stamps one role for every dynamic value is the defect that produces an all-locked proof.
 - `common.field_page_bound`: Keep every field, mirror, and derived instance clamped inside its assigned page rect during drag, resize, and rail geometry edits.
 - `common.field_editing`: Keep every marked field, mirror, derived, inserted, and slot instance selectable, movable, and deletable through the standard engine chrome in cover-edit; a layout gesture pins that instance page-absolute and the result freezes into the next bake.
 - `common.inserted_fields`: If inserting Text, Image, or Button during cover-edit, stamp `data-sol-prc-field="inserted_{kind}_{n}"` plus `data-sol-prc-inserted="{kind}"` on that page only; freeze the node in the next bake. The engine also extends the same scheme with two overlay-only kinds: `fpo` (the magenta FPO sticker, `inserted_fpo_{n}` / `data-sol-prc-inserted="fpo"`) and `brackets` / `bracket-left` / `bracket-right` (magenta proof brackets, `inserted_brackets_{n}` / `data-sol-prc-inserted="brackets|bracket-left|bracket-right"`). FPO and brackets are engine extensions, not catalog-template authoring kinds.
@@ -268,7 +286,8 @@ there is no Python copy of these rules.
 #### MUST NOT
 - `common.reserved_namespace`: Author any reserved `--prc-*`, annotation, banner-global, template-runtime, or operation-draft namespace.
 - `common.field_overrides`: Author `__prc_field_overrides`, generated field-override CSS, or a catalog-template `script#sol-prc-annotation-positions`.
-- `common.field_value_lock`: Make a mirror or derived role independently value-editable or assign a different field ID only because the value renders on another page, clone, or dimension.
+- `common.field_value_lock`: Assign a different field ID only because the value renders on another page, clone, or dimension — use the same canonical ID and mirror it.
+- `common.authored_derived`: Author `data-sol-prc-derived` for any ID other than the banner cumulative duration (`frame_cumulative_INDEX`). Derived is reserved for values the runtime recomputes and that one ID is the entire legitimate set. Marking authored copy derived locks it permanently — it never becomes focusable, never accepts a keystroke, and reports no authoring error, so the defect ships silently.
 - `common.callout_chrome`: Author callout boxes, connector lines or SVG, dots, gutters, stages, overlays, callout CSS, or callout geometry JavaScript.
 - `common.catalog_positions`: Author `script#sol-prc-annotation-positions` in a reusable catalog template; only an operation bake may carry it after a drag.
 - `common.canvas_chrome`: Author the canvas outside the pages, including an html or body backdrop, the gap or margin between pages, page centering, or a page drop shadow.
@@ -307,7 +326,7 @@ there is no Python copy of these rules.
 - `banner.behavior_seams`: Preserve `#banner-scene-adapter` and `#banner-placeholder-srcdoc` as executable behavior seams.
 - `banner.clone_templates`: Provide `#frame-template` and `#isi-region-template` with their required slots and `iframe[data-sol-prc-creative="banner"]`.
 - `banner.inner_render_slot`: Wrap every `iframe[data-sol-prc-creative="banner"]` in `#frame-template` and `#isi-region-template` with `[data-sol-prc-slot]` so each cloned composed frame is a selectable inner render frame.
-- `banner.fields`: Put primary editable banner values on the first section, mirrors on clones, and cumulative duration in `data-sol-prc-derived`, using the same canonical field IDs across all rendered dimensions.
+- `banner.fields`: Put primary editable banner values on the first section and mirrors on clones, using the same canonical field IDs across all rendered dimensions. Branch the role per instance — `el.setAttribute(isFieldHost ? "data-sol-prc-field" : "data-sol-prc-mirror", id)` — so the first section owns the value. Cumulative duration is the one exception and stays `data-sol-prc-derived="frame_cumulative_INDEX"`.
 
 #### SHOULD
 - `banner.standard_shape`: Preserve the Contract v2 banner section, adapter, clone-template, and slot shape from this profile's MUST rules; do not copy layout, palette, typography, or chrome from a live catalog or operation template.
@@ -326,6 +345,7 @@ there is no Python copy of these rules.
 - `social.builders`: Preserve `#prc-platform-page-tpl`, `#prc-variant-cell-tpl`, `#prc-storyboard-page-tpl`, and `#prc-frame-cell-tpl` with their canonical slots.
 - `social.inner_render_slot`: Wrap the source social iframe and every creative iframe inside `#prc-variant-cell-tpl` and `#prc-frame-cell-tpl` with `[data-sol-prc-slot]` so cloned platform and storyboard cells expose a selectable inner render frame.
 - `social.pages`: Provide `main[data-sol-prc-pages]`; the social builder may populate its page children at runtime.
+- `social.fields`: Stamp builder-filled values — frame labels, frame notes, variant labels, video length, platform labels — `data-sol-prc-field` on the first platform page and `data-sol-prc-mirror` on every later platform page, under one canonical ID per logical value. A cell-builder helper that stamps a single role for every value it fills leaves the whole proof locked; branch on whether this canonical ID has been stamped yet, the way `banner.fields` branches on `isFieldHost`. IDs already unique per page (for example `platform_label_SLUG`) are plain fields and need no mirror.
 
 #### SHOULD
 - `social.minimal_seed`: Keep the config seed to presentation labels such as `sectionTitle`.
