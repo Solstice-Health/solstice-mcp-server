@@ -21,7 +21,12 @@ from sqlalchemy.orm import Session
 from test_server import rpc, tool_payload
 
 from solstice_mcp.brands import Brand
-from solstice_mcp.operations import CgOperation, CgOperationMessage, PrcTemplateVersion
+from solstice_mcp.operations import (
+    CgOperation,
+    CgOperationMessage,
+    PrcTemplateVersion,
+    _prc_bake_unresolved_fonts,
+)
 
 PINNED_EMAIL = "00000000-0000-0000-0000-000000000701"
 OPERATION_EMAIL = "00000000-0000-0000-0000-000000000702"
@@ -1035,6 +1040,129 @@ def test_create_prc_template_bake_rejects_content_type_mismatch(
     assert "operation content_type does not match the proof template" in _tool_error_text(
         response
     )
+
+
+def _bake_with_style(css: str, *, head: str = "") -> str:
+    return OPERATION_BAKE_EMAIL.replace(
+        '<style id="sol-prc-export-style"></style>',
+        f'<style id="sol-prc-export-style">{css}</style>{head}',
+    )
+
+
+@pytest.mark.parametrize(
+    ("css", "head", "expected"),
+    [
+        # Installed-only family: exactly the Aptos report from the field.
+        ('.a{font-family:"Aptos",sans-serif}', "", ["aptos"]),
+        # Keywords and the lock's own stand-ins are not families to face.
+        (".a{font-family:Arial,Helvetica,sans-serif}", "", []),
+        (".a{font-family:sol-prc-locked-lato}", "", []),
+        # A url-only @font-face is the family being faced properly.
+        (
+            "@font-face{font-family:'Inter';src:url(https://cdn.example/i.woff2) format('woff2')}"
+            ".a{font-family:Inter,sans-serif}",
+            "",
+            [],
+        ),
+        # local() alone is an installed file nobody else has.
+        (
+            "@font-face{font-family:'Inter';src:local('Inter')}.a{font-family:Inter,sans-serif}",
+            "",
+            ["inter"],
+        ),
+        # A Google sheet names its families in the URL, so they count.
+        (
+            ".a{font-family:Poppins,sans-serif}",
+            '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins&display=swap">',
+            [],
+        ),
+        # ...but only the ones it actually names.
+        (
+            ".a{font-family:Poppins,sans-serif}.b{font-family:Aptos,serif}",
+            '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins">',
+            ["aptos"],
+        ),
+        # A Typekit kit id names nothing, so its presence waives the check.
+        (
+            ".a{font-family:Aptos,serif}",
+            '<link rel="stylesheet" href="https://use.typekit.net/utu1yjo.css">',
+            [],
+        ),
+        # Shorthand `font:` keeps size/weight off the family token.
+        (
+            "@font-face{font-family:'Inter';src:url(https://cdn.example/i.woff2)}"
+            '.a{font: italic bold 16px/1.5 "Inter", sans-serif}',
+            "",
+            [],
+        ),
+        (
+            "@font-face{font-family:'Inter';src:url(https://cdn.example/i.woff2)}"
+            ".a{font-family:Inter !important}",
+            "",
+            [],
+        ),
+        # Outlook's prefixed property is not a family to host.
+        (".a{mso-generic-font-family:swiss;font-family:Arial,sans-serif}", "", []),
+        (
+            ".a{mso-generic-font-family:swiss;font-family:Aptos,sans-serif}",
+            "",
+            ["aptos"],
+        ),
+        # v1 Google sheets list several families with `|` and `:weights`.
+        (
+            ".a{font-family:Roboto,sans-serif}",
+            '<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,700|Roboto:300">',
+            [],
+        ),
+        (
+            ".a{font-family:Roboto,sans-serif}",
+            '<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans%7CRoboto">',
+            [],
+        ),
+    ],
+)
+def test_prc_bake_unresolved_fonts(css: str, head: str, expected: list[str]):
+    assert _prc_bake_unresolved_fonts(_bake_with_style(css, head=head)) == expected
+
+
+def test_prc_bake_unresolved_fonts_reads_escaped_creative_srcdoc():
+    # The creative names the family inside an escaped srcdoc attribute, which is
+    # where a real bake carries it.
+    bake = OPERATION_BAKE_EMAIL.replace(
+        "&lt;!doctype html&gt;&lt;html&gt;creative&lt;/html&gt;",
+        "&lt;style&gt;.h{font-family:&quot;Aptos&quot;,serif}&lt;/style&gt;",
+    )
+    assert _prc_bake_unresolved_fonts(bake) == ["aptos"]
+
+
+def test_create_prc_template_bake_rejects_unfaced_fonts(
+    app_harness: AppHarness,
+    mint_token,
+):
+    bake_key = f"cg_operation_prc_template/{OP_A1}/00000000-0000-0000-0000-000000000802.html"
+    app_harness.s3.objects[("test-bucket-a", bake_key)] = _bake_with_style(
+        '.a{font-family:"Aptos",sans-serif}'
+    ).encode()
+
+    response = _create_call(
+        app_harness,
+        mint_token,
+        tenant_slug="tenant_a",
+        brand_id=BRAND_A1,
+        template_key="",
+        content_type="email",
+        name="",
+        confirmed=True,
+        operation_bake_s3_key=bake_key,
+        publish_target="operation",
+        operation_id=OP_A1,
+    )
+    error = _tool_error_text(response)
+    assert "names fonts it never faces" in error
+    assert "aptos" in error
+    # The message has to name both ways out, not just fail.
+    assert "@font-face" in error
+    assert "fonts.googleapis.com" in error
 
 
 def test_create_prc_template_both_bakes_then_appends_library(

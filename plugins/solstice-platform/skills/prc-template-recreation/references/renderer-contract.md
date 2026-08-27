@@ -76,8 +76,10 @@ historically won and silently selected the wrong compose branch.
   `data-viewport="desktop|mobile"`.
 - The rendered page rect is the geometry boundary for fields, slots, callouts,
   and arrow endpoints. Page CSS may use padding, borders, and brand chrome, but
-  the catalog template provides no annotation gutters, connector SVG, stages, or
-  reserved whitespace.
+  the catalog template provides no annotation gutters, connector SVG, annotation
+  stages (`.prc-render-stage`), or reserved whitespace. Template-owned framing
+  uses `data-sol-prc-stage` (`common.chrome_stage_marker`); that is not an
+  annotation stage.
 - A template styles the inside of a page only. The canvas behind the pages, the
   gap between them, their horizontal centering, their drop shadow, and all
   `@page` / `@media print` geometry belong to the platform, which paints a gray
@@ -142,6 +144,10 @@ annotations.
   primary already owns it. Every canonical ID that appears as a mirror must
   have exactly one `data-sol-prc-field` primary — a canonical ID whose every
   instance is a mirror is unreachable, and no reviewer can edit it.
+- The primary must also be a typing target: `<input>`, `<textarea>`, or
+  `contenteditable="true"`. The engine only ever switches editing off, so a
+  plain `<div>` / `<span>` primary selects but refuses every keystroke
+  (`common.field_typing`).
 - Repeated instances mirror the first one under the same canonical
   `data-sol-prc-mirror="FIELD_ID"`: banner dimensions mirror the first section,
   social platform pages mirror the first platform page.
@@ -149,11 +155,10 @@ annotations.
   is still authored copy. Stamp the first instance `data-sol-prc-field` so a
   reviewer can correct it. Pre-populated is not computed.
 - Every node carrying a `data-sol-prc-*` editing marker — field, mirror,
-  derived, inserted, or slot — is selectable, movable, and deletable in
-  cover-edit with the standard engine chrome, on any content type's template.
-  Nodes stay authored in-flow until a layout gesture; the first drag/resize
-  pins that instance page-absolute (clamped to its page) and freezes into the
-  next bake. Deletion removes the node from the proof DOM and the next bake.
+  derived, inserted, slot, or stage — is selectable and movable in cover-edit.
+  Delete is narrower than select (`common.field_editing`). Nodes stay authored
+  in-flow until a layout gesture; the first drag/resize pins that instance
+  page-absolute (clamped to its page) and freezes into the next bake.
 - Allowlisted text-style changes still write onto matching instances. The next
   bake freezes the proof HTML. Next-engine does not persist new
   `__prc_field_overrides`.
@@ -169,6 +174,28 @@ annotations.
   `animation_note_INDEX`.
 - New field IDs may use the generic path. Renaming or deleting an existing ID
   is a breaking edit.
+
+## Chrome stages
+
+Editor discovery reads `data-sol-prc-*` only. Composite chrome a reviewer
+should grab as one unit (social mock, device frame, card) needs
+`data-sol-prc-stage` plus a per-page-unique `data-stage="NAME"`
+(`common.chrome_stage_marker`). Mark the whole cell, not an inner wrap. This is
+not the annotation stage (`.prc-render-stage`) the reserved namespace forbids.
+
+## Host rendering environment
+
+| Environment | Body zoom |
+|---|---|
+| Workspace VIEW | `zoom: var(--prc-total-scale)` |
+| Export / PDF capture | `1` (`body.sol-prc-export`) |
+| A local file in a browser | `1` |
+
+Under CSS `zoom`, `getBoundingClientRect()` / `clientX` / `window.innerWidth`
+are scaled; `offsetWidth` / `offsetHeight` / `scrollHeight` and CSS lengths are
+not. Write offset sizes back, never client rects (`common.zoom_safe_measurement`).
+Zoom does not cross a creative iframe boundary. Local and export both run at
+zoom 1 — render once under a fit-sized `zoom` before publishing.
 
 ## Reserved runtime-owned namespace
 
@@ -211,6 +238,9 @@ connects annotations, it belongs to the runtime.
 
 ## Page-bound annotation model
 
+Reviewers call a callout (box + connector + arrowhead) an **RBA**; this
+contract and every `data-sol-prc-annotation-*` marker say "callout".
+
 1. **Anchors:** the runtime discovers creative `a[href]`, cover fields, and
    manual points. A creative anchor counts only when its center lies inside the
    iframe viewport; clipped overflow does not produce an annotation. Generated identity remains
@@ -226,7 +256,8 @@ connects annotations, it belongs to the runtime.
 5. **Override:** manual drag is the only placement override. Dragging the
    callout moves the box while preserving its anchor. Dragging the arrowhead
    moves only the anchor endpoint while pinning the box. A click (not a drag)
-   on the arrowhead selects the connector for marker / stroke width / dash.
+   on the arrowhead selects the callout for marker / stroke width / dash,
+   connector colour, and box copy colour — the last two are separate controls.
    Pins freeze into the operation bake as
    `script#sol-prc-annotation-positions[type="application/json"]` with
    source-page ID plus page-space coordinates. Catalog templates must not
@@ -266,16 +297,19 @@ there is no Python copy of these rules.
 - `common.fields`: Mark every visible word on the proof chrome — labels and values — with exactly one normalized `data-sol-prc-field` or `data-sol-prc-mirror` role and preserve existing stable IDs. Static readable text is a contract defect: wrap it as a field or delete it before publishing.
 - `common.visible_copy`: If any reviewer-visible chrome word is unmarked, an authoring agent MUST rewrite the template so that word is a field (or a mirror of an existing canonical ID) before calling `solstice_create_prc_template_version`.
 - `common.field_instances`: Use the same canonical field ID for the same logical value across every rendered page instance so one cover-edit applies to every match.
+- `common.field_typing`: Make every `data-sol-prc-field` primary a typing target — `<input>`, `<textarea>`, or `contenteditable="true"`. The engine never turns a primary on, so a plain `<div>` / `<span>` primary is selectable but impossible to retype.
 - `common.field_value_ownership`: Make `data-sol-prc-field` the only value-editable role; keep mirrors locked while allowing their rendered instances to receive layout and style edits.
 - `common.field_primary_required`: Give every canonical field ID exactly one `data-sol-prc-field` primary instance. A canonical ID whose every rendered instance is a mirror is unreachable — no reviewer can edit the value on any page — and is a contract defect even though each instance carries a valid role.
 - `common.authored_value_roles`: Stamp any value a builder fills in from the blueprint, the creative, or a scene index as `data-sol-prc-field` on its first instance and `data-sol-prc-mirror` on the rest. Pre-populated at build time is not the same as computed at runtime; a builder helper that stamps one role for every dynamic value is the defect that produces an all-locked proof.
 - `common.field_page_bound`: Keep every field, mirror, and derived instance clamped inside its assigned page rect during drag, resize, and rail geometry edits.
-- `common.field_editing`: Keep every marked field, mirror, derived, inserted, and slot instance selectable, movable, and deletable through the standard engine chrome in cover-edit; a layout gesture pins that instance page-absolute and the result freezes into the next bake.
+- `common.field_editing`: Keep every marked field, mirror, derived, inserted, slot, and stage selectable and movable in cover-edit; a layout gesture pins it page-absolute into the next bake. Delete is narrower: primaries, inserted nodes, and stages are removable; mirrors, derived values, and creative slots stay. Typing is `common.field_typing`.
+- `common.chrome_stage_marker`: Mark each composite chrome unit a reviewer should grab (social mock, device frame, card) with `data-sol-prc-stage` and a per-page-unique `data-stage="NAME"`. A class-only wrapper (`.sol-mock`) is unreachable in cover-edit and reports no error. Mark the whole cell, not an inner wrap; this is not `.prc-render-stage`.
 - `common.inserted_fields`: If inserting Text, Image, or Button during cover-edit, stamp `data-sol-prc-field="inserted_{kind}_{n}"` plus `data-sol-prc-inserted="{kind}"` on that page only; freeze the node in the next bake. The engine also extends the same scheme with two overlay-only kinds: `fpo` (the magenta FPO sticker, `inserted_fpo_{n}` / `data-sol-prc-inserted="fpo"`) and `brackets` / `bracket-left` / `bracket-right` (magenta proof brackets, `inserted_brackets_{n}` / `data-sol-prc-inserted="brackets|bracket-left|bracket-right"`). FPO and brackets are engine extensions, not catalog-template authoring kinds.
 - `common.slot_geometry_in_bake`: If a creative slot is moved or resized, keep it inside its page and write the box onto `[data-sol-prc-slot]` in the next bake, falling back to the iframe when that marker is absent.
 - `common.annotation_pages`: Provide unique page boundaries and real anchors; the runtime ignores creative anchors clipped outside the iframe viewport and keeps each callout and arrow endpoint bound to its source page.
 - `common.annotation_positions_in_bake`: After a callout drag or arrow-style change, freeze page-space pins in `script#sol-prc-annotation-positions` inside the operation bake; catalog templates must not include that script.
 - `common.layer_separation`: Keep reusable proof-template chrome separate from operation creative, values, and bake-resident runtime data.
+- `common.zoom_safe_measurement`: When template JS writes a measured size back as a CSS length, use `offsetWidth` / `offsetHeight` / `scrollHeight`, never `getBoundingClientRect()` or `window.innerWidth`. VIEW zooms the proof body, so a client-rect write-back clips the element; local and export run at zoom 1 and will not catch it.
 - `common.hosted_fonts`: Resolve every named font-family so the proof-font lock passes and view matches export: keep or add url-only `@font-face` with a reachable hosted file (never `local()`-only, which the lock strips), sourced in this order — `design_bible` `font_rules` / `social_font_rules` from `solstice_brand_rules`, then `solstice_list_public_fonts(query=family)`, then Fontsource only for a real slug of that family with every used weight present. Do not stand in a different family; only Helvetica / Helvetica Neue rewrite to Arial. An external sheet (`<link rel="stylesheet">` or `@import`) counts as a face only from `fonts.googleapis.com` or `use.typekit.net` — both serve immutable, CORS-open files that answer HEAD without a referer — and the lock copies that face into `style#sol-prc-locked-fonts` so export loads the file rather than the sheet; a family only some other host faces is reported. The lock also walks creative srcdocs, and url-only faces hosted on the template propagate into them. Stop if none hit and name the family.
 
 #### SHOULD
@@ -289,7 +323,7 @@ there is no Python copy of these rules.
 - `common.field_overrides`: Author `__prc_field_overrides`, generated field-override CSS, or a catalog-template `script#sol-prc-annotation-positions`.
 - `common.field_value_lock`: Assign a different field ID only because the value renders on another page, clone, or dimension — use the same canonical ID and mirror it.
 - `common.authored_derived`: Author `data-sol-prc-derived` for any ID other than the banner cumulative duration (`frame_cumulative_INDEX`). Derived is reserved for values the runtime recomputes and that one ID is the entire legitimate set. Marking authored copy derived locks it permanently — it never becomes focusable, never accepts a keystroke, and reports no authoring error, so the defect ships silently.
-- `common.callout_chrome`: Author callout boxes, connector lines or SVG, dots, gutters, stages, overlays, callout CSS, or callout geometry JavaScript.
+- `common.callout_chrome`: Author callout boxes, connector lines or SVG, dots, gutters, annotation stages (`.prc-render-stage`), overlays, callout CSS, or callout geometry JavaScript. `data-sol-prc-stage` for template framing is `common.chrome_stage_marker`.
 - `common.catalog_positions`: Author `script#sol-prc-annotation-positions` in a reusable catalog template; only an operation bake may carry it after a drag.
 - `common.canvas_chrome`: Author the canvas outside the pages, including an html or body backdrop, the gap or margin between pages, page centering, or a page drop shadow.
 - `common.print_rules`: Author `@page` or `@media print` rules; the platform owns export pagination and print geometry.
@@ -401,6 +435,15 @@ allowlisted sheet, no Helvetica stand-in, and no Fontsource slug is reported
 on the proof badge and in the save toast. Every path reports rather than
 rejects, so a report left unresolved ships a proof whose export can differ
 from VIEW. Passing the lock is what makes workspace and export text identical.
+
+The lock resolves a family from the whole proof, not one document at a time: a
+font sheet on the template shell faces a family that only a creative `srcdoc`
+names.
+
+`solstice_create_prc_template_version` also rejects a bake that names a family
+with no url-only `@font-face` and no Google sheet URL naming it. A Typekit kit
+URL names no families, so any kit present waives that structural check; the
+browser lock still reports reachability.
 
 Migration aliases may map v1 seams to v2 during compose:
 
