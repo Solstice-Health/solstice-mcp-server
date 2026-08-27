@@ -132,19 +132,25 @@ _FONT_KEYWORDS = frozenset(
     }
 )
 
-_FONT_DECL_RE = re.compile(r"(?:font-family|(?<![-\w])font)\s*:\s*([^;{}]+)", re.IGNORECASE)
+_FONT_DECL_RE = re.compile(r"(?:(?<![-\w])font-family|(?<![-\w])font)\s*:\s*([^;{}]+)", re.IGNORECASE)
 _FONT_FACE_RE = re.compile(r"@font-face\s*\{([^}]*)\}", re.IGNORECASE)
 _FONT_FACE_FAMILY_RE = re.compile(r"font-family\s*:\s*([^;}]+)", re.IGNORECASE)
-_GOOGLE_FAMILY_RE = re.compile(r"[?&]family=([^&:\"'\s>]+)", re.IGNORECASE)
+_GOOGLE_FAMILY_RE = re.compile(r"[?&]family=([^&\"'\s>]+)", re.IGNORECASE)
+_FONT_SIZE_RE = re.compile(
+    r"(?:\d+(?:\.\d+)?(?:px|em|rem|pt|%)|xx?-small|x-small|small|medium|large|"
+    r"x-large|xx-large|smaller|larger)(?:\s*/\s*[^\s,]+)?\s+(.+)",
+    re.IGNORECASE,
+)
 
 
 def _font_family_names(value: str) -> list[str]:
     """Family names from one declaration value, keywords and stand-ins dropped."""
+    trimmed = re.sub(r"\s*!important\s*$", "", value.strip(), flags=re.IGNORECASE)
+    after_size = _FONT_SIZE_RE.search(trimmed)
+    stack = after_size.group(1) if after_size else trimmed
     names = []
-    for raw in value.split(","):
+    for raw in stack.split(","):
         name = raw.strip().strip("\"'").strip()
-        # A shorthand `font:` value carries size/weight tokens too; a family with
-        # no letters is one of those, not a name.
         if not name or not any(char.isalpha() for char in name):
             continue
         folded = " ".join(name.lower().split())
@@ -152,6 +158,18 @@ def _font_family_names(value: str) -> list[str]:
             continue
         names.append(folded)
     return names
+
+
+def _google_sheet_families(text: str) -> set[str]:
+    """Families a Google Fonts sheet URL names. Split `|` then drop `:weights`."""
+    faced: set[str] = set()
+    for raw in _GOOGLE_FAMILY_RE.findall(text):
+        decoded = unquote_plus(raw)
+        for part in decoded.split("|"):
+            family = part.split(":")[0].replace("+", " ").strip()
+            if family:
+                faced.update(_font_family_names(family))
+    return faced
 
 
 def _prc_bake_unresolved_fonts(html: str) -> list[str]:
@@ -174,8 +192,7 @@ def _prc_bake_unresolved_fonts(html: str) -> list[str]:
             continue
         for match in _FONT_FACE_FAMILY_RE.findall(body):
             faced.update(_font_family_names(match))
-    for family in _GOOGLE_FAMILY_RE.findall(text):
-        faced.update(_font_family_names(unquote_plus(family).replace("+", " ")))
+    faced.update(_google_sheet_families(text))
     if "use.typekit.net" in text:
         return []
 

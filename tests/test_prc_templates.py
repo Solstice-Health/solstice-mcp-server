@@ -1088,6 +1088,37 @@ def _bake_with_style(css: str, *, head: str = "") -> str:
             '<link rel="stylesheet" href="https://use.typekit.net/utu1yjo.css">',
             [],
         ),
+        # Shorthand `font:` keeps size/weight off the family token.
+        (
+            "@font-face{font-family:'Inter';src:url(https://cdn.example/i.woff2)}"
+            '.a{font: italic bold 16px/1.5 "Inter", sans-serif}',
+            "",
+            [],
+        ),
+        (
+            "@font-face{font-family:'Inter';src:url(https://cdn.example/i.woff2)}"
+            ".a{font-family:Inter !important}",
+            "",
+            [],
+        ),
+        # Outlook's prefixed property is not a family to host.
+        (".a{mso-generic-font-family:swiss;font-family:Arial,sans-serif}", "", []),
+        (
+            ".a{mso-generic-font-family:swiss;font-family:Aptos,sans-serif}",
+            "",
+            ["aptos"],
+        ),
+        # v1 Google sheets list several families with `|` and `:weights`.
+        (
+            ".a{font-family:Roboto,sans-serif}",
+            '<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,700|Roboto:300">',
+            [],
+        ),
+        (
+            ".a{font-family:Roboto,sans-serif}",
+            '<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans%7CRoboto">',
+            [],
+        ),
     ],
 )
 def test_prc_bake_unresolved_fonts(css: str, head: str, expected: list[str]):
