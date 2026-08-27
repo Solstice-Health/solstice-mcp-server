@@ -402,6 +402,18 @@ on the proof badge and in the save toast. Every path reports rather than
 rejects, so a report left unresolved ships a proof whose export can differ
 from VIEW. Passing the lock is what makes workspace and export text identical.
 
+The lock resolves a family from the whole proof, not one document at a time: a
+font sheet on the template shell faces a family that only a creative `srcdoc`
+names, because the shell is where a `<link rel="stylesheet">` normally lives.
+
+Publishing a bake is additionally gated server-side, so a caller that never ran
+the browser lock cannot land a substituting proof.
+`solstice_create_prc_template_version` rejects a bake that names a family it
+never faces — no url-only `@font-face` and no Google sheet URL naming it. The
+check is structural: no network, no rendering. A Typekit kit URL names no
+families, so any kit present waives the check for families it might carry, and
+the browser lock stays the authority on whether the file is actually reachable.
+
 Migration aliases may map v1 seams to v2 during compose:
 
 - `iframe.prc-render-frame`, `data-viewport`, `data-width`, and
