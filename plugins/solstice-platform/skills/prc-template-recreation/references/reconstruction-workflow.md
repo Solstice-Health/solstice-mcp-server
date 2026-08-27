@@ -331,13 +331,9 @@ Learned failure modes; check each against the source design:
   measuring width/height on first `load` under-reports and clips the mock.
   Refit when the nested `.sol-media iframe` fires `load`, plus one late
   timeout pass, in addition to the initial fit.
-- **Fit with zoom-independent measurements.** The same helper clips a second
-  way: the platform zooms the proof body (`zoom: var(--prc-total-scale)`), so
-  `getBoundingClientRect()` returns an already-scaled height while the height
-  written back into `style.height` is not, and every mock and ISI pane collapses
-  to that fraction. Use `offsetHeight * scale`. Local previews and export both
-  run at zoom 1, so this ships through a pixel-perfect side-by-side
-  (`common.zoom_safe_measurement`).
+- **Fit with zoom-independent measurements.** Use `offsetHeight`, never
+  `getBoundingClientRect()` (`common.zoom_safe_measurement`). Local previews
+  and export both run at zoom 1, so a pixel-perfect side-by-side will miss this.
 - **The frame fits the content, never the reverse.** Scale a platform mock by
   its embedded creative's width so the creative displays at the same width as
   the frame stills; let the frame container grow slightly beyond the column to
