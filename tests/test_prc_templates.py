@@ -647,6 +647,14 @@ def test_prc_template_rules_serves_contract_v2_per_profile(
     )
     # Templates never draw annotations: the prohibition must reach every profile.
     assert "common.callout_chrome" in {rule["id"] for rule in payload["rules"]["must_not"]}
+    assert "common.slot_fits_page" in served_rules["must"]
+    assert "full-content" in served_rules["must"]["common.slot_fits_page"]
+    assert "storyboard" in served_rules["must"]["common.slot_fits_page"]
+    assert "common.legacy_annotation_migration" in served_rules["must_not"]
+    assert "L0-L5" in served_rules["must_not"]["common.legacy_annotation_migration"]
+    if profile == "banner":
+        assert "banner.static_frames" in served_rules["must"]
+        assert "Content tab" in served_rules["must"]["banner.static_frames"]
 
 
 def test_prc_template_rules_rejects_an_unknown_profile(app_harness: AppHarness, mint_token):
