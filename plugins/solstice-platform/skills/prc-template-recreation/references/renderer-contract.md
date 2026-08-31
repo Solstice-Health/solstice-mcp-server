@@ -195,7 +195,12 @@ Under CSS `zoom`, `getBoundingClientRect()` / `clientX` / `window.innerWidth`
 are scaled; `offsetWidth` / `offsetHeight` / `scrollHeight` and CSS lengths are
 not. Write offset sizes back, never client rects (`common.zoom_safe_measurement`).
 Zoom does not cross a creative iframe boundary. Local and export both run at
-zoom 1 — render once under a fit-sized `zoom` before publishing.
+zoom 1 — render once under a fit-sized `zoom` before publishing. When a template
+measures inside a child iframe and writes that size onto the iframe element,
+multiply the parent-space width and height by the reciprocal effective proof
+zoom and divide the iframe's paint transform by the same ratio. Otherwise the
+child receives a viewport reduced by the proof zoom and fixed-width content
+reflows or clips (`common.nested_iframe_zoom`).
 
 ## Reserved runtime-owned namespace
 
@@ -311,6 +316,7 @@ there is no Python copy of these rules.
 - `common.slot_fits_page`: Size full-content surfaces only — email and website render slots, banner focus/render slots, and explicit banner ISI slots — to the existing zoom-adjusted parent-space iframe height plus bottom padding, then size the page from its authored floor and the current fitted slot bottoms plus padding on every pass so it can shrink again. Banner storyboard scene slots are exempt: keep their native stage height and intentional clipping.
 - `common.layer_separation`: Keep reusable proof-template chrome separate from operation creative, values, and bake-resident runtime data.
 - `common.zoom_safe_measurement`: When template JS writes a measured size back as a CSS length, use `offsetWidth` / `offsetHeight` / `scrollHeight`, never `getBoundingClientRect()` or `window.innerWidth`. VIEW zooms the proof body, so a client-rect write-back clips the element; local and export run at zoom 1 and will not catch it.
+- `common.nested_iframe_zoom`: When template JS measures a child iframe document and writes width or height onto the iframe element, compensate parent-space dimensions by the reciprocal effective proof zoom and divide any iframe paint transform by the same ratio, so the child viewport equals the measured child CSS size under `--prc-total-scale != 1`; verify this at a fitted non-1 VIEW zoom.
 - `common.hosted_fonts`: Resolve every named font-family so the proof-font lock passes and view matches export: keep or add url-only `@font-face` with a reachable hosted file (never `local()`-only, which the lock strips), sourced in this order — `design_bible` `font_rules` / `social_font_rules` from `solstice_brand_rules`, then `solstice_list_public_fonts(query=family)`, then Fontsource only for a real slug of that family with every used weight present. Do not stand in a different family; only Helvetica / Helvetica Neue rewrite to Arial. An external sheet (`<link rel="stylesheet">` or `@import`) counts as a face only from `fonts.googleapis.com` or `use.typekit.net` — both serve immutable, CORS-open files that answer HEAD without a referer — and the lock copies that face into `style#sol-prc-locked-fonts` so export loads the file rather than the sheet; a family only some other host faces is reported. The lock also walks creative srcdocs, and url-only faces hosted on the template propagate into them. Stop if none hit and name the family.
 
 #### SHOULD
@@ -380,6 +386,9 @@ there is no Python copy of these rules.
 #### MUST
 - `social.profile`: Use `body[data-sol-prc-proof="social"]` and `data-profile="social"` in the v2 declaration.
 - `social.source_slot`: Provide one source `iframe[data-sol-prc-creative="social"]` that receives the full social creative.
+- `social.canonical_payload`: Consume the injected social creative as one or more complete platform documents whose top-level shell is `.social-container[data-platform]`; pass an already-canonical payload through unchanged, wrap a bare creative exactly once at the platform compose boundary, and never place one social platform shell inside another shell's `.sol-media` iframe.
+- `social.shell_intrinsic_width`: When fitting a canonical social document, measure `.social-container[data-platform]` itself for intrinsic width; do not use `body.scrollWidth`, `documentElement.scrollWidth`, or another viewport-sized value after widening the iframe as a probe, because a normal block body reports the probe width and incorrectly shrinks a fixed-width platform shell.
+- `social.page_fit_width`: Size each social proof page to its rendered columns, gaps, and horizontal padding without unused horizontal slack; excess page width lowers the host fit scale below the selected user zoom and makes otherwise correctly fitted social and ISI frames render too small.
 - `social.builders`: Preserve `#prc-platform-page-tpl`, `#prc-variant-cell-tpl`, `#prc-storyboard-page-tpl`, and `#prc-frame-cell-tpl` with their canonical slots.
 - `social.inner_render_slot`: Wrap the source social iframe and every creative iframe inside `#prc-variant-cell-tpl` and `#prc-frame-cell-tpl` with `[data-sol-prc-slot]` so cloned platform and storyboard cells expose a selectable inner render frame.
 - `social.pages`: Provide `main[data-sol-prc-pages]`; the social builder may populate its page children at runtime.
