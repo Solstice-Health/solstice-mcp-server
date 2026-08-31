@@ -655,6 +655,10 @@ def test_prc_template_rules_serves_contract_v2_per_profile(
     if profile == "banner":
         assert "banner.static_frames" in served_rules["must"]
         assert "Content tab" in served_rules["must"]["banner.static_frames"]
+    assert f"{profile}.cover_not_required" in served_rules["should"]
+    if profile == "email":
+        assert "email.cover" in served_rules["must"]
+        assert served_rules["must"]["email.cover"].startswith("If a cover page is present")
 
 
 def test_prc_template_rules_rejects_an_unknown_profile(app_harness: AppHarness, mint_token):

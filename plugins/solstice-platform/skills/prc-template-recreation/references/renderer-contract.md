@@ -69,6 +69,8 @@ historically won and silently selected the wrong compose branch.
 - One `main[data-sol-prc-pages]` wraps the proof pages.
 - Every page has a stable `data-sol-prc-page` ID and
   `data-sol-prc-page-type="cover|render|storyboard"`.
+- A cover page is optional. If one is present, mark it
+  `data-sol-prc-page-type="cover"` and keep it inside `main[data-sol-prc-pages]`.
 - Page IDs are unique in the composed document. Runtime-cloned banner sections
   are restamped with unique composed IDs (`page_banner_0`, `page_banner_1`, ...)
   before annotation discovery; a template never authors duplicate page IDs.
@@ -344,14 +346,15 @@ there is no Python copy of these rules.
 
 #### MUST
 - `email.profile`: Use `body[data-sol-prc-proof="email"]` and `data-profile="email"` in the v2 declaration.
-- `email.cover`: Provide a cover page with stable `#prc-filename`, `#prc-to`, `#prc-from`, and `#prc-options` hosts. Stamp visible To/From labels as `to_label` / `from_label` and the section heading as `cover_section_title`.
+- `email.cover`: If a cover page is present, mark it `data-sol-prc-page-type="cover"` with stable `#prc-filename`, `#prc-to`, `#prc-from`, and `#prc-options` hosts. Stamp visible To/From labels as `to_label` / `from_label` and the section heading as `cover_section_title`.
 - `email.options`: Provide `template#prc-option-tpl`; generated rows stamp `option_label_INDEX`, `subject_label_INDEX`, `subject_INDEX`, `preheader_label_INDEX`, and `preheader_INDEX`.
-- `email.cover_visible_copy`: Every visible cover word is one of those field IDs (or a `file_name` mirror on a page header). An agent that finds unmarked cover text must wrap it before publishing.
+- `email.cover_visible_copy`: If a cover page is present, every visible cover word is one of those field IDs (or a `file_name` mirror on a page header). An agent that finds unmarked cover text must wrap it before publishing.
 - `email.render_pages`: Provide at least one render page with `data-viewport="desktop|mobile"` and a matching `iframe[data-sol-prc-creative]`.
 - `email.render_slot`: Wrap every desktop and mobile `iframe[data-sol-prc-creative]` in `[data-sol-prc-slot]` so Engine Next can select that inner render frame; the iframe element is not a slot marker.
 - `email.full_height`: Size every email `iframe[data-sol-prc-creative]` to the injected document's full content height with `scrolling="no"` so the message is not clipped behind an internal scrollbar.
 
 #### SHOULD
+- `email.cover_not_required`: A cover page is optional; do not treat its absence as a contract defect.
 - `email.dual_viewport`: Provide both a 600px desktop slot and a 375px mobile slot unless the approved proof is intentionally single-viewport.
 - `email.presentation_seed`: Keep only email presentation keys such as section labels, enumeration, styles, and section lists in the config seed.
 
@@ -373,6 +376,7 @@ there is no Python copy of these rules.
 - `banner.fields`: Put primary editable banner values on the first section and mirrors on clones, using the same canonical field IDs across all rendered dimensions. Branch the role per instance — `el.setAttribute(isFieldHost ? "data-sol-prc-field" : "data-sol-prc-mirror", id)` — so the first section owns the value. Cumulative duration is the one exception and stays `data-sol-prc-derived="frame_cumulative_INDEX"`.
 
 #### SHOULD
+- `banner.cover_not_required`: A cover page is optional; do not treat its absence as a contract defect.
 - `banner.standard_shape`: Preserve the Contract v2 banner section, adapter, clone-template, and slot shape from this profile's MUST rules; do not copy layout, palette, typography, or chrome from a live catalog or operation template.
 - `banner.hollow_seed`: Keep the config presentation-only; let the platform inject title, dimensions, scenes, expansion settings, and tenant/auth data.
 
@@ -395,6 +399,7 @@ there is no Python copy of these rules.
 - `social.fields`: Stamp builder-filled values — frame labels, frame notes, variant labels, video length, platform labels — `data-sol-prc-field` on the first platform page and `data-sol-prc-mirror` on every later platform page, under one canonical ID per logical value. A cell-builder helper that stamps a single role for every value it fills leaves the whole proof locked; branch on whether this canonical ID has been stamped yet, the way `banner.fields` branches on `isFieldHost`. IDs already unique per page (for example `platform_label_SLUG`) are plain fields and need no mirror.
 
 #### SHOULD
+- `social.cover_not_required`: A cover page is optional; do not treat its absence as a contract defect.
 - `social.minimal_seed`: Keep the config seed to presentation labels such as `sectionTitle`.
 - `social.platform_grouping`: Let the builder derive platform and variant grouping from the injected creative.
 
@@ -406,10 +411,11 @@ there is no Python copy of these rules.
 
 #### MUST
 - `website.profile`: Use `body[data-sol-prc-proof="website"]` and `data-profile="website"` in the v2 declaration.
-- `website.cover`: Provide stable fields for `file_name`, `url`, `page_title`, and `meta_description`.
+- `website.cover`: Provide stable chrome fields for `file_name`, `url`, `page_title`, and `meta_description` on the render pages. This is not a cover page.
 - `website.render_pages`: Provide at least one render page with `data-viewport="desktop|mobile"` and a matching `iframe[data-sol-prc-creative]`.
 
 #### SHOULD
+- `website.cover_not_required`: A cover page is optional; do not treat its absence as a contract defect.
 - `website.dual_viewport`: Provide both desktop and mobile render pages when the approved proof covers both viewports.
 - `website.presentation_seed`: Keep only website presentation hints such as labels, url, pageTitle, and description layout in the config seed.
 
