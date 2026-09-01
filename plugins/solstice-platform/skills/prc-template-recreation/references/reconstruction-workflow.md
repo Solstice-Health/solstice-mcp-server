@@ -422,19 +422,16 @@ Never combine those choices into one question. For each accepted artifact:
   without changing any brand or operation selection. Reserved
   brand/environment/platform auto-resolving keys are rejected; the new version
   must be selected in Template Settings.
-- Operation bake: call `solstice_operation_messages` before composing and keep
-  its `head_message_id`. Run `solstice_prepare_prc_template_bake`, PUT the
-  approved repaired `operation_bake.html` to `upload_url`, then pass
-  `operation_bake_s3_key` and that row ID as `base_message_id`, only after the
-  user chooses `publish_target="operation"` or `"both"`; pass `confirmed=true`
-  for the approved write. Never inline the bake. It must already contain
-  hydrated fields, frozen creative `srcdoc`, baked geometry, and export markers.
-  The reusable `prc-template.html` catalog shell is not valid operation-bake
+- Operation bake: call `solstice_prepare_prc_template_bake`, PUT the approved
+  repaired `operation_bake.html` to `upload_url`, then pass
+  `operation_bake_s3_key`, only after the user chooses
+  `publish_target="operation"` or `"both"`. Never inline the bake. It must
+  already contain hydrated fields, frozen creative `srcdoc`, baked geometry,
+  and export markers. The
+  reusable `prc-template.html` catalog shell is not valid operation-bake
   content. MCP validation is the final write gate; rejection sends the agent
   back to the local repair/validate/preview loop rather than weakening
-  validation or retrying the same input. On `conflict: not_latest_document`,
-  re-read, rebuild from the new head, prepare and upload again, then retry with
-  the new `head_message_id`.
+  validation or retrying the same input.
 - Creative content: land it through the append-only `solstice-platform` flow,
   following its create-vs-edit routing and explicit content type requirement.
 

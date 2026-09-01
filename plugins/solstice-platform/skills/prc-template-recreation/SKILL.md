@@ -172,18 +172,15 @@ creative into one document.
     publish_target="library"|"both")`. Status defaults to published; do not
     ask for it. The library insert never selects the version for a brand.
     Reserved brand/environment/platform auto-resolving keys are rejected.
-    Operation / both: call `solstice_operation_messages` before composing and
-    keep its `head_message_id`; run `solstice_prepare_prc_template_bake`, PUT
-    the bake, then pass `operation_id`, `operation_bake_s3_key`, that row ID as
-    `base_message_id`, `confirmed=true`, and
+    Operation / both: `solstice_prepare_prc_template_bake`, PUT the bake, then
+    pass `operation_id`, `operation_bake_s3_key`, and
     `publish_target="operation"|"both"`. Never inline bake HTML. The upload is
     the repaired, self-contained Contract v2 operation bake after standalone
     validation and preview — never the reusable catalog shell. That appends a
-    new draft html version that copies the validated current creative and
-    fields and stores the repaired bake at `prc_template_s3_key`. On
-    `conflict: not_latest_document`, re-read, rebuild from the new head,
-    prepare/upload again, and retry with the new ID. If they choose the creative
-    content, use the `figma-to-solstice` / `solstice-platform` append-only flow.
+    new draft html
+    version that copies the current creative and stores the repaired bake at
+    `prc_template_s3_key`. If they choose the creative content, use the
+    `figma-to-solstice` / `solstice-platform` append-only flow.
 
 ## Output contract
 

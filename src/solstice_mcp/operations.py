@@ -1046,7 +1046,6 @@ def bake_prc_template_to_operation(
     operation_id: str,
     content_type: str,
     operation_bake_s3_key: str,
-    base_message_id: str | None,
     registry: TenantRegistry,
     session_factory: SessionFactory,
     s3: S3Reader,
@@ -1094,19 +1093,6 @@ def bake_prc_template_to_operation(
         if head is None:
             raise ToolError(
                 "invalid_state: operation has no html document to attach a proof bake to"
-            )
-        document_head = _head_document(session, parsed_operation_id)
-        if not base_message_id:
-            raise ToolError(
-                "invalid_request: base_message_id is required - pass the row id "
-                "of the document head used to compose the proof bake"
-            )
-        if document_head is None or not _identifies(document_head, base_message_id):
-            raise ToolError(
-                "conflict: not_latest_document - the version used to compose the "
-                "proof bake is no longer the current document version; re-read "
-                "solstice_operation_messages, rebuild the bake from the new "
-                "head_message_id, and retry"
             )
         message_id = str(uuid4())
         creative_key = _version_s3_key("html", parsed_operation_id, message_id, locked.file_name)
@@ -1204,7 +1190,6 @@ def create_prc_template_version(
     status: str = "published",
     publish_target: str = "library",
     operation_id: str | None = None,
-    base_message_id: str | None = None,
     *,
     max_inline_bytes: int,
     registry: TenantRegistry,
@@ -1298,7 +1283,6 @@ def create_prc_template_version(
             operation_id=operation_id or "",
             content_type=normalized_content_type,
             operation_bake_s3_key=operation_bake_s3_key or "",
-            base_message_id=base_message_id,
             registry=registry,
             session_factory=session_factory,
             s3=s3,
@@ -2257,7 +2241,7 @@ def _doc_message_metadata(
 
 
 def _html_snapshot_metadata(base: CgOperationMessage | None) -> dict[str, Any]:
-    """Copy client-owned HTML snapshots from the exact document base."""
+    """Copy client-owned HTML snapshots from the last HTML row."""
     if base is None or not isinstance(base.message_metadata, dict):
         return {}
     return {
@@ -2570,10 +2554,8 @@ def commit_operation_version(
                 "the latest. Committing adds yours on top of it. Ask the user "
                 "whether to go ahead anyway, then retry with confirmed=true"
             )
-        html_snapshot_base = visible_head
-        if kind == "html" and (
-            html_snapshot_base is None or html_snapshot_base.type != "html"
-        ):
+        html_snapshot_base = None
+        if kind == "html":
             html_snapshot_base = (
                 _latest_html_creative(session, operation_id)
                 if staff
