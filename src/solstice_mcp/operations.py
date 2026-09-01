@@ -2570,6 +2570,21 @@ def commit_operation_version(
                 "the latest. Committing adds yours on top of it. Ask the user "
                 "whether to go ahead anyway, then retry with confirmed=true"
             )
+        html_snapshot_base = visible_head
+        if kind == "html" and (
+            html_snapshot_base is None or html_snapshot_base.type != "html"
+        ):
+            html_snapshot_base = (
+                _latest_html_creative(session, operation_id)
+                if staff
+                else _latest_message(
+                    session,
+                    CgOperationMessage.operation_id == operation_id,
+                    CgOperationMessage.type == "html",
+                    CgOperationMessage.deleted_at.is_(None),
+                    _final_document_visibility_clause(),
+                )
+            )
         now = datetime.now(UTC)
         # Backend sorts (created_at, id); 1µs gap so UUID tiebreak cannot invert the pair.
         doc_at = now + timedelta(microseconds=1)
@@ -2582,7 +2597,7 @@ def commit_operation_version(
             file_name=file_name,
         )
         if kind == "html":
-            message_metadata.update(_html_snapshot_metadata(visible_head))
+            message_metadata.update(_html_snapshot_metadata(html_snapshot_base))
         pill = CgOperationMessage(
             id=str(uuid4()),
             operation_id=operation_id,
@@ -2610,8 +2625,8 @@ def commit_operation_version(
             content=s3_key,
             intent=intent,
             prc_template_s3_key=(
-                visible_head.prc_template_s3_key
-                if kind == "html" and visible_head is not None
+                html_snapshot_base.prc_template_s3_key
+                if kind == "html" and html_snapshot_base is not None
                 else None
             ),
             message_metadata=message_metadata,

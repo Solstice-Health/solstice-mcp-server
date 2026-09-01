@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -491,6 +492,66 @@ def test_html_commit_does_not_invent_prc_bake_or_metadata(
         assert row.prc_template_s3_key is None
         assert "prc_template_fields" not in row.message_metadata
         assert "email_settings" not in row.message_metadata
+
+
+def test_html_commit_carries_prc_state_from_latest_html_when_head_is_pdf(
+    app_harness: AppHarness, mint_token
+):
+    proof_key = f"cg_operation_prc_template/{OP_A1}/html-proof.html"
+    prc_fields = {"schema_version": 1, "kind": "email"}
+    email_settings = {"subject": "HTML subject", "preheader": "HTML preheader"}
+    pdf_row_id = "00000000-0000-0000-0000-000000000599"
+    with app_harness.session_factory(TENANT) as session:
+        html = session.get(
+            CgOperationMessage,
+            "00000000-0000-0000-0000-000000000503",
+        )
+        assert html is not None
+        html.prc_template_s3_key = proof_key
+        html.message_metadata = {
+            "prc_template_fields": prc_fields,
+            "email_settings": email_settings,
+        }
+        session.add(
+            CgOperationMessage(
+                id=pdf_row_id,
+                operation_id=OP_A1,
+                message_id="pdf-head",
+                author_id=None,
+                type="pdf",
+                content=f"approved_pdfs/{OP_A1}/pdf-head.pdf",
+                intent="draft",
+                message_metadata={},
+                created_at=datetime(2026, 1, 1, 12, 0, 4, tzinfo=UTC),
+                deleted_at=None,
+            )
+        )
+        session.commit()
+
+    token = mint_token(sub=STAFF_SUB)
+    prep = _prepare_and_upload(app_harness, token, OP_A1, "html", "op_a1.html")
+    payload = tool_payload(
+        _call(
+            app_harness,
+            token,
+            "solstice_commit_operation_version",
+            {
+                "tenant_slug": TENANT,
+                "operation_id": OP_A1,
+                "type": "html",
+                "s3_key": prep["s3_key"],
+                "file_name": "op_a1.html",
+                "base_message_id": pdf_row_id,
+            },
+        )
+    )
+
+    with app_harness.session_factory(TENANT) as session:
+        row = session.get(CgOperationMessage, payload["head_message_id"])
+        assert row is not None
+        assert row.prc_template_s3_key == proof_key
+        assert row.message_metadata["prc_template_fields"] == prc_fields
+        assert row.message_metadata["email_settings"] == email_settings
 
 
 # ---------------------------------------------------------------------------
