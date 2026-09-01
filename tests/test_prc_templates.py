@@ -767,6 +767,70 @@ def test_create_prc_template_bakes_a_draft_operation_version(
         assert feedback.message_metadata["kind"] == "user_feedback"
 
 
+def test_operation_bake_carries_metadata_from_exact_current_head(
+    app_harness: AppHarness,
+    mint_token,
+):
+    older_fields = {"sectionTitle": "Older"}
+    current_fields = {
+        "schema_version": 1,
+        "kind": "email",
+        "extensions": {"annotation_positions": '{"current":{"x":4,"y":8}}'},
+    }
+    current_email = {"subject": "Current subject"}
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "EMAIL"
+        older = session.get(
+            CgOperationMessage,
+            "00000000-0000-0000-0000-000000000502",
+        )
+        head = session.get(
+            CgOperationMessage,
+            "00000000-0000-0000-0000-000000000503",
+        )
+        assert older is not None
+        assert head is not None
+        older.message_metadata = {
+            "prc_template_fields": older_fields,
+            "email_settings": {"subject": "Older subject"},
+        }
+        head.message_metadata = {
+            "prc_template_fields": current_fields,
+            "email_settings": current_email,
+        }
+        session.commit()
+
+    baked = tool_payload(
+        _create_call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            template_key="",
+            content_type="email",
+            name="",
+            confirmed=True,
+            operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token),
+            publish_target="operation",
+            operation_id=OP_A1,
+        )
+    )
+
+    with app_harness.session_factory("tenant_a") as session:
+        row = session.scalar(
+            select(CgOperationMessage).where(
+                CgOperationMessage.operation_id == OP_A1,
+                CgOperationMessage.message_id == baked["message_id"],
+            )
+        )
+        assert row is not None
+        assert row.message_metadata["prc_template_fields"] == current_fields
+        assert row.message_metadata["email_settings"] == current_email
+        assert row.message_metadata["prc_template_fields"] != older_fields
+
+
 @pytest.mark.parametrize(
     ("html", "error"),
     [

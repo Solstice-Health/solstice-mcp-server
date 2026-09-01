@@ -1,0 +1,31 @@
+---
+description: Bump solstice-platform plugin + marketplace versions on MCP server PRs
+alwaysApply: true
+---
+
+# Plugin and marketplace bump
+
+Any PR that changes this repo's tools, skills, server behavior, or shipped plugin package **must** bump `solstice-platform` in the same PR. Cursor/Claude marketplaces pin a version; leaving it unchanged means clients keep the old package.
+
+Patch bump (`0.3.25` → `0.3.26`) for behavior/skill/tool changes. Minor if you break the plugin contract.
+
+## Files (lockstep)
+
+Set the same version in all of these:
+
+- `plugins/solstice-platform/.cursor-plugin/plugin.json`
+- `plugins/solstice-platform/.claude-plugin/plugin.json`
+- `plugins/solstice-platform/.codex-plugin/plugin.json`
+- `.cursor-plugin/marketplace.json`
+- `.claude-plugin/marketplace.json`
+- `tests/test_plugin_package.py` (`PLUGIN_VERSION`)
+
+`.agents/plugins/marketplace.json` has no version field. Do not invent one.
+
+`test_host_manifests_and_catalogs_stay_aligned` fails if any of those drift.
+
+## Skip
+
+CI-only, README outside the plugin, or a PR that is already only the bump.
+
+Commit message shape: `chore(plugin): bump solstice-platform to 0.3.26`

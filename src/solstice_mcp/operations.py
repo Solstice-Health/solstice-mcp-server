@@ -1116,6 +1116,15 @@ def bake_prc_template_to_operation(
         # Backend sorts (created_at, id); 1µs gap so UUID tiebreak cannot invert the pair.
         doc_at = now + timedelta(microseconds=1)
         intent = "draft"
+        message_metadata = _doc_message_metadata(
+            kind="html",
+            intent=intent,
+            s3_key=creative_key,
+            message_id=message_id,
+            now=doc_at,
+            file_name=locked.file_name,
+        )
+        message_metadata.update(_html_snapshot_metadata(head))
         session.add(
             CgOperationMessage(
                 id=str(uuid4()),
@@ -1146,14 +1155,7 @@ def bake_prc_template_to_operation(
                 content=creative_key,
                 intent=intent,
                 prc_template_s3_key=bake_key,
-                message_metadata=_doc_message_metadata(
-                    kind="html",
-                    intent=intent,
-                    s3_key=creative_key,
-                    message_id=message_id,
-                    now=doc_at,
-                    file_name=locked.file_name,
-                ),
+                message_metadata=message_metadata,
                 created_at=doc_at,
                 deleted_at=None,
             )
@@ -2238,6 +2240,17 @@ def _doc_message_metadata(
     return metadata
 
 
+def _html_snapshot_metadata(base: CgOperationMessage | None) -> dict[str, Any]:
+    """Copy client-owned HTML snapshots from the last HTML row."""
+    if base is None or not isinstance(base.message_metadata, dict):
+        return {}
+    return {
+        key: dict(value)
+        for key in ("prc_template_fields", "email_settings")
+        if isinstance((value := base.message_metadata.get(key)), dict)
+    }
+
+
 def prepare_operation_version(
     subject: str,
     tenant_slug: str,
@@ -2541,9 +2554,32 @@ def commit_operation_version(
                 "the latest. Committing adds yours on top of it. Ask the user "
                 "whether to go ahead anyway, then retry with confirmed=true"
             )
+        html_snapshot_base = None
+        if kind == "html":
+            html_snapshot_base = (
+                _latest_html_creative(session, operation_id)
+                if staff
+                else _latest_message(
+                    session,
+                    CgOperationMessage.operation_id == operation_id,
+                    CgOperationMessage.type == "html",
+                    CgOperationMessage.deleted_at.is_(None),
+                    _final_document_visibility_clause(),
+                )
+            )
         now = datetime.now(UTC)
         # Backend sorts (created_at, id); 1µs gap so UUID tiebreak cannot invert the pair.
         doc_at = now + timedelta(microseconds=1)
+        message_metadata = _doc_message_metadata(
+            kind=kind,
+            intent=intent,
+            s3_key=s3_key,
+            message_id=message_id,
+            now=doc_at,
+            file_name=file_name,
+        )
+        if kind == "html":
+            message_metadata.update(_html_snapshot_metadata(html_snapshot_base))
         pill = CgOperationMessage(
             id=str(uuid4()),
             operation_id=operation_id,
@@ -2570,10 +2606,12 @@ def commit_operation_version(
             type=kind,
             content=s3_key,
             intent=intent,
-            message_metadata=_doc_message_metadata(
-                kind=kind, intent=intent, s3_key=s3_key,
-                message_id=message_id, now=doc_at, file_name=file_name,
+            prc_template_s3_key=(
+                html_snapshot_base.prc_template_s3_key
+                if kind == "html" and html_snapshot_base is not None
+                else None
             ),
+            message_metadata=message_metadata,
             created_at=doc_at,
             deleted_at=None,
         )

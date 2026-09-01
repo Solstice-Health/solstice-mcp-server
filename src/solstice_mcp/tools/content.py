@@ -378,9 +378,9 @@ def register_content_tools(
         ``solstice_prc_template_rules``, preview it, and retry only after the
         user approves the operation update. This tool is producer-neutral and
         does not compose or repair proof HTML. The server copies the current
-        creative to the next version number and stamps
-        ``prc_template_s3_key`` on the new draft html row. Staff intent is
-        draft. Requires SOLSTICE_STAFF on the selected brand.
+        creative and its PRC field snapshots onto a new draft html row and
+        stamps ``prc_template_s3_key``. Staff intent is draft. Requires
+        SOLSTICE_STAFF on the selected brand.
         """
         template = create_prc_template_version(
             require_subject(),
