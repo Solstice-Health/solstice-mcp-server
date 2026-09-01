@@ -70,10 +70,11 @@ creative into one document.
    gate, not a composer or repair service; neither the skill nor the server
    requires access to Solstice-Frontend.
 10. **Do not author annotation chrome.** The platform runtime creates callout
-   boxes, connectors, dots, annotation keys, overlays, geometry, and persisted
-   positions. Templates provide unique composed page rectangles and real,
-   unclipped anchors only. Manual drag is the sole placement override; the
-   callout and arrow endpoint remain bound to their source page.
+   boxes (reviewers call these RBAs), connectors, dots, annotation keys,
+   overlays, geometry, and persisted positions. Templates provide unique
+   composed page rectangles and real, unclipped anchors only. Manual drag is
+   the sole placement override; the callout and arrow endpoint remain bound to
+   their source page.
 11. **Do not author operation field overrides.** Primary fields own editable
    values; mirrors and derived values are value-locked. Geometry and style
    edits belong to runtime-owned `__prc_field_overrides`, never reusable

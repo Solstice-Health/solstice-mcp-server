@@ -47,11 +47,14 @@ Backend-Server does NOT enforce on its own GET /messages route):
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from html import unescape
 from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import unquote_plus
 from uuid import UUID, uuid4
 
 from mcp.server.fastmcp.exceptions import ToolError
@@ -93,6 +96,115 @@ _PRC_CONTENT_TYPES = {"banner", "email", "social"}
 _PRC_RESERVED_KEY_PREFIXES = ("brand_", "environment_default_", "platform_default_")
 _PRC_TEMPLATE_STATUSES = {"draft", "published"}
 _PRC_PUBLISH_TARGETS = {"library", "operation", "both"}
+
+# Mirrors FONT_SHEET_HOSTS in
+# Solstice-Frontend/entities/prc-template/model/lock-proof-fonts.ts — both serve
+# immutable, CORS-open files, which is what the export Chromium needs. Keep the
+# two lists in step: a host the frontend pins but this rejects blocks a publish.
+_FONT_SHEET_HOSTS = ("fonts.googleapis.com", "use.typekit.net")
+
+# CSS keywords and the stand-ins the frontend lock writes, none of which are a
+# family anyone has to face. Mirrors GENERIC + OS_STAND_IN + STAND_IN there.
+_FONT_KEYWORDS = frozenset(
+    {
+        "serif",
+        "sans-serif",
+        "monospace",
+        "cursive",
+        "fantasy",
+        "system-ui",
+        "ui-sans-serif",
+        "ui-serif",
+        "ui-monospace",
+        "ui-rounded",
+        "emoji",
+        "math",
+        "fangsong",
+        "inherit",
+        "initial",
+        "unset",
+        "revert",
+        "revert-layer",
+        "blinkmacsystemfont",
+        "arial",
+        "helvetica",
+        "helvetica neue",
+    }
+)
+
+_FONT_DECL_RE = re.compile(r"(?:(?<![-\w])font-family|(?<![-\w])font)\s*:\s*([^;{}]+)", re.IGNORECASE)
+_FONT_FACE_RE = re.compile(r"@font-face\s*\{([^}]*)\}", re.IGNORECASE)
+_FONT_FACE_FAMILY_RE = re.compile(r"font-family\s*:\s*([^;}]+)", re.IGNORECASE)
+_GOOGLE_FAMILY_RE = re.compile(r"[?&]family=([^&\"'\s>]+)", re.IGNORECASE)
+_FONT_SIZE_RE = re.compile(
+    r"(?:\d+(?:\.\d+)?(?:px|em|rem|pt|%)|xx?-small|x-small|small|medium|large|"
+    r"x-large|xx-large|smaller|larger)(?:\s*/\s*[^\s,]+)?\s+(.+)",
+    re.IGNORECASE,
+)
+
+
+def _font_family_names(value: str) -> list[str]:
+    """Family names from one declaration value, keywords and stand-ins dropped."""
+    trimmed = re.sub(r"\s*!important\s*$", "", value.strip(), flags=re.IGNORECASE)
+    after_size = _FONT_SIZE_RE.search(trimmed)
+    stack = after_size.group(1) if after_size else trimmed
+    names = []
+    for raw in stack.split(","):
+        name = raw.strip().strip("\"'").strip()
+        if not name or not any(char.isalpha() for char in name):
+            continue
+        folded = " ".join(name.lower().split())
+        if folded in _FONT_KEYWORDS or folded.startswith("sol-prc-"):
+            continue
+        names.append(folded)
+    return names
+
+
+def _google_sheet_families(text: str) -> set[str]:
+    """Families a Google Fonts sheet URL names. Split `|` then drop `:weights`."""
+    faced: set[str] = set()
+    for raw in _GOOGLE_FAMILY_RE.findall(text):
+        decoded = unquote_plus(raw)
+        for part in decoded.split("|"):
+            family = part.split(":")[0].replace("+", " ").strip()
+            if family:
+                faced.update(_font_family_names(family))
+    return faced
+
+
+def _prc_bake_unresolved_fonts(html: str) -> list[str]:
+    """Families the bake names but never faces, so the proof would substitute.
+
+    Structural only — no network and no rendering. A family counts as faced by a
+    url-only ``@font-face`` (``local()`` means an installed file nobody else has)
+    or by being named in a Google sheet URL.
+
+    ponytail: a Typekit kit URL is an opaque id that never names its families, so
+    any kit present waives the check for families it might carry. Fetch the kit
+    CSS here if that waiver ever hides a real substitution.
+    """
+    # srcdoc creatives arrive escaped inside an attribute; unescape so their CSS
+    # reads like the rest of the document.
+    text = unescape(html)
+    faced: set[str] = set()
+    for body in _FONT_FACE_RE.findall(text):
+        if "url(" not in body.lower():
+            continue
+        for match in _FONT_FACE_FAMILY_RE.findall(body):
+            faced.update(_font_family_names(match))
+    faced.update(_google_sheet_families(text))
+    if "use.typekit.net" in text:
+        return []
+
+    named: list[str] = []
+    seen: set[str] = set()
+    for value in _FONT_DECL_RE.findall(_FONT_FACE_RE.sub("", text)):
+        for name in _font_family_names(value):
+            if name in faced or name in seen:
+                continue
+            seen.add(name)
+            named.append(name)
+    return named
 
 
 class _OperationPrcBakeProbe(HTMLParser):
@@ -159,6 +271,14 @@ def _validate_operation_prc_bake(html: str, content_type: str) -> None:
             "invalid_request: operation_bake_html must be a self-contained Contract v2 "
             "operation bake with matching profile, an export marker, page markers, and "
             "creative srcdoc; a catalog template shell is not an operation bake"
+        )
+    unresolved = _prc_bake_unresolved_fonts(html)
+    if unresolved:
+        raise ToolError(
+            "invalid_request: operation_bake_html names fonts it never faces, so the "
+            f"proof would render a substitute: {', '.join(sorted(unresolved))}. Declare an "
+            "@font-face with a woff2 URL for each, or switch to a family served by "
+            f"{' or '.join(_FONT_SHEET_HOSTS)}"
         )
 
 
