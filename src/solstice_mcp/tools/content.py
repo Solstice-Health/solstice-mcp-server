@@ -347,6 +347,7 @@ def register_content_tools(
         status: str = "published",
         publish_target: str = "library",
         operation_id: str | None = None,
+        base_message_id: str | None = None,
     ) -> dict[str, Any]:
         """Publish a PRC proof template to the library, bake it onto an operation, or both.
 
@@ -367,20 +368,25 @@ def register_content_tools(
         catalog selections. Reserved auto-resolving key prefixes are rejected.
 
         Operation / both: ``solstice_prepare_prc_template_bake``, PUT the bake
-        HTML to ``upload_url``, then pass ``operation_id`` and
-        ``operation_bake_s3_key``. Size does not matter — never inline the bake
-        as ``operation_bake_html``. The bake must be a self-contained Contract
-        v2 operation bake: hydrated fields, creative ``srcdoc``, baked layout,
-        and an export marker (``body.sol-prc-export`` or
-        ``style#sol-prc-export-style``). A raw ``html_template`` catalog shell
-        is rejected because it is not a proof bake. If the source is pre-v2 or
-        validation fails, repair the fetched bake locally against
-        ``solstice_prc_template_rules``, preview it, and retry only after the
-        user approves the operation update. This tool is producer-neutral and
-        does not compose or repair proof HTML. The server copies the current
-        creative to the next version number and stamps
-        ``prc_template_s3_key`` on the new draft html row. Staff intent is
-        draft. Requires SOLSTICE_STAFF on the selected brand.
+        HTML to ``upload_url``, then pass ``operation_id``,
+        ``operation_bake_s3_key``, and ``confirmed=true``. Before composing the
+        bake, call ``solstice_operation_messages`` and keep its
+        ``head_message_id``; pass that row id as ``base_message_id``. If the
+        head moved, the call returns ``conflict: not_latest_document`` without
+        adding a version. Re-read, rebuild the bake from the new head, prepare
+        and upload it again, then retry with the new id. Size does not matter —
+        never inline the bake as ``operation_bake_html``. The bake must be a
+        self-contained Contract v2 operation bake: hydrated fields, creative
+        ``srcdoc``, baked layout, and an export marker
+        (``body.sol-prc-export`` or ``style#sol-prc-export-style``). A raw
+        ``html_template`` catalog shell is rejected because it is not a proof
+        bake. If the source is pre-v2 or validation fails, repair the fetched
+        bake locally against ``solstice_prc_template_rules``, preview it, and
+        retry only after the user approves the operation update. This tool is
+        producer-neutral and does not compose or repair proof HTML. The server
+        copies the validated current creative and its PRC field snapshots onto
+        a new draft html row, then stamps ``prc_template_s3_key``. Staff intent
+        is draft. Requires SOLSTICE_STAFF on the selected brand.
         """
         template = create_prc_template_version(
             require_subject(),
@@ -399,6 +405,7 @@ def register_content_tools(
             status=status,
             publish_target=publish_target,
             operation_id=operation_id,
+            base_message_id=base_message_id,
             max_inline_bytes=max_inline_bytes,
             registry=registry,
             session_factory=session_factory,

@@ -409,6 +409,90 @@ def test_commit_metadata_mirrors_be_shape(app_harness: AppHarness, mint_token):
     assert "htmlDocumentLastVersion" not in meta
 
 
+def test_html_commit_carries_base_prc_bake_and_metadata(
+    app_harness: AppHarness, mint_token
+):
+    proof_key = f"cg_operation_prc_template/{OP_A1}/base-proof.html"
+    prc_fields = {
+        "schema_version": 1,
+        "kind": "email",
+        "extensions": {"annotation_positions": '{"callout-1":{"x":12,"y":24}}'},
+    }
+    email_settings = {"subject": "Current subject", "preheader": "Current preheader"}
+    with app_harness.session_factory(TENANT) as session:
+        base = session.get(
+            CgOperationMessage,
+            "00000000-0000-0000-0000-000000000503",
+        )
+        assert base is not None
+        base.prc_template_s3_key = proof_key
+        base.message_metadata = {
+            "prc_template_fields": prc_fields,
+            "email_settings": email_settings,
+            "unrelated": "do not carry",
+        }
+        session.commit()
+
+    token = mint_token(sub=STAFF_SUB)
+    prep = _prepare_and_upload(app_harness, token, OP_A1, "html", "op_a1.html")
+    payload = tool_payload(
+        _call(
+            app_harness,
+            token,
+            "solstice_commit_operation_version",
+            {
+                "tenant_slug": TENANT,
+                "operation_id": OP_A1,
+                "type": "html",
+                "s3_key": prep["s3_key"],
+                "file_name": "op_a1.html",
+                "base_message_id": STAFF_BASE,
+            },
+        )
+    )
+
+    with app_harness.session_factory(TENANT) as session:
+        row = session.get(CgOperationMessage, payload["head_message_id"])
+        assert row is not None
+        assert row.prc_template_s3_key == proof_key
+        assert row.message_metadata["prc_template_fields"] == prc_fields
+        assert row.message_metadata["email_settings"] == email_settings
+        assert "unrelated" not in row.message_metadata
+        assert row.message_metadata["type"] == "bot"
+        assert row.message_metadata["isFinalDocument"] is True
+        assert row.message_metadata["versionIntent"] == "draft"
+        assert "documentVersion" not in row.message_metadata
+
+
+def test_html_commit_does_not_invent_prc_bake_or_metadata(
+    app_harness: AppHarness, mint_token
+):
+    token = mint_token(sub=STAFF_SUB)
+    prep = _prepare_and_upload(app_harness, token, OP_A1, "html", "op_a1.html")
+    payload = tool_payload(
+        _call(
+            app_harness,
+            token,
+            "solstice_commit_operation_version",
+            {
+                "tenant_slug": TENANT,
+                "operation_id": OP_A1,
+                "type": "html",
+                "s3_key": prep["s3_key"],
+                "file_name": "op_a1.html",
+                "base_message_id": STAFF_BASE,
+            },
+        )
+    )
+
+    with app_harness.session_factory(TENANT) as session:
+        row = session.get(CgOperationMessage, payload["head_message_id"])
+        assert row is not None
+        assert row.prc_template_s3_key is None
+        assert "prc_template_fields" not in row.message_metadata
+        assert "email_settings" not in row.message_metadata
+
+
 # ---------------------------------------------------------------------------
 # base_message_id compare-and-swap (SOL-3251)
 # ---------------------------------------------------------------------------

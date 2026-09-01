@@ -926,6 +926,7 @@ def bake_prc_template_to_operation(
     operation_id: str,
     content_type: str,
     operation_bake_s3_key: str,
+    base_message_id: str | None,
     registry: TenantRegistry,
     session_factory: SessionFactory,
     s3: S3Reader,
@@ -974,6 +975,19 @@ def bake_prc_template_to_operation(
             raise ToolError(
                 "invalid_state: operation has no html document to attach a proof bake to"
             )
+        document_head = _head_document(session, parsed_operation_id)
+        if not base_message_id:
+            raise ToolError(
+                "invalid_request: base_message_id is required - pass the row id "
+                "of the document head used to compose the proof bake"
+            )
+        if document_head is None or not _identifies(document_head, base_message_id):
+            raise ToolError(
+                "conflict: not_latest_document - the version used to compose the "
+                "proof bake is no longer the current document version; re-read "
+                "solstice_operation_messages, rebuild the bake from the new "
+                "head_message_id, and retry"
+            )
         message_id = str(uuid4())
         creative_key = _version_s3_key("html", parsed_operation_id, message_id, locked.file_name)
         head_content = head.content or ""
@@ -996,6 +1010,15 @@ def bake_prc_template_to_operation(
         # Backend sorts (created_at, id); 1µs gap so UUID tiebreak cannot invert the pair.
         doc_at = now + timedelta(microseconds=1)
         intent = "draft"
+        message_metadata = _doc_message_metadata(
+            kind="html",
+            intent=intent,
+            s3_key=creative_key,
+            message_id=message_id,
+            now=doc_at,
+            file_name=locked.file_name,
+        )
+        message_metadata.update(_html_snapshot_metadata(head))
         session.add(
             CgOperationMessage(
                 id=str(uuid4()),
@@ -1026,14 +1049,7 @@ def bake_prc_template_to_operation(
                 content=creative_key,
                 intent=intent,
                 prc_template_s3_key=bake_key,
-                message_metadata=_doc_message_metadata(
-                    kind="html",
-                    intent=intent,
-                    s3_key=creative_key,
-                    message_id=message_id,
-                    now=doc_at,
-                    file_name=locked.file_name,
-                ),
+                message_metadata=message_metadata,
                 created_at=doc_at,
                 deleted_at=None,
             )
@@ -1068,6 +1084,7 @@ def create_prc_template_version(
     status: str = "published",
     publish_target: str = "library",
     operation_id: str | None = None,
+    base_message_id: str | None = None,
     *,
     max_inline_bytes: int,
     registry: TenantRegistry,
@@ -1161,6 +1178,7 @@ def create_prc_template_version(
             operation_id=operation_id or "",
             content_type=normalized_content_type,
             operation_bake_s3_key=operation_bake_s3_key or "",
+            base_message_id=base_message_id,
             registry=registry,
             session_factory=session_factory,
             s3=s3,
@@ -2118,6 +2136,17 @@ def _doc_message_metadata(
     return metadata
 
 
+def _html_snapshot_metadata(base: CgOperationMessage | None) -> dict[str, Any]:
+    """Copy client-owned HTML snapshots from the exact document base."""
+    if base is None or not isinstance(base.message_metadata, dict):
+        return {}
+    return {
+        key: dict(value)
+        for key in ("prc_template_fields", "email_settings")
+        if isinstance((value := base.message_metadata.get(key)), dict)
+    }
+
+
 def prepare_operation_version(
     subject: str,
     tenant_slug: str,
@@ -2424,6 +2453,16 @@ def commit_operation_version(
         now = datetime.now(UTC)
         # Backend sorts (created_at, id); 1µs gap so UUID tiebreak cannot invert the pair.
         doc_at = now + timedelta(microseconds=1)
+        message_metadata = _doc_message_metadata(
+            kind=kind,
+            intent=intent,
+            s3_key=s3_key,
+            message_id=message_id,
+            now=doc_at,
+            file_name=file_name,
+        )
+        if kind == "html":
+            message_metadata.update(_html_snapshot_metadata(visible_head))
         pill = CgOperationMessage(
             id=str(uuid4()),
             operation_id=operation_id,
@@ -2450,10 +2489,12 @@ def commit_operation_version(
             type=kind,
             content=s3_key,
             intent=intent,
-            message_metadata=_doc_message_metadata(
-                kind=kind, intent=intent, s3_key=s3_key,
-                message_id=message_id, now=doc_at, file_name=file_name,
+            prc_template_s3_key=(
+                visible_head.prc_template_s3_key
+                if kind == "html" and visible_head is not None
+                else None
             ),
+            message_metadata=message_metadata,
             created_at=doc_at,
             deleted_at=None,
         )

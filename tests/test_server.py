@@ -194,6 +194,7 @@ def test_initialize_and_tool_discovery(app_harness: AppHarness, mint_token):
     assert "html_template" not in prc_create_schema["required"]
     assert "operation_bake_html" in prc_create_schema["properties"]
     assert "operation_bake_s3_key" in prc_create_schema["properties"]
+    assert "base_message_id" in prc_create_schema["properties"]
     assert "status" not in prc_create_schema["required"]
     assert prc_create_schema["properties"]["status"]["default"] == "published"
 

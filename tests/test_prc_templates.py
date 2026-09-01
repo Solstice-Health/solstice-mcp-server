@@ -667,6 +667,9 @@ def test_create_prc_template_version_points_authors_at_the_contract(app_harness:
     assert "operation_bake_html" in description
     assert "operation_bake_s3_key" in description
     assert "solstice_prepare_prc_template_bake" in description
+    assert "base_message_id" in description
+    assert "head_message_id" in description
+    assert "not_latest_document" in description
     assert "raw" in description and "catalog" in description
     assert "prc_template_s3_key" in description
     assert "producer-neutral" in description
@@ -712,6 +715,7 @@ def test_create_prc_template_bakes_a_draft_operation_version(
             operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token),
             publish_target="operation",
             operation_id=OP_A1,
+            base_message_id="m3",
         )
     )
     assert baked["publish_target"] == "operation"
@@ -748,6 +752,228 @@ def test_create_prc_template_bakes_a_draft_operation_version(
         # is created_at then id, so the pair cannot share a timestamp.
         assert feedback.created_at < row.created_at
         assert feedback.message_metadata["kind"] == "user_feedback"
+
+
+def test_operation_bake_carries_metadata_from_exact_current_head(
+    app_harness: AppHarness,
+    mint_token,
+):
+    older_fields = {"sectionTitle": "Older"}
+    current_fields = {
+        "schema_version": 1,
+        "kind": "email",
+        "extensions": {"annotation_positions": '{"current":{"x":4,"y":8}}'},
+    }
+    current_email = {"subject": "Current subject"}
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "EMAIL"
+        older = session.get(
+            CgOperationMessage,
+            "00000000-0000-0000-0000-000000000502",
+        )
+        head = session.get(
+            CgOperationMessage,
+            "00000000-0000-0000-0000-000000000503",
+        )
+        assert older is not None
+        assert head is not None
+        older.message_metadata = {
+            "prc_template_fields": older_fields,
+            "email_settings": {"subject": "Older subject"},
+        }
+        head.message_metadata = {
+            "prc_template_fields": current_fields,
+            "email_settings": current_email,
+        }
+        session.commit()
+
+    baked = tool_payload(
+        _create_call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            template_key="",
+            content_type="email",
+            name="",
+            confirmed=True,
+            operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token),
+            publish_target="operation",
+            operation_id=OP_A1,
+            base_message_id="m3",
+        )
+    )
+
+    with app_harness.session_factory("tenant_a") as session:
+        row = session.scalar(
+            select(CgOperationMessage).where(
+                CgOperationMessage.operation_id == OP_A1,
+                CgOperationMessage.message_id == baked["message_id"],
+            )
+        )
+        assert row is not None
+        assert row.message_metadata["prc_template_fields"] == current_fields
+        assert row.message_metadata["email_settings"] == current_email
+        assert row.message_metadata["prc_template_fields"] != older_fields
+
+
+def test_operation_bake_rejects_stale_base_without_inserting_rows(
+    app_harness: AppHarness,
+    mint_token,
+):
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "EMAIL"
+        session.commit()
+
+    bake_key = _upload_operation_bake(app_harness, mint_token)
+    newer_id = "00000000-0000-0000-0000-000000000599"
+    with app_harness.session_factory("tenant_a") as session:
+        session.add(
+            CgOperationMessage(
+                id=newer_id,
+                operation_id=OP_A1,
+                message_id="newer-head",
+                author_id=None,
+                type="html",
+                content=f"cg_operation_msg_html/{OP_A1}/newer.html",
+                intent="draft",
+                message_metadata={"type": "bot", "isFinalDocument": True},
+                created_at=datetime(2026, 1, 1, 12, 0, 5, tzinfo=UTC),
+                deleted_at=None,
+            )
+        )
+        session.commit()
+        before_ids = set(
+            session.scalars(
+                select(CgOperationMessage.id).where(
+                    CgOperationMessage.operation_id == OP_A1,
+                    CgOperationMessage.deleted_at.is_(None),
+                )
+            ).all()
+        )
+
+    response = _create_call(
+        app_harness,
+        mint_token,
+        tenant_slug="tenant_a",
+        brand_id=BRAND_A1,
+        template_key="",
+        content_type="email",
+        name="",
+        confirmed=True,
+        operation_bake_s3_key=bake_key,
+        publish_target="operation",
+        operation_id=OP_A1,
+        base_message_id="m3",
+    )
+    assert "conflict: not_latest_document" in _tool_error_text(response)
+
+    with app_harness.session_factory("tenant_a") as session:
+        after_ids = set(
+            session.scalars(
+                select(CgOperationMessage.id).where(
+                    CgOperationMessage.operation_id == OP_A1,
+                    CgOperationMessage.deleted_at.is_(None),
+                )
+            ).all()
+        )
+    assert after_ids == before_ids
+
+
+def test_operation_bake_requires_base_without_inserting_rows(
+    app_harness: AppHarness,
+    mint_token,
+):
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "EMAIL"
+        session.commit()
+        before_ids = set(
+            session.scalars(
+                select(CgOperationMessage.id).where(
+                    CgOperationMessage.operation_id == OP_A1,
+                    CgOperationMessage.deleted_at.is_(None),
+                )
+            ).all()
+        )
+
+    response = _create_call(
+        app_harness,
+        mint_token,
+        tenant_slug="tenant_a",
+        brand_id=BRAND_A1,
+        template_key="",
+        content_type="email",
+        name="",
+        confirmed=True,
+        operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token),
+        publish_target="operation",
+        operation_id=OP_A1,
+    )
+    assert "base_message_id is required" in _tool_error_text(response)
+
+    with app_harness.session_factory("tenant_a") as session:
+        after_ids = set(
+            session.scalars(
+                select(CgOperationMessage.id).where(
+                    CgOperationMessage.operation_id == OP_A1,
+                    CgOperationMessage.deleted_at.is_(None),
+                )
+            ).all()
+        )
+    assert after_ids == before_ids
+
+
+def test_operation_bake_accepts_current_document_head_when_pdf_is_newer(
+    app_harness: AppHarness,
+    mint_token,
+):
+    pdf_row_id = "00000000-0000-0000-0000-000000000598"
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "EMAIL"
+        session.add(
+            CgOperationMessage(
+                id=pdf_row_id,
+                operation_id=OP_A1,
+                message_id="current-pdf",
+                author_id=None,
+                type="pdf",
+                content=f"approved_pdfs/{OP_A1}/current.pdf",
+                intent="draft",
+                message_metadata={"type": "bot", "isFinalDocument": True},
+                created_at=datetime(2026, 1, 1, 12, 0, 5, tzinfo=UTC),
+                deleted_at=None,
+            )
+        )
+        session.commit()
+
+    baked = tool_payload(
+        _create_call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            template_key="",
+            content_type="email",
+            name="",
+            confirmed=True,
+            operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token),
+            publish_target="operation",
+            operation_id=OP_A1,
+            base_message_id=pdf_row_id,
+        )
+    )
+    assert baked["intent"] == "draft"
+    assert app_harness.s3.objects[("test-bucket-a", baked["s3_key"])] == (
+        b"<html>draft v2 body</html>"
+    )
 
 
 @pytest.mark.parametrize(
@@ -853,6 +1079,7 @@ def test_create_prc_template_bakes_over_inline_cap_via_presign(
             operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token, huge),
             publish_target="operation",
             operation_id=OP_A1,
+            base_message_id="m3",
         )
     )
     proof = app_harness.s3.objects[("test-bucket-a", baked["prc_template_s3_key"])]
@@ -888,6 +1115,7 @@ def test_create_prc_template_copies_oversize_creative_without_download(
             operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token),
             publish_target="operation",
             operation_id=OP_A1,
+            base_message_id="m3",
         )
     )
     assert app_harness.s3.objects[("test-bucket-a", baked["s3_key"])] == huge
@@ -933,6 +1161,7 @@ def test_bake_copies_newest_created_at_html_not_highest_version_number(
             operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token),
             publish_target="operation",
             operation_id=OP_A1,
+            base_message_id="m-later",
         )
     )
     creative = app_harness.s3.objects[("test-bucket-a", baked["s3_key"])]
@@ -998,6 +1227,7 @@ def test_create_prc_template_both_does_not_commit_library_if_bake_fails(
         operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token),
         publish_target="both",
         operation_id=OP_A1,
+        base_message_id="m3",
     )
     assert "not_found: current html object missing in s3" in _tool_error_text(response)
     with app_harness.session_factory("tenant_a") as session:
@@ -1061,6 +1291,7 @@ def test_create_prc_template_both_bakes_then_appends_library(
             operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token),
             publish_target="both",
             operation_id=OP_A1,
+            base_message_id="m3",
         )
     )
     assert payload["publish_target"] == "both"
@@ -1146,6 +1377,7 @@ def test_create_prc_template_bakes_from_presigned_s3_key(
             operation_bake_s3_key=bake_key,
             publish_target="operation",
             operation_id=OP_A1,
+            base_message_id="m3",
         )
     )
     assert baked["prc_template_s3_key"] == bake_key

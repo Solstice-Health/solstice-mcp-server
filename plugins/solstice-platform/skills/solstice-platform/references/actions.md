@@ -139,13 +139,18 @@ Library / both: ask separately for name and key, then call
 to published; do not ask for it. The library insert does not update brand or
 operation catalog selections. Reserved auto-resolving keys are rejected.
 
-Operation / both: `solstice_prepare_prc_template_bake` → PUT to `upload_url` →
-`operation_id` + `operation_bake_s3_key`. Size does not matter; never pass
+Operation / both: call `solstice_operation_messages` before composing and keep
+its `head_message_id`. Then run `solstice_prepare_prc_template_bake` → PUT to
+`upload_url` → `operation_id` + `operation_bake_s3_key` + that row ID as
+`base_message_id` + `confirmed=true`. Size does not matter; never pass
 `operation_bake_html`. The bake input must be the approved, self-contained
 Contract v2 operation proof with hydrated fields and creative `srcdoc`; never
 pass the reusable `html_template` shell in its place. The server is
-producer-neutral, copies the current creative onto a new version, and
-writes that freeze to `cg_operation_prc_template/{operation_id}/{row_id}.html`.
+producer-neutral, copies the validated current creative and field snapshots
+onto a new version, and writes that freeze to
+`cg_operation_prc_template/{operation_id}/{row_id}.html`. On
+`conflict: not_latest_document`, re-read the operation, rebuild from the new
+head, prepare and upload again, then retry with the new `head_message_id`.
 
 ## Unsupported changes
 

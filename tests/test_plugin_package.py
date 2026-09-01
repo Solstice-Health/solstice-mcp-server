@@ -95,6 +95,9 @@ def test_shared_skill_is_portable_and_action_focused() -> None:
     assert {path.name for path in (skill_dir / "references").glob("*.md")} == references
     for reference in references:
         assert f"(references/{reference})" in body
+    errors = (skill_dir / "references" / "errors.md").read_text().lower()
+    assert "operation bake" in errors
+    assert "rebuild" in errors
 
 
 def test_figma_to_solstice_skill_is_portable_and_human_in_loop() -> None:
@@ -153,6 +156,9 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "solstice_brand_claims",
         "solstice_list_public_fonts",
         "solstice_create_prc_template_version",
+        "base_message_id",
+        "head_message_id",
+        "not_latest_document",
         "confirmed=true",
         "would you like to publish the prc template?",
         "would you like to publish the creative content?",
@@ -190,6 +196,9 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
         "solstice_prc_template(..., fetch=true)",
         "solstice_list_public_fonts",
         "solstice_create_prc_template_version(..., confirmed=true)",
+        "base_message_id",
+        "head_message_id",
+        "not_latest_document",
         "never combine those choices into one question",
         "what template name should i use?",
         "what template key should i use?",
