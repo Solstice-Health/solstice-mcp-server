@@ -130,6 +130,28 @@ def test_compose_prc_proof_replaces_existing_legacy_banner_payload_script():
     assert "NEW CREATIVE" in proof
 
 
+def test_compose_prc_proof_republishes_every_banner_creative_derived_global():
+    """The hydrator prefers these globals over `srcdoc`, and the per-banner
+    arrays outrank the single global, so a survivor renders the old creative."""
+    existing = (
+        "<script id='sol-prc-banner-template-data'>"
+        "window.__SOL_PRC_ADCHOICES_MAGENTA_BRACKETS__ = false;\n"
+        'window.__BANNER_TEMPLATE_SRCDOCS__ = ["<html>stale</html>"];\n'
+        'window.__BANNER_TEMPLATE_SRCDOC_ADCHOICES__ = "<html>stale</html>";\n'
+        'window.__BANNER_TEMPLATE_EXPANDED_SRCDOC__ = "<html>stale isi</html>";\n'
+        "</script>"
+    )
+    template = BANNER_TEMPLATE.replace("</head>", f"{existing}</head>")
+
+    proof = compose_prc_proof(template, CREATIVE, "banner")
+
+    assert "stale" not in proof
+    assert "NEW CREATIVE" in proof
+    assert "__BANNER_TEMPLATE_SRCDOC__ = " in proof
+    # Non-creative publish flags are reviewer state, not creative, so they stay.
+    assert "__SOL_PRC_ADCHOICES_MAGENTA_BRACKETS__ = false" in proof
+
+
 def test_compose_prc_proof_accepts_contract_attributes_in_any_order():
     template = (
         EMAIL_TEMPLATE.replace(

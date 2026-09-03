@@ -217,15 +217,54 @@ def _adapt_legacy_banner(source: str, creative_html: str) -> str:
     def frame(tag: str) -> str:
         return _set_attr(_set_attr(tag, "data-sol-prc-creative", "banner"), "srcdoc", creative_html)
 
-    source = _replace_first_tag(source, "iframe", r'\bclass\s*=\s*["\'][^"\']*\bbanner-frame\b', frame)
-    payload = json.dumps(creative_html).replace("</", "<\\/")
-    script = f'<script id="sol-prc-banner-template-data">window.__BANNER_TEMPLATE_SRCDOC__ = {payload};</script>'
-    existing = re.compile(
-        r'<script\b[^>]*id=["\']sol-prc-banner-template-data["\'][^>]*>.*?</script\s*>',
-        re.IGNORECASE | re.DOTALL,
-    )
-    if existing.search(source):
-        return existing.sub(script, source, count=1)
+    return _replace_first_tag(source, "iframe", r'\bclass\s*=\s*["\'][^"\']*\bbanner-frame\b', frame)
+
+
+# Creative-derived globals the banner hydrator reads. It prefers these over the
+# iframe `srcdoc`, and the per-banner arrays outrank the single global.
+_BANNER_CREATIVE_GLOBALS = (
+    "__BANNER_TEMPLATE_SRCDOC__",
+    "__BANNER_TEMPLATE_SRCDOCS__",
+    "__BANNER_TEMPLATE_SRCDOC_ADCHOICES__",
+    "__BANNER_TEMPLATE_SRCDOCS_ADCHOICES__",
+    "__BANNER_TEMPLATE_EXPANDED_SRCDOC__",
+    "__BANNER_TEMPLATE_EXPANDED_SRCDOCS__",
+)
+
+# Matched by literal shape, not by line: the payload script is often emitted on
+# a single line together with its `<script>` tag.
+_JS_STRING = r'"(?:[^"\\]|\\.)*"'
+_JS_ARRAY = rf"\[\s*(?:(?:{_JS_STRING}|null)\s*,\s*)*(?:{_JS_STRING}|null)?\s*\]"
+
+_STALE_BANNER_GLOBAL = re.compile(
+    rf"[^\S\n]*window\.(?:{'|'.join(_BANNER_CREATIVE_GLOBALS)})\s*=\s*(?:{_JS_STRING}|{_JS_ARRAY}|null)\s*;\n?"
+)
+
+_BANNER_PAYLOAD_SCRIPT = re.compile(
+    r'(<script\b[^>]*id=["\']sol-prc-banner-template-data["\'][^>]*>)(.*?)(</script\s*>)',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _set_banner_srcdoc_payload(source: str, creative_html: str) -> str:
+    """Republish the banner creative globals against `creative_html`.
+
+    Every creative-derived assignment has to go, not just the single global:
+    the AdChoices and per-banner variants outrank it, so leaving one behind
+    renders the previous creative. AdChoices falls back to the raw creative;
+    a dropped expanded-ISI payload renders blank rather than stale safety copy.
+    Non-creative publish flags in the same script are preserved.
+    """
+    assignment = f"window.__BANNER_TEMPLATE_SRCDOC__ = {json.dumps(creative_html).replace('</', '<\\/')};"
+    # Document-wide: a proof can carry more than one payload script, and any
+    # surviving assignment outranks the one published here.
+    source = _STALE_BANNER_GLOBAL.sub("", source)
+    match = _BANNER_PAYLOAD_SCRIPT.search(source)
+    if match:
+        kept = match.group(2).strip()
+        body = f"{kept}\n{assignment}" if kept else assignment
+        return f"{source[: match.start()]}{match.group(1)}{body}{match.group(3)}{source[match.end() :]}"
+    script = f'<script id="sol-prc-banner-template-data">{assignment}</script>'
     return re.sub(r"</head\s*>", f"{script}</head>", source, count=1, flags=re.IGNORECASE)
 
 
@@ -272,5 +311,7 @@ def compose_prc_proof(base_html: str, creative_html: str, content_type: str) -> 
         for slot in _SLOTS[content_type]:
             if _slot_present(base_html, slot):
                 proof = _inject_slot(proof, slot, creative_html)
+    if content_type == "banner":
+        proof = _set_banner_srcdoc_payload(proof, creative_html)
     validate_prc_proof(proof, content_type)
     return proof
