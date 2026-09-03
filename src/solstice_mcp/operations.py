@@ -530,62 +530,47 @@ def _normalized_uuid(value: Any) -> str | None:
         return None
 
 
-def _pinned_template_id(metadata: Any, content_type: str) -> str | None:
+def _prc_template_configs(metadata: Any, content_type: str) -> list[dict[str, Any]]:
     if not isinstance(metadata, dict):
-        return None
+        return []
+    configs: list[dict[str, Any]] = []
     prc_templates = metadata.get("prc_templates")
     if isinstance(prc_templates, dict):
         config = prc_templates.get(content_type)
         if isinstance(config, dict):
-            pinned = _normalized_uuid(config.get("template_version_id"))
-            if pinned:
-                return pinned
+            configs.append(config)
     if content_type == "email":
         email_settings = metadata.get("email_settings")
         if isinstance(email_settings, dict):
             legacy = email_settings.get("interactive_prc_template")
             if isinstance(legacy, dict):
-                return _normalized_uuid(legacy.get("template_version_id"))
+                configs.append(legacy)
+    return configs
+
+
+def _pinned_template_id(metadata: Any, content_type: str) -> str | None:
+    for config in _prc_template_configs(metadata, content_type):
+        pinned = _normalized_uuid(config.get("template_version_id"))
+        if pinned:
+            return pinned
     return None
 
 
 def _prc_explicitly_disabled(metadata: Any, content_type: str) -> bool:
     """Read behavior keeps an explicitly pinned selection inspectable."""
-    if not isinstance(metadata, dict):
-        return False
-    prc_templates = metadata.get("prc_templates")
-    if isinstance(prc_templates, dict):
-        config = prc_templates.get(content_type)
-        if isinstance(config, dict):
-            pinned = _normalized_uuid(config.get("template_version_id"))
-            if config.get("enabled") is False and pinned is None:
-                return True
-    if content_type == "email":
-        email_settings = metadata.get("email_settings")
-        if isinstance(email_settings, dict):
-            legacy = email_settings.get("interactive_prc_template")
-            if isinstance(legacy, dict):
-                pinned = _normalized_uuid(legacy.get("template_version_id"))
-                return legacy.get("enabled") is False and pinned is None
+    for config in _prc_template_configs(metadata, content_type):
+        pinned = _normalized_uuid(config.get("template_version_id"))
+        if config.get("enabled") is False and pinned is None:
+            return True
     return False
 
 
 def _prc_writer_explicitly_disabled(metadata: Any, content_type: str) -> bool:
     """Writer behavior treats every explicit enabled=false as keyless."""
-    if not isinstance(metadata, dict):
-        return False
-    prc_templates = metadata.get("prc_templates")
-    if isinstance(prc_templates, dict):
-        config = prc_templates.get(content_type)
-        if isinstance(config, dict) and config.get("enabled") is False:
-            return True
-    if content_type == "email":
-        email_settings = metadata.get("email_settings")
-        if isinstance(email_settings, dict):
-            legacy = email_settings.get("interactive_prc_template")
-            if isinstance(legacy, dict):
-                return legacy.get("enabled") is False
-    return False
+    return any(
+        config.get("enabled") is False
+        for config in _prc_template_configs(metadata, content_type)
+    )
 
 
 def _template_by_id(session, template_id: str | None) -> PrcTemplateVersion | None:
@@ -695,6 +680,30 @@ def _download_html(
         raise ToolError(f"not_available: s3 read failed: {exc}") from exc
 
 
+def _compose_supplied_prc_proof(
+    supplied_proof: str,
+    creative: str,
+    content_type: str,
+) -> str:
+    from solstice_mcp.prc_proof_composer import InvalidPrcProofError, compose_prc_proof
+
+    try:
+        return compose_prc_proof(supplied_proof, creative, content_type)
+    except InvalidPrcProofError as exc:
+        raise ToolError(f"invalid_request: {exc}") from exc
+
+
+def _raise_if_unresolved_prc_fonts(proof: str) -> None:
+    unresolved = _prc_bake_unresolved_fonts(proof)
+    if unresolved:
+        raise ToolError(
+            "invalid_request: operation_bake_html names fonts it never faces, so the "
+            f"proof would render a substitute: {', '.join(sorted(unresolved))}. Declare an "
+            "@font-face with a woff2 URL for each, or switch to a family served by "
+            f"{' or '.join(_FONT_SHEET_HOSTS)}"
+        )
+
+
 def _finalize_html_prc_transition(
     *,
     session,
@@ -705,6 +714,7 @@ def _finalize_html_prc_transition(
     s3: S3Reader,
     staff: bool,
     supplied_proof: str | None = None,
+    precomposed_proof: str | None = None,
 ) -> tuple[str | None, int]:
     enabled, content_type, resolved_template = _resolved_prc_template_for_operation(session, operation)
     if not enabled:
@@ -718,13 +728,10 @@ def _finalize_html_prc_transition(
         s3=s3,
         missing_error="not_found: current html object missing in s3",
     )
-    proof: str | None = None
-    if supplied_proof is not None:
-        try:
-            proof = compose_prc_proof(supplied_proof, creative, content_type)
-        except InvalidPrcProofError as exc:
-            raise ToolError(f"invalid_request: {exc}") from exc
-    else:
+    proof: str | None = precomposed_proof
+    if proof is None and supplied_proof is not None:
+        proof = _compose_supplied_prc_proof(supplied_proof, creative, content_type)
+    if proof is None:
         prior_filters = [
             CgOperationMessage.operation_id == operation.id,
             CgOperationMessage.type == "html",
@@ -764,6 +771,7 @@ def _finalize_html_prc_transition(
                 raise ToolError(f"invalid_state: PRC template composition failed: {exc}") from exc
     if proof is None:
         raise ToolError(f"invalid_state: no PRC template resolved for {content_type}")
+    _raise_if_unresolved_prc_fonts(proof)
     bake_key = f"{_PRC_TEMPLATE_S3_KEY_PREFIX}/{operation.id}/{row_id}.html"
     try:
         s3.put(bucket, bake_key, proof.encode("utf-8"), "text/html")
@@ -1162,9 +1170,24 @@ def bake_prc_template_to_operation(
             raise ToolError(
                 "invalid_state: operation has no html document to attach a proof bake to"
             )
+        head_content = head.content or ""
+        if _looks_like_s3_key(head_content):
+            creative_html = _download_html(
+                bucket=bucket,
+                key=head_content,
+                s3=s3,
+                missing_error="not_found: current html object missing in s3",
+            )
+        else:
+            creative_html = head_content
+            if not creative_html.encode("utf-8").strip():
+                raise ToolError("invalid_state: current html document is empty")
+        supplied_proof = _compose_supplied_prc_proof(
+            supplied_proof, creative_html, content_type
+        )
+        _raise_if_unresolved_prc_fonts(supplied_proof)
         message_id = str(uuid4())
         creative_key = _version_s3_key("html", parsed_operation_id, message_id, locked.file_name)
-        head_content = head.content or ""
         if _looks_like_s3_key(head_content):
             try:
                 s3.copy_object(bucket, head_content, creative_key, "text/html")
@@ -1173,7 +1196,7 @@ def bake_prc_template_to_operation(
             except S3Error as exc:
                 raise ToolError(f"not_available: s3 write failed: {exc}") from exc
         else:
-            creative = head_content.encode("utf-8")
+            creative = creative_html.encode("utf-8")
             if not creative.strip():
                 raise ToolError("invalid_state: current html document is empty")
             try:
@@ -1188,7 +1211,7 @@ def bake_prc_template_to_operation(
             bucket=bucket,
             s3=s3,
             staff=True,
-            supplied_proof=supplied_proof,
+            precomposed_proof=supplied_proof,
         )
         if finalized_bake_key is None:
             raise ToolError("invalid_state: PRC is explicitly disabled for this operation")

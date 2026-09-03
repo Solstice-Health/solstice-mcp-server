@@ -609,6 +609,49 @@ def test_html_commit_explicit_disable_is_the_only_null_bake(app_harness: AppHarn
         assert "email_settings" not in row.message_metadata
 
 
+def test_html_commit_rejects_unfaced_fonts_before_bake_write(app_harness: AppHarness, mint_token):
+    proof_prefix = f"cg_operation_prc_template/{OP_A1}/"
+    unfaced = DEFAULT_EMAIL_TEMPLATE.replace(
+        '<style id="sol-prc-export-style"></style>',
+        '<style id="sol-prc-export-style">.proof{font-family:"Aptos",sans-serif}</style>',
+    )
+    _configure_email_prc(app_harness, OP_A1, template_html=unfaced)
+    token = mint_token(sub=STAFF_SUB)
+    prep = _prepare_and_upload(app_harness, token, OP_A1, "html", "op_a1.html")
+    before = _live_rows(app_harness, OP_A1)
+    before_proof_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == BUCKET and key.startswith(proof_prefix)
+    }
+    response = _call(
+        app_harness,
+        token,
+        "solstice_commit_operation_version",
+        {
+            "tenant_slug": TENANT,
+            "operation_id": OP_A1,
+            "type": "html",
+            "s3_key": prep["s3_key"],
+            "file_name": "op_a1.html",
+            "base_message_id": STAFF_BASE,
+        },
+    )
+
+    error = _tool_error_text(response)
+    assert "names fonts it never faces" in error
+    assert "aptos" in error
+    assert "@font-face with a woff2 URL" in error
+    assert "fonts.googleapis.com or use.typekit.net" in error
+    assert _live_rows(app_harness, OP_A1) == before
+    after_proof_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == BUCKET and key.startswith(proof_prefix)
+    }
+    assert after_proof_objects == before_proof_objects
+
+
 def test_html_commit_historical_keyless_head_falls_back_to_default(app_harness: AppHarness, mint_token):
     _configure_email_prc(app_harness, OP_A1)
     token = mint_token(sub=STAFF_SUB)

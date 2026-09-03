@@ -1185,7 +1185,7 @@ def test_create_prc_template_bakes_over_inline_cap_via_presign(
     assert baked["html_size_bytes"] < len(huge.encode())
 
 
-def test_create_prc_template_copies_oversize_creative_without_download(
+def test_create_prc_template_rejects_oversize_head_creative_before_write(
     app_harness: AppHarness,
     mint_token,
 ):
@@ -1196,28 +1196,52 @@ def test_create_prc_template_copies_oversize_creative_without_download(
         session.commit()
 
     creative_key = f"cg_operation_msg_html/{OP_A1}/v2/m3/v2.html"
+    creative_prefix = f"cg_operation_msg_html/{OP_A1}/"
+    proof_prefix = f"cg_operation_prc_template/{OP_A1}/"
     huge = b"<html>" + (b"c" * 2_100_000) + b"</html>"
     app_harness.s3.put("test-bucket-a", creative_key, huge)
     app_harness.s3.mark_too_large("test-bucket-a", creative_key)
+    uploaded_bake_key = _upload_operation_bake(app_harness, mint_token)
+    before_creative_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == "test-bucket-a" and key.startswith(creative_prefix)
+    }
+    before_proof_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == "test-bucket-a" and key.startswith(proof_prefix)
+    }
 
-    baked = tool_payload(
-        _create_call(
-            app_harness,
-            mint_token,
-            tenant_slug="tenant_a",
-            brand_id=BRAND_A1,
-            template_key="",
-            content_type="email",
-            name="",
-            confirmed=True,
-            operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token),
-            publish_target="operation",
-            operation_id=OP_A1,
-        )
+    response = _create_call(
+        app_harness,
+        mint_token,
+        tenant_slug="tenant_a",
+        brand_id=BRAND_A1,
+        template_key="",
+        content_type="email",
+        name="",
+        confirmed=True,
+        operation_bake_s3_key=uploaded_bake_key,
+        publish_target="operation",
+        operation_id=OP_A1,
     )
-    assert app_harness.s3.objects[("test-bucket-a", baked["s3_key"])] == huge
-    assert not any(key == creative_key for _, key, _ in app_harness.s3.download_calls)
-    assert any(src == creative_key for _, src, _, _ in app_harness.s3.copy_calls)
+    error = _tool_error_text(response)
+    assert "not_available: s3 read failed" in error
+    assert "exceeds cap" in error
+    after_creative_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == "test-bucket-a" and key.startswith(creative_prefix)
+    }
+    after_proof_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == "test-bucket-a" and key.startswith(proof_prefix)
+    }
+    assert after_creative_objects == before_creative_objects
+    assert after_proof_objects == before_proof_objects
+    assert not any(src == creative_key for _, src, _, _ in app_harness.s3.copy_calls)
 
 
 def test_bake_copies_newest_created_at_html_not_highest_version_number(
@@ -1455,10 +1479,12 @@ def test_prc_bake_unresolved_fonts_reads_escaped_creative_srcdoc():
     assert _prc_bake_unresolved_fonts(bake) == ["aptos"]
 
 
-def test_create_prc_template_bake_does_not_add_a_writer_only_font_gate(
+def test_create_prc_template_bake_rejects_unfaced_composed_proof(
     app_harness: AppHarness,
     mint_token,
 ):
+    creative_prefix = f"cg_operation_msg_html/{OP_A1}/"
+    proof_prefix = f"cg_operation_prc_template/{OP_A1}/"
     with app_harness.session_factory("tenant_a") as session:
         op = session.get(CgOperation, OP_A1)
         assert op is not None
@@ -1469,23 +1495,60 @@ def test_create_prc_template_bake_does_not_add_a_writer_only_font_gate(
         '.a{font-family:"Aptos",sans-serif}'
     ).encode()
 
-    payload = tool_payload(
-        _create_call(
-            app_harness,
-            mint_token,
-            tenant_slug="tenant_a",
-            brand_id=BRAND_A1,
-            template_key="",
-            content_type="email",
-            name="",
-            confirmed=True,
-            operation_bake_s3_key=bake_key,
-            publish_target="operation",
-            operation_id=OP_A1,
+    with app_harness.session_factory("tenant_a") as session:
+        before = len(
+            session.scalars(
+                select(CgOperationMessage).where(CgOperationMessage.operation_id == OP_A1)
+            ).all()
         )
+    before_proof_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == "test-bucket-a" and key.startswith(proof_prefix)
+    }
+    before_creative_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == "test-bucket-a" and key.startswith(creative_prefix)
+    }
+    response = _create_call(
+        app_harness,
+        mint_token,
+        tenant_slug="tenant_a",
+        brand_id=BRAND_A1,
+        template_key="",
+        content_type="email",
+        name="",
+        confirmed=True,
+        operation_bake_s3_key=bake_key,
+        publish_target="operation",
+        operation_id=OP_A1,
     )
+    error = _tool_error_text(response)
 
-    assert payload["prc_template_s3_key"] == bake_key
+    assert "names fonts it never faces" in error
+    assert "aptos" in error
+    assert "@font-face with a woff2 URL" in error
+    assert "fonts.googleapis.com or use.typekit.net" in error
+    with app_harness.session_factory("tenant_a") as session:
+        after = len(
+            session.scalars(
+                select(CgOperationMessage).where(CgOperationMessage.operation_id == OP_A1)
+            ).all()
+        )
+    after_proof_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == "test-bucket-a" and key.startswith(proof_prefix)
+    }
+    after_creative_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == "test-bucket-a" and key.startswith(creative_prefix)
+    }
+    assert after == before
+    assert after_proof_objects == before_proof_objects
+    assert after_creative_objects == before_creative_objects
 
 
 def test_create_prc_template_both_bakes_then_appends_library(
