@@ -629,6 +629,55 @@ def test_prc_template_discovers_brand_template_from_tenant_catalog(
     assert payload["resolved_tier"] == "brand"
 
 
+def test_prc_template_prefers_brand_id_keyed_template_over_name_slug(
+    app_harness: AppHarness,
+    mint_token,
+):
+    # A brand-id key binds to one brand; a name slug can match several, so the
+    # id-keyed row wins even when a slug row also matches the display name.
+    slug_template = "10000000-0000-0000-0000-000000000017"
+    with app_harness.session_factory("tenant_a") as session:
+        session.add_all(
+            [
+                _template(
+                    BRAND_EMAIL_V1,
+                    key=f"brand_{BRAND_A1}_email",
+                    content_type="email",
+                    html="<html>brand id template</html>",
+                ),
+                _template(
+                    slug_template,
+                    key="brand_future_health_email",
+                    content_type="email",
+                    html="<html>name slug template</html>",
+                ),
+                _template(
+                    ENV_EMAIL,
+                    key="environment_default_email",
+                    content_type="email",
+                    html="<html>environment email</html>",
+                ),
+            ]
+        )
+        brand = session.get(Brand, BRAND_A1)
+        assert brand is not None
+        brand.name = "Future Health HCP"
+        session.commit()
+
+    payload = tool_payload(
+        _call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            content_type="email",
+        )
+    )
+
+    assert payload["id"] == BRAND_EMAIL_V1
+    assert payload["resolved_tier"] == "brand"
+
+
 def test_prc_template_uses_longest_available_brand_catalog_slug(
     app_harness: AppHarness,
     mint_token,
@@ -641,6 +690,12 @@ def test_prc_template_uses_longest_available_brand_catalog_slug(
                     key="brand_dupixent_email",
                     content_type="email",
                     html="<html>shorter brand</html>",
+                ),
+                _template(
+                    BRAND_EMAIL_V2,
+                    key="brand_dupixent_global_email",
+                    content_type="email",
+                    html="<html>specific brand</html>",
                 ),
                 _template(
                     ENV_EMAIL,
@@ -666,7 +721,7 @@ def test_prc_template_uses_longest_available_brand_catalog_slug(
         )
     )
 
-    assert payload["id"] == BRAND_EMAIL_V1
+    assert payload["id"] == BRAND_EMAIL_V2
     assert payload["resolved_tier"] == "brand"
 
 

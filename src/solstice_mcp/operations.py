@@ -620,9 +620,17 @@ def _latest_published_template(
 
 def _brand_template(
     session,
+    brand_id,
     brand_name: str,
     content_type: str,
 ) -> PrcTemplateVersion | None:
+    # Brand id binds the row to ONE brand; a display-name slug does not, so it
+    # is tried first and never falls through to another brand's template.
+    if brand_id:
+        by_id = _latest_published_template(session, f"brand_{brand_id}_{content_type}", content_type)
+        if by_id is not None:
+            return by_id
+
     prefix = "brand_"
     suffix = f"_{content_type}"
     templates = session.scalars(
@@ -671,7 +679,7 @@ def _resolved_prc_template_for_operation(
     if template is None or template.content_type != content_type:
         template = _template_by_id(session, _pinned_template_id(metadata, content_type))
     if template is None or template.content_type != content_type:
-        template = _brand_template(session, brand.name, content_type)
+        template = _brand_template(session, brand.id, brand.name, content_type)
     if template is None:
         template = _latest_published_template(session, f"environment_default_{content_type}", content_type)
     if template is None:
@@ -911,7 +919,7 @@ def resolve_prc_template_for_brand(
                 template = None
 
         if template is None:
-            template = _brand_template(session, brand.name, normalized_content_type)
+            template = _brand_template(session, brand.id, brand.name, normalized_content_type)
             if template is not None:
                 tier = "brand"
 
