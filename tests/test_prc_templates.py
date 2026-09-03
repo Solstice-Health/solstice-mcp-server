@@ -478,13 +478,41 @@ def test_prc_template_prefers_latest_matching_brand_template(
     assert payload["html_template"] == "<html>brand v2</html>"
 
 
-def test_prc_template_longest_bundled_brand_slug_wins():
-    from solstice_mcp.operations import _match_bundled_brand_slug
+def test_prc_template_discovers_brand_template_from_tenant_catalog(
+    app_harness: AppHarness,
+    mint_token,
+):
+    future_brand = "10000000-0000-0000-0000-000000000016"
+    with app_harness.session_factory("tenant_a") as session:
+        session.add(
+            _template(
+                future_brand,
+                key="brand_future_health_email",
+                content_type="email",
+                html="<html>future brand</html>",
+            )
+        )
+        brand = session.get(Brand, BRAND_A1)
+        assert brand is not None
+        brand.name = "Future_Health HCP"
+        session.commit()
 
-    assert _match_bundled_brand_slug("Dupixent_Global Dupixent HCP") == "dupixent_global"
+    payload = tool_payload(
+        _call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            content_type="email",
+            fetch=True,
+        )
+    )
+
+    assert payload["id"] == future_brand
+    assert payload["resolved_tier"] == "brand"
 
 
-def test_prc_template_missing_longest_brand_template_falls_to_environment(
+def test_prc_template_uses_longest_available_brand_catalog_slug(
     app_harness: AppHarness,
     mint_token,
 ):
@@ -521,8 +549,8 @@ def test_prc_template_missing_longest_brand_template_falls_to_environment(
         )
     )
 
-    assert payload["id"] == ENV_EMAIL
-    assert payload["resolved_tier"] == "environment"
+    assert payload["id"] == BRAND_EMAIL_V1
+    assert payload["resolved_tier"] == "brand"
 
 
 def test_prc_template_brand_opt_out_blocks_operation_and_default_fallbacks(

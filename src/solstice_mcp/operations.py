@@ -95,16 +95,6 @@ _PRC_CONTENT_TYPES = {"banner", "email", "social"}
 _PRC_RESERVED_KEY_PREFIXES = ("brand_", "environment_default_", "platform_default_")
 _PRC_TEMPLATE_STATUSES = {"draft", "published"}
 _PRC_PUBLISH_TARGETS = {"library", "operation", "both"}
-_BUNDLED_BRAND_SLUGS = (
-    "ibtrozi",
-    "fruzaqla",
-    "dupixent",
-    "dupixent_global",
-    "bimzelx",
-    "opzelura",
-    "ultomiris",
-    "voquezna",
-)
 
 # Mirrors FONT_SHEET_HOSTS in
 # Solstice-Frontend/entities/prc-template/model/lock-proof-fonts.ts — both serve
@@ -626,29 +616,35 @@ def _latest_published_template(
     )
 
 
-def _match_bundled_brand_slug(brand_name: str | None) -> str | None:
-    if not brand_name:
-        return None
-    lowered = brand_name.lower()
-    for slug in sorted(_BUNDLED_BRAND_SLUGS, key=len, reverse=True):
-        if slug in lowered:
-            return slug
-    return None
-
-
 def _brand_template(
     session,
     brand_name: str,
     content_type: str,
 ) -> PrcTemplateVersion | None:
-    slug = _match_bundled_brand_slug(brand_name)
-    if slug is None:
-        return None
-    return _latest_published_template(
-        session,
-        f"brand_{slug}_{content_type}",
-        content_type,
+    prefix = "brand_"
+    suffix = f"_{content_type}"
+    templates = session.scalars(
+        select(PrcTemplateVersion)
+        .where(
+            PrcTemplateVersion.template_key.startswith(prefix),
+            PrcTemplateVersion.template_key.endswith(suffix),
+            PrcTemplateVersion.content_type == content_type,
+            PrcTemplateVersion.status == "published",
+            PrcTemplateVersion.deleted_at.is_(None),
+        )
+        .order_by(PrcTemplateVersion.version_number.desc())
     )
+    latest_by_slug: dict[str, PrcTemplateVersion] = {}
+    for template in templates:
+        slug = template.template_key[len(prefix) : -len(suffix)]
+        if slug:
+            latest_by_slug.setdefault(slug, template)
+
+    lowered = brand_name.lower()
+    for slug in sorted(latest_by_slug, key=len, reverse=True):
+        if slug in lowered:
+            return latest_by_slug[slug]
+    return None
 
 
 def _resolved_prc_template_for_operation(
