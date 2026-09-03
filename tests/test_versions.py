@@ -481,6 +481,96 @@ def test_commit_before_upload_is_rejected(app_harness: AppHarness, mint_token):
     assert "not_found" in _tool_error_text(response)
 
 
+def test_commit_rejects_oversize_uploaded_creative_before_row_or_bake_write(
+    app_harness: AppHarness,
+    mint_token,
+):
+    _configure_email_prc(app_harness, OP_A1)
+    token = mint_token(sub=STAFF_SUB)
+    prep = tool_payload(
+        _call(
+            app_harness,
+            token,
+            "solstice_prepare_operation_version",
+            {"tenant_slug": TENANT, "operation_id": OP_A1, "type": "html", "file_name": "oversize.html"},
+        )
+    )
+    huge = b"<html>" + (b"x" * 2_100_000) + b"</html>"
+    app_harness.s3.put(BUCKET, prep["s3_key"], huge, "text/html")
+    before_rows = _live_rows(app_harness, OP_A1)
+    proof_prefix = f"cg_operation_prc_template/{OP_A1}/"
+    before_proofs = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == BUCKET and key.startswith(proof_prefix)
+    }
+
+    response = _call(
+        app_harness,
+        token,
+        "solstice_commit_operation_version",
+        {
+            "tenant_slug": TENANT,
+            "operation_id": OP_A1,
+            "type": "html",
+            "s3_key": prep["s3_key"],
+            "file_name": "oversize.html",
+            "base_message_id": STAFF_BASE,
+        },
+    )
+    error = _tool_error_text(response)
+
+    assert "too_large" in error
+    assert "inline limit is 2000000" in error
+    assert _live_rows(app_harness, OP_A1) == before_rows
+    after_proofs = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == BUCKET and key.startswith(proof_prefix)
+    }
+    assert after_proofs == before_proofs
+
+
+def test_commit_uses_inline_cap_when_downloading_current_creative(
+    app_harness: AppHarness,
+    mint_token,
+):
+    _configure_email_prc(app_harness, OP_A1)
+    token = mint_token(sub=STAFF_SUB)
+    prep = tool_payload(
+        _call(
+            app_harness,
+            token,
+            "solstice_prepare_operation_version",
+            {"tenant_slug": TENANT, "operation_id": OP_A1, "type": "html", "file_name": "cap-check.html"},
+        )
+    )
+    app_harness.s3.put(BUCKET, prep["s3_key"], b"<html>cap-check</html>", "text/html")
+    app_harness.s3.mark_too_large(BUCKET, prep["s3_key"])
+    before_rows = _live_rows(app_harness, OP_A1)
+
+    response = _call(
+        app_harness,
+        token,
+        "solstice_commit_operation_version",
+        {
+            "tenant_slug": TENANT,
+            "operation_id": OP_A1,
+            "type": "html",
+            "s3_key": prep["s3_key"],
+            "file_name": "cap-check.html",
+            "base_message_id": STAFF_BASE,
+        },
+    )
+
+    assert "too_large" in _tool_error_text(response)
+    assert _live_rows(app_harness, OP_A1) == before_rows
+    assert any(
+        bucket == BUCKET and key == prep["s3_key"] and max_bytes == 2_000_000
+        for bucket, key, max_bytes in app_harness.s3.download_calls
+    )
+
+
 def test_commit_denied_for_non_member(app_harness: AppHarness, mint_token):
     token = mint_token(sub=SHARED_SUB)
     prep = _prepare_and_upload(app_harness, mint_token(sub=OTHER_SUB), OP_A1, "html", None)
@@ -712,6 +802,46 @@ def test_html_commit_skips_invalid_prior_bake(app_harness: AppHarness, mint_toke
 
     proof = app_harness.s3.objects[(BUCKET, payload["prc_template_s3_key"])].decode()
     assert "OLDER VALID EDIT" in proof
+
+
+def test_html_commit_rejects_oversize_prior_bake_before_writes(
+    app_harness: AppHarness,
+    mint_token,
+):
+    _configure_email_prc(app_harness, OP_A1)
+    too_large_key = f"cg_operation_prc_template/{OP_A1}/00000000-0000-0000-0000-000000000503.html"
+    app_harness.s3.put(BUCKET, too_large_key, DEFAULT_EMAIL_TEMPLATE.encode(), "text/html")
+    app_harness.s3.mark_too_large(BUCKET, too_large_key)
+    with app_harness.session_factory(TENANT) as session:
+        latest = session.get(CgOperationMessage, "00000000-0000-0000-0000-000000000503")
+        assert latest is not None
+        latest.prc_template_s3_key = too_large_key
+        session.commit()
+
+    token = mint_token(sub=STAFF_SUB)
+    prep = _prepare_and_upload(app_harness, token, OP_A1, "html", "op_a1.html")
+    before_rows = _live_rows(app_harness, OP_A1)
+    response = _call(
+        app_harness,
+        token,
+        "solstice_commit_operation_version",
+        {
+            "tenant_slug": TENANT,
+            "operation_id": OP_A1,
+            "type": "html",
+            "s3_key": prep["s3_key"],
+            "base_message_id": STAFF_BASE,
+        },
+    )
+    error = _tool_error_text(response)
+
+    assert "too_large" in error
+    assert "inline limit is 2000000" in error
+    assert _live_rows(app_harness, OP_A1) == before_rows
+    assert any(
+        bucket == BUCKET and key == too_large_key and max_bytes == 2_000_000
+        for bucket, key, max_bytes in app_harness.s3.download_calls
+    )
 
 
 def test_html_commit_aborts_on_transient_prior_bake_read_error(

@@ -69,7 +69,7 @@ from solstice_mcp.brands import (
     role_satisfies,
 )
 from solstice_mcp.requests import complete_pending_requests_for_operation
-from solstice_mcp.storage import S3Error, S3ObjectMissing, S3Reader
+from solstice_mcp.storage import S3Error, S3ObjectMissing, S3ObjectTooLarge, S3Reader
 from solstice_mcp.tenants import Base, SessionFactory, TenantRegistry, tenant_session
 
 logger = logging.getLogger(__name__)
@@ -223,12 +223,25 @@ def _validate_prc_template_bake_s3_key(key: str, operation_id: str) -> str:
     return row_id
 
 
+def _too_large_error(kind: str, size_bytes: int, max_inline_bytes: int) -> ToolError:
+    return ToolError(
+        f"too_large: {kind} is {size_bytes} bytes; inline limit is {max_inline_bytes}"
+    )
+
+
+def _ensure_inline_size(kind: str, html: str, max_inline_bytes: int) -> None:
+    size_bytes = len(html.encode("utf-8"))
+    if size_bytes > max_inline_bytes:
+        raise _too_large_error(kind, size_bytes, max_inline_bytes)
+
+
 def _load_uploaded_operation_bake(
     *,
     operation_bake_s3_key: str,
     operation_id: str,
     bucket: str,
     s3: S3Reader,
+    max_inline_bytes: int,
 ) -> tuple[str, str]:
     """Load a presigned-upload proof edit; composition validates the result."""
     row_id = _validate_prc_template_bake_s3_key(operation_bake_s3_key, operation_id)
@@ -237,13 +250,17 @@ def _load_uploaded_operation_bake(
         raise ToolError(
             "not_found: object not uploaded - PUT the bake HTML to upload_url first"
         )
+    if size > max_inline_bytes:
+        raise _too_large_error("operation bake html", size, max_inline_bytes)
     try:
         # ponytail: loads bake into MCP memory; stream-parse if process OOM
-        html = s3.download(bucket, operation_bake_s3_key, size).decode("utf-8")
+        html = s3.download(bucket, operation_bake_s3_key, max_inline_bytes).decode("utf-8")
     except S3ObjectMissing:
         raise ToolError(
             "not_found: object not uploaded - PUT the bake HTML to upload_url first"
         ) from None
+    except S3ObjectTooLarge:
+        raise _too_large_error("operation bake html", size, max_inline_bytes) from None
     except S3Error as exc:
         raise ToolError(f"not_available: s3 read failed: {exc}") from exc
     return row_id, html
@@ -668,14 +685,19 @@ def _download_html(
     key: str,
     s3: S3Reader,
     missing_error: str,
+    max_inline_bytes: int,
 ) -> str:
     size = s3.head(bucket, key)
     if size is None:
         raise ToolError(missing_error)
+    if size > max_inline_bytes:
+        raise _too_large_error("html object", size, max_inline_bytes)
     try:
-        return s3.download(bucket, key, size).decode("utf-8")
+        return s3.download(bucket, key, max_inline_bytes).decode("utf-8")
     except (S3ObjectMissing, UnicodeDecodeError):
         raise ToolError(missing_error) from None
+    except S3ObjectTooLarge:
+        raise _too_large_error("html object", size, max_inline_bytes) from None
     except S3Error as exc:
         raise ToolError(f"not_available: s3 read failed: {exc}") from exc
 
@@ -715,6 +737,7 @@ def _finalize_html_prc_transition(
     staff: bool,
     supplied_proof: str | None = None,
     precomposed_proof: str | None = None,
+    max_inline_bytes: int,
 ) -> tuple[str | None, int]:
     enabled, content_type, resolved_template = _resolved_prc_template_for_operation(session, operation)
     if not enabled:
@@ -727,9 +750,13 @@ def _finalize_html_prc_transition(
         key=creative_key,
         s3=s3,
         missing_error="not_found: current html object missing in s3",
+        max_inline_bytes=max_inline_bytes,
     )
     proof: str | None = precomposed_proof
+    if proof is not None:
+        _ensure_inline_size("operation bake html", proof, max_inline_bytes)
     if proof is None and supplied_proof is not None:
+        _ensure_inline_size("operation bake html", supplied_proof, max_inline_bytes)
         proof = _compose_supplied_prc_proof(supplied_proof, creative, content_type)
     if proof is None:
         prior_filters = [
@@ -754,17 +781,22 @@ def _finalize_html_prc_transition(
                 raise ToolError(f"not_available: s3 read failed: {exc}") from exc
             if size is None:
                 continue
+            if size > max_inline_bytes:
+                raise _too_large_error("prior PRC proof", size, max_inline_bytes)
             try:
-                base = s3.download(bucket, key, size).decode("utf-8")
+                base = s3.download(bucket, key, max_inline_bytes).decode("utf-8")
                 proof = compose_prc_proof(base, creative, content_type)
                 break
             except S3ObjectMissing:
                 continue
+            except S3ObjectTooLarge:
+                raise _too_large_error("prior PRC proof", size, max_inline_bytes) from None
             except S3Error as exc:
                 raise ToolError(f"not_available: s3 read failed: {exc}") from exc
             except (UnicodeDecodeError, InvalidPrcProofError):
                 continue
         if proof is None and isinstance(resolved_template, str) and resolved_template.strip():
+            _ensure_inline_size("resolved PRC template", resolved_template, max_inline_bytes)
             try:
                 proof = compose_prc_proof(resolved_template, creative, content_type)
             except InvalidPrcProofError as exc:
@@ -1127,6 +1159,7 @@ def bake_prc_template_to_operation(
     registry: TenantRegistry,
     session_factory: SessionFactory,
     s3: S3Reader,
+    max_inline_bytes: int = 2_000_000,
 ) -> dict[str, Any]:
     """Append a draft version that copies the creative and stores an operation bake.
 
@@ -1151,6 +1184,7 @@ def bake_prc_template_to_operation(
         operation_id=parsed_operation_id,
         bucket=bucket,
         s3=s3,
+        max_inline_bytes=max_inline_bytes,
     )
 
     with tenant_session(tenant_slug, session_factory) as session:
@@ -1177,6 +1211,7 @@ def bake_prc_template_to_operation(
                 key=head_content,
                 s3=s3,
                 missing_error="not_found: current html object missing in s3",
+                max_inline_bytes=max_inline_bytes,
             )
         else:
             creative_html = head_content
@@ -1212,6 +1247,7 @@ def bake_prc_template_to_operation(
             s3=s3,
             staff=True,
             precomposed_proof=supplied_proof,
+            max_inline_bytes=max_inline_bytes,
         )
         if finalized_bake_key is None:
             raise ToolError("invalid_state: PRC is explicitly disabled for this operation")
@@ -1389,6 +1425,7 @@ def create_prc_template_version(
             registry=registry,
             session_factory=session_factory,
             s3=s3,
+            max_inline_bytes=max_inline_bytes,
         )
 
     library: dict[str, Any] | None = None
@@ -2454,6 +2491,7 @@ def commit_operation_version(
     registry: TenantRegistry,
     session_factory: SessionFactory,
     s3: S3Reader,
+    max_inline_bytes: int = 2_000_000,
 ) -> dict[str, Any]:
     """Insert a new document version row after the client has uploaded to S3.
 
@@ -2683,6 +2721,7 @@ def commit_operation_version(
                 bucket=bucket,
                 s3=s3,
                 staff=staff,
+                max_inline_bytes=max_inline_bytes,
             )
         now = datetime.now(UTC)
         # Backend sorts (created_at, id); 1µs gap so UUID tiebreak cannot invert the pair.

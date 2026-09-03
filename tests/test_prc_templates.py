@@ -270,6 +270,26 @@ def test_compose_prc_proof_accepts_contract_attributes_in_any_order():
     assert "NEW CREATIVE" in proof
 
 
+def test_compose_prc_proof_skips_iframe_like_text_inside_script_raw_text():
+    parent_script = (
+        "<script>"
+        'const fake = \'<iframe data-sol-prc-creative="desktop" srcdoc="stale"></iframe>\';'
+        "window.__proofSeed = fake;"
+        "</script>"
+    )
+    template = EMAIL_TEMPLATE.replace("<main", f"{parent_script}<main", 1)
+    creative = '<html><body>" +alert(1)+ "</body></html>'
+
+    proof = compose_prc_proof(template, creative, "email")
+    script_match = re.search(r"<script>(.*?)</script>", proof, re.IGNORECASE | re.DOTALL)
+    expected_script = re.search(r"<script>(.*?)</script>", parent_script, re.IGNORECASE | re.DOTALL)
+    assert script_match is not None
+    assert expected_script is not None
+    assert script_match.group(1) == expected_script.group(1)
+    assert 'srcdoc="&lt;html&gt;&lt;body&gt;&quot; +alert(1)+ &quot;&lt;/body&gt;&lt;/html&gt;"' in proof
+    assert '"+alert(1)+"' not in script_match.group(1)
+
+
 def _tool_error_text(response) -> str:
     assert response.status_code == 200, response.text
     result = response.json()["result"]
@@ -1249,7 +1269,7 @@ def test_create_prc_template_rejects_inline_operation_bake_html(
     assert "solstice_prepare_prc_template_bake" in _tool_error_text(response)
 
 
-def test_create_prc_template_bakes_over_inline_cap_via_presign(
+def test_create_prc_template_rejects_oversize_uploaded_bake_bytes(
     app_harness: AppHarness,
     mint_token,
 ):
@@ -1260,26 +1280,23 @@ def test_create_prc_template_bakes_over_inline_cap_via_presign(
         session.commit()
 
     huge = OPERATION_BAKE_EMAIL.replace("&gt;creative&lt;", "&gt;" + ("c" * 2_100_000) + "&lt;")
-    baked = tool_payload(
-        _create_call(
-            app_harness,
-            mint_token,
-            tenant_slug="tenant_a",
-            brand_id=BRAND_A1,
-            template_key="",
-            content_type="email",
-            name="",
-            confirmed=True,
-            operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token, huge),
-            publish_target="operation",
-            operation_id=OP_A1,
-        )
+    response = _create_call(
+        app_harness,
+        mint_token,
+        tenant_slug="tenant_a",
+        brand_id=BRAND_A1,
+        template_key="",
+        content_type="email",
+        name="",
+        confirmed=True,
+        operation_bake_s3_key=_upload_operation_bake(app_harness, mint_token, huge),
+        publish_target="operation",
+        operation_id=OP_A1,
     )
-    proof = app_harness.s3.objects[("test-bucket-a", baked["prc_template_s3_key"])].decode()
-    assert "PRESERVED PRC EDIT" in proof
-    assert "draft v2 body" in proof
-    assert baked["html_size_bytes"] == len(proof.encode())
-    assert baked["html_size_bytes"] < len(huge.encode())
+    error = _tool_error_text(response)
+
+    assert "too_large" in error
+    assert "inline limit is 2000000" in error
 
 
 def test_create_prc_template_rejects_oversize_head_creative_before_write(
@@ -1324,8 +1341,8 @@ def test_create_prc_template_rejects_oversize_head_creative_before_write(
         operation_id=OP_A1,
     )
     error = _tool_error_text(response)
-    assert "not_available: s3 read failed" in error
-    assert "exceeds cap" in error
+    assert "too_large" in error
+    assert "inline limit is 2000000" in error
     after_creative_objects = {
         key: body
         for (bucket, key), body in app_harness.s3.objects.items()
@@ -1339,6 +1356,80 @@ def test_create_prc_template_rejects_oversize_head_creative_before_write(
     assert after_creative_objects == before_creative_objects
     assert after_proof_objects == before_proof_objects
     assert not any(src == creative_key for _, src, _, _ in app_harness.s3.copy_calls)
+    assert any(bucket == "test-bucket-a" and key == creative_key for bucket, key in app_harness.s3.head_calls)
+
+
+def test_create_prc_template_rejects_oversize_uploaded_bake_before_writes(
+    app_harness: AppHarness,
+    mint_token,
+):
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "email"
+        session.commit()
+
+    bake_key = _upload_operation_bake(app_harness, mint_token)
+    app_harness.s3.mark_too_large("test-bucket-a", bake_key)
+    creative_prefix = f"cg_operation_msg_html/{OP_A1}/"
+    proof_prefix = f"cg_operation_prc_template/{OP_A1}/"
+    before_creative_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == "test-bucket-a" and key.startswith(creative_prefix)
+    }
+    before_proof_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == "test-bucket-a" and key.startswith(proof_prefix)
+    }
+    with app_harness.session_factory("tenant_a") as session:
+        before_rows = len(
+            session.scalars(
+                select(CgOperationMessage).where(CgOperationMessage.operation_id == OP_A1)
+            ).all()
+        )
+
+    response = _create_call(
+        app_harness,
+        mint_token,
+        tenant_slug="tenant_a",
+        brand_id=BRAND_A1,
+        template_key="",
+        content_type="email",
+        name="",
+        confirmed=True,
+        operation_bake_s3_key=bake_key,
+        publish_target="operation",
+        operation_id=OP_A1,
+    )
+    error = _tool_error_text(response)
+
+    assert "too_large" in error
+    assert "inline limit is 2000000" in error
+    with app_harness.session_factory("tenant_a") as session:
+        after_rows = len(
+            session.scalars(
+                select(CgOperationMessage).where(CgOperationMessage.operation_id == OP_A1)
+            ).all()
+        )
+    after_creative_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == "test-bucket-a" and key.startswith(creative_prefix)
+    }
+    after_proof_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == "test-bucket-a" and key.startswith(proof_prefix)
+    }
+    assert after_rows == before_rows
+    assert after_creative_objects == before_creative_objects
+    assert after_proof_objects == before_proof_objects
+    assert any(
+        bucket == "test-bucket-a" and key == bake_key and max_bytes == 2_000_000
+        for bucket, key, max_bytes in app_harness.s3.download_calls
+    )
 
 
 def test_bake_copies_newest_created_at_html_not_highest_version_number(

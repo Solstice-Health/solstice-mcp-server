@@ -15,6 +15,10 @@ _SLOTS = {
     "social": ("social",),
 }
 _OPEN_TAG = r"<{tag}\b(?:[^>\"']|\"[^\"]*\"|'[^']*')*>"
+_RAW_TEXT_BLOCK = re.compile(
+    r"(<(?P<tag>script|style|textarea)\b[^>]*>)([\s\S]*?)(</(?P=tag)\s*>)",
+    re.IGNORECASE,
+)
 
 
 def _has(source: str, pattern: str) -> bool:
@@ -32,9 +36,27 @@ def _attr_value(tag: str, name: str) -> str | None:
     return next((value for value in match.groups() if value is not None), "")
 
 
+def _mask_raw_text(source: str) -> str:
+    masked: list[str] = []
+    cursor = 0
+    for match in _RAW_TEXT_BLOCK.finditer(source):
+        masked.append(source[cursor: match.start(3)])
+        masked.append(" " * len(match.group(3)))
+        cursor = match.start(4)
+    if cursor == 0:
+        return source
+    masked.append(source[cursor:])
+    return "".join(masked)
+
+
+def _iter_open_tags(source: str, tag: str):
+    masked = _mask_raw_text(source)
+    for match in re.finditer(_OPEN_TAG.format(tag=tag), masked, re.IGNORECASE):
+        yield match, source[match.start(): match.end()]
+
+
 def _tag_with_attrs(source: str, tag: str, **attrs: str | None) -> str | None:
-    for match in re.finditer(_OPEN_TAG.format(tag=tag), source, re.IGNORECASE):
-        opening = match.group(0)
+    for _match, opening in _iter_open_tags(source, tag):
         if all(
             _attr_value(opening, name) is not None and (expected is None or _attr_value(opening, name) == expected)
             for name, expected in attrs.items()
@@ -127,8 +149,7 @@ def _set_class(tag: str, class_name: str) -> str:
 
 
 def _replace_first_tag(source: str, tag: str, predicate: str, transform) -> str:
-    for match in re.finditer(_OPEN_TAG.format(tag=tag), source, re.IGNORECASE):
-        opening = match.group(0)
+    for match, opening in _iter_open_tags(source, tag):
         if re.search(predicate, opening, re.IGNORECASE):
             return f"{source[: match.start()]}{transform(opening)}{source[match.end() :]}"
     return source

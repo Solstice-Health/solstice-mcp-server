@@ -688,6 +688,7 @@ def register_content_tools(
             registry=registry,
             session_factory=session_factory,
             s3=s3,
+            max_inline_bytes=max_inline_bytes,
         )
 
     @read_only_tool
