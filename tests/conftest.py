@@ -26,7 +26,7 @@ from solstice_mcp.auth import JWKSCache
 from solstice_mcp.brand_context import ClinicalClaim, DesignLibrary, GuidelineAndRule
 from solstice_mcp.brands import Brand, BrandTeamMember
 from solstice_mcp.memory_client import BackendMemoryClient
-from solstice_mcp.operations import CgOperation, CgOperationMessage, Project
+from solstice_mcp.operations import CgOperation, CgOperationMessage, PrcTemplateVersion, Project
 from solstice_mcp.rate_limit import default_limiter
 from solstice_mcp.requests import AdminRequest
 from solstice_mcp.settings import Settings
@@ -62,6 +62,15 @@ PROJECT_P2 = "00000000-0000-0000-0000-000000000302"
 OP_A1 = "00000000-0000-0000-0000-000000000401"
 OP_A2 = "00000000-0000-0000-0000-000000000402"
 OP_A3 = "00000000-0000-0000-0000-000000000403"
+DEFAULT_EMAIL_TEMPLATE = (
+    '<!doctype html><html><head><meta name="sol-prc-contract" content="v2" data-profile="email">'
+    '<style id="sol-prc-export-style"></style></head>'
+    '<body class="sol-prc-export" data-sol-prc-proof="email"><main data-sol-prc-pages>'
+    '<section data-sol-prc-page="desktop" data-sol-prc-page-type="render">'
+    '<div data-sol-prc-field="file_name">Default email proof</div>'
+    '<iframe data-sol-prc-creative="desktop" srcdoc="old"></iframe></section>'
+    '<script id="sol-prc-config" type="application/json">{}</script></main></body></html>'
+)
 
 REQ_PENDING_A1 = "00000000-0000-0000-0000-000000000901"
 REQ_PENDING_A3 = "00000000-0000-0000-0000-000000000902"
@@ -659,3 +668,24 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
             client, registry, open_session, calls, fake_s3, backend_client,
             backend_opener, token_acquirer, auth0_opener, open_central_session,
         )
+
+
+@pytest.fixture
+def seed_default_email_prc(app_harness: AppHarness) -> None:
+    with app_harness.session_factory("tenant_a") as session:
+        now = datetime.now(UTC)
+        session.add(
+            PrcTemplateVersion(
+                id="00000000-0000-0000-0000-000000000799",
+                template_key="platform_default_email",
+                version_number=1,
+                content_type="email",
+                name="Default Email",
+                html_template=DEFAULT_EMAIL_TEMPLATE,
+                status="published",
+                created_at=now,
+                updated_at=now,
+                deleted_at=None,
+            )
+        )
+        session.commit()

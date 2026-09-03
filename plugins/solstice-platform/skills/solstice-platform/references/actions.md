@@ -93,7 +93,7 @@ Only start this workflow when the user explicitly asks to add an HTML or PDF ver
 6. Call `solstice_commit_operation_version` with the unchanged values from prepare, plus `base_message_id` set to the id from step 3, only after the upload succeeds.
 7. Report the server-derived intent.
 
-The workflow is append-only. Never substitute another key, overwrite an existing version, or accept a requested role or intent. Never blind-retry a failed commit either — the two refusals below each have their own recovery.
+The workflow is append-only. An HTML commit includes its PRC proof when PRC is enabled; do not run a separate bake afterward. Never substitute another key, overwrite an existing version, or accept a requested role or intent. Never blind-retry a failed commit either — the two refusals below each have their own recovery.
 
 Two commit refusals have different recoveries:
 
@@ -139,13 +139,10 @@ Library / both: ask separately for name and key, then call
 to published; do not ask for it. The library insert does not update brand or
 operation catalog selections. Reserved auto-resolving keys are rejected.
 
-Operation / both: `solstice_prepare_prc_template_bake` → PUT to `upload_url` →
-`operation_id` + `operation_bake_s3_key`. Size does not matter; never pass
-`operation_bake_html`. The bake input must be the approved, self-contained
-Contract v2 operation proof with hydrated fields and creative `srcdoc`; never
-pass the reusable `html_template` shell in its place. The server is
-producer-neutral, copies the current creative onto a new version, and
-writes that freeze to `cg_operation_prc_template/{operation_id}/{row_id}.html`.
+Operation / both: `solstice_prepare_prc_template_bake` → PUT the approved proof
+to `upload_url` → pass `operation_id` + `operation_bake_s3_key`. Never pass
+`operation_bake_html`. Edited and fleet-shaped proofs are normalized against
+the current creative and appended as a new draft version.
 
 ## Unsupported changes
 

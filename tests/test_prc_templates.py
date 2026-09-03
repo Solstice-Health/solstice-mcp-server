@@ -27,6 +27,7 @@ from solstice_mcp.operations import (
     PrcTemplateVersion,
     _prc_bake_unresolved_fonts,
 )
+from solstice_mcp.prc_proof_composer import InvalidPrcProofError, compose_prc_proof
 
 PINNED_EMAIL = "00000000-0000-0000-0000-000000000701"
 OPERATION_EMAIL = "00000000-0000-0000-0000-000000000702"
@@ -37,13 +38,117 @@ BRAND_EMAIL_V2 = "00000000-0000-0000-0000-000000000706"
 OPERATION_BAKE_EMAIL = (
     '<!doctype html><html><head>'
     '<meta name="sol-prc-contract" content="v2" data-profile="email">'
+    '<meta name="sol-prc-contract-baked" content="v2">'
     '<style id="sol-prc-export-style"></style></head>'
     '<body class="sol-prc-export" data-sol-prc-proof="email"><main data-sol-prc-pages>'
     '<section data-sol-prc-page="page_desktop" data-sol-prc-page-type="render">'
+    '<div data-sol-prc-field="file_name">PRESERVED PRC EDIT</div>'
     '<iframe data-sol-prc-creative="desktop" '
     'srcdoc="&lt;!doctype html&gt;&lt;html&gt;creative&lt;/html&gt;"></iframe>'
-    "</section></main></body></html>"
+    '</section><script id="sol-prc-config" type="application/json">{}</script>'
+    "</main></body></html>"
 )
+
+CREATIVE = '<!doctype html><html><body><p id="creative">NEW CREATIVE</p></body></html>'
+EMAIL_TEMPLATE = (
+    '<!doctype html><html><head><meta name="sol-prc-contract" content="v2" data-profile="email">'
+    '<style id="sol-prc-export-style"></style></head>'
+    '<body class="sol-prc-export" data-sol-prc-proof="email"><main data-sol-prc-pages>'
+    '<section data-sol-prc-page="desktop" data-sol-prc-page-type="render">'
+    '<div data-sol-prc-field="file_name">KEEP EDIT</div>'
+    '<iframe data-sol-prc-creative="desktop" srcdoc="old"></iframe></section>'
+    '<script id="sol-prc-config" type="application/json">{}</script></main></body></html>'
+)
+SOCIAL_TEMPLATE = (
+    EMAIL_TEMPLATE.replace('data-profile="email"', 'data-profile="social"')
+    .replace('data-sol-prc-proof="email"', 'data-sol-prc-proof="social"')
+    .replace('data-sol-prc-creative="desktop"', 'data-sol-prc-creative="social"')
+)
+BANNER_TEMPLATE = (
+    '<!doctype html><html><head><script id="banner-template-data" type="application/json">{}</script>'
+    '<style id="sol-prc-export-style"></style></head><body class="banner-proof-doc">'
+    '<main class="pages"><article class="page"><div class="header-title">KEEP EDIT</div>'
+    '<section data-banner-section><template id="frame-template">'
+    '<iframe class="banner-frame" srcdoc="old"></iframe></template>'
+    '<div data-slot="frames"></div></section></article></main></body></html>'
+)
+
+
+@pytest.mark.parametrize(
+    ("content_type", "template", "slot"),
+    [
+        ("email", EMAIL_TEMPLATE, "desktop"),
+        ("banner", BANNER_TEMPLATE, "banner"),
+        ("social", SOCIAL_TEMPLATE, "social"),
+    ],
+)
+def test_compose_prc_proof_normalizes_fleet_templates_and_preserves_edits(
+    content_type: str,
+    template: str,
+    slot: str,
+):
+    proof = compose_prc_proof(template, CREATIVE, content_type)
+
+    assert 'name="sol-prc-contract-baked" content="v2"' in proof
+    assert f'data-sol-prc-proof="{content_type}"' in proof
+    assert f'data-sol-prc-creative="{slot}"' in proof
+    assert "NEW CREATIVE" in proof
+    assert "KEEP EDIT" in proof
+
+
+def test_compose_prc_proof_rejects_invalid_contract():
+    with pytest.raises(InvalidPrcProofError, match="contract v2 or fleet"):
+        compose_prc_proof("<html><body>not a proof</body></html>", CREATIVE, "email")
+
+
+def test_compose_prc_proof_stamps_legacy_section_page():
+    template = (
+        EMAIL_TEMPLATE.replace(
+            '<section data-sol-prc-page="desktop" data-sol-prc-page-type="render">',
+            '<section class="prc-page">',
+        )
+        .replace('<meta name="sol-prc-contract" content="v2" data-profile="email">', "")
+        .replace(
+            '<script id="sol-prc-config" type="application/json">',
+            '<script type="application/json" id="prc-cover-data" data-sol-prc-config>',
+        )
+    )
+
+    proof = compose_prc_proof(template, CREATIVE, "email")
+
+    assert '<section class="prc-page" data-sol-prc-page="legacy_page">' in proof
+
+
+def test_compose_prc_proof_replaces_existing_legacy_banner_payload_script():
+    existing = '<script id="sol-prc-banner-template-data">window.__BANNER_TEMPLATE_SRCDOC__ = "stale";</script>'
+    template = BANNER_TEMPLATE.replace("</head>", f"{existing}</head>")
+
+    proof = compose_prc_proof(template, CREATIVE, "banner")
+
+    assert proof.count('id="sol-prc-banner-template-data"') == 1
+    assert '"stale"' not in proof
+    assert "NEW CREATIVE" in proof
+
+
+def test_compose_prc_proof_accepts_contract_attributes_in_any_order():
+    template = (
+        EMAIL_TEMPLATE.replace(
+            '<meta name="sol-prc-contract" content="v2" data-profile="email">',
+            '<meta content="v2" data-profile="email" name="sol-prc-contract">',
+        )
+        .replace(
+            '<iframe data-sol-prc-creative="desktop" srcdoc="old">',
+            '<iframe srcdoc="old" data-sol-prc-creative="desktop">',
+        )
+        .replace(
+            '<script id="sol-prc-config" type="application/json">',
+            '<script type="application/json" id="sol-prc-config">',
+        )
+    )
+
+    proof = compose_prc_proof(template, CREATIVE, "email")
+
+    assert "NEW CREATIVE" in proof
 
 
 def _tool_error_text(response) -> str:
@@ -312,13 +417,13 @@ def test_prc_template_prefers_latest_matching_brand_template(
             [
                 _template(
                     BRAND_EMAIL_V1,
-                    key="brand_a1_email",
+                    key="brand_dupixent_email",
                     content_type="email",
                     html="<html>brand v1</html>",
                 ),
                 _template(
                     BRAND_EMAIL_V2,
-                    key="brand_a1_email",
+                    key="brand_dupixent_email",
                     content_type="email",
                     html="<html>brand v2</html>",
                     version_number=2,
@@ -331,6 +436,9 @@ def test_prc_template_prefers_latest_matching_brand_template(
                 ),
             ]
         )
+        brand = session.get(Brand, BRAND_A1)
+        assert brand is not None
+        brand.name = "Dupixent HCP"
         session.commit()
 
     payload = tool_payload(
@@ -346,6 +454,53 @@ def test_prc_template_prefers_latest_matching_brand_template(
     assert payload["id"] == BRAND_EMAIL_V2
     assert payload["resolved_tier"] == "brand"
     assert payload["html_template"] == "<html>brand v2</html>"
+
+
+def test_prc_template_longest_bundled_brand_slug_wins():
+    from solstice_mcp.operations import _match_bundled_brand_slug
+
+    assert _match_bundled_brand_slug("Dupixent_Global Dupixent HCP") == "dupixent_global"
+
+
+def test_prc_template_missing_longest_brand_template_falls_to_environment(
+    app_harness: AppHarness,
+    mint_token,
+):
+    with app_harness.session_factory("tenant_a") as session:
+        session.add_all(
+            [
+                _template(
+                    BRAND_EMAIL_V1,
+                    key="brand_dupixent_email",
+                    content_type="email",
+                    html="<html>shorter brand</html>",
+                ),
+                _template(
+                    ENV_EMAIL,
+                    key="environment_default_email",
+                    content_type="email",
+                    html="<html>environment email</html>",
+                ),
+            ]
+        )
+        brand = session.get(Brand, BRAND_A1)
+        assert brand is not None
+        brand.name = "Dupixent_Global HCP"
+        session.commit()
+
+    payload = tool_payload(
+        _call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            content_type="email",
+            fetch=True,
+        )
+    )
+
+    assert payload["id"] == ENV_EMAIL
+    assert payload["resolved_tier"] == "environment"
 
 
 def test_prc_template_brand_opt_out_blocks_operation_and_default_fallbacks(
@@ -391,6 +546,37 @@ def test_prc_template_brand_opt_out_blocks_operation_and_default_fallbacks(
         operation_id=OP_A1,
     )
     assert "not_found" in _tool_error_text(response)
+
+
+def test_prc_template_read_can_inspect_disabled_pinned_selection(
+    app_harness: AppHarness,
+    mint_token,
+):
+    with app_harness.session_factory("tenant_a") as session:
+        session.add(
+            _template(
+                PINNED_EMAIL,
+                key="disabled_pinned_email",
+                content_type="email",
+                html="<html>selected</html>",
+            )
+        )
+        brand = session.get(Brand, BRAND_A1)
+        assert brand is not None
+        brand.brand_metadata = {"prc_templates": {"email": {"enabled": False, "template_version_id": PINNED_EMAIL}}}
+        session.commit()
+
+    payload = tool_payload(
+        _call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            content_type="email",
+        )
+    )
+
+    assert payload["id"] == PINNED_EMAIL
 
 
 def test_prc_template_denies_brand_non_member(
@@ -684,10 +870,11 @@ def test_create_prc_template_version_points_authors_at_the_contract(app_harness:
     assert "operation_bake_html" in description
     assert "operation_bake_s3_key" in description
     assert "solstice_prepare_prc_template_bake" in description
-    assert "raw" in description and "catalog" in description
-    assert "prc_template_s3_key" in description
-    assert "producer-neutral" in description
+    assert "edited or fleet-shaped proof" in description
+    assert "normalized" in description and "current creative" in description
+    assert "catalog shell is rejected" not in description
     assert "frontend-composed" not in description
+    assert "Backend" not in description
 
 
 def test_create_prc_template_bakes_a_draft_operation_version(
@@ -734,8 +921,10 @@ def test_create_prc_template_bakes_a_draft_operation_version(
     assert baked["publish_target"] == "operation"
     assert baked["intent"] == "draft"
     assert baked["prc_template_s3_key"].startswith(f"cg_operation_prc_template/{OP_A1}/")
-    proof = app_harness.s3.objects[("test-bucket-a", baked["prc_template_s3_key"])]
-    assert proof == OPERATION_BAKE_EMAIL.encode()
+    proof = app_harness.s3.objects[("test-bucket-a", baked["prc_template_s3_key"])].decode()
+    assert "PRESERVED PRC EDIT" in proof
+    assert "draft v2 body" in proof
+    assert "&gt;creative&lt;" not in proof
     creative = app_harness.s3.objects[("test-bucket-a", baked["s3_key"])]
     assert creative == b"<html>draft v2 body</html>"
 
@@ -752,6 +941,9 @@ def test_create_prc_template_bakes_a_draft_operation_version(
         )
         assert row is not None
         assert row.prc_template_s3_key == baked["prc_template_s3_key"]
+        assert row.prc_template_s3_key == f"cg_operation_prc_template/{OP_A1}/{row.id}.html"
+        assert row.content == f"cg_operation_msg_html/{OP_A1}/{row.message_id}.html"
+        assert row.message_id != row.id
         assert row.intent == "draft"
         feedback = session.scalar(
             select(CgOperationMessage).where(
@@ -840,7 +1032,7 @@ def test_operation_bake_carries_metadata_from_exact_current_head(
             '<body data-sol-prc-proof="email"><main data-sol-prc-pages>'
             '<section data-sol-prc-page="page_desktop" data-sol-prc-page-type="render">'
             '<iframe data-sol-prc-creative="desktop"></iframe></section></main></body></html>',
-            "catalog template shell is not an operation bake",
+            "contract v2 or fleet seed anatomy",
         ),
         (
             '<!doctype html><html><head>'
@@ -849,7 +1041,7 @@ def test_operation_bake_carries_metadata_from_exact_current_head(
             '<section data-sol-prc-page="page_desktop" data-sol-prc-page-type="render">'
             '<iframe data-sol-prc-creative="desktop" '
             'srcdoc="&lt;html&gt;creative&lt;/html&gt;"></iframe></section></main></body></html>',
-            "export marker",
+            "contract v2 or fleet seed anatomy",
         ),
     ],
 )
@@ -936,9 +1128,11 @@ def test_create_prc_template_bakes_over_inline_cap_via_presign(
             operation_id=OP_A1,
         )
     )
-    proof = app_harness.s3.objects[("test-bucket-a", baked["prc_template_s3_key"])]
-    assert proof == huge.encode()
-    assert baked["html_size_bytes"] > 2_000_000
+    proof = app_harness.s3.objects[("test-bucket-a", baked["prc_template_s3_key"])].decode()
+    assert "PRESERVED PRC EDIT" in proof
+    assert "draft v2 body" in proof
+    assert baked["html_size_bytes"] == len(proof.encode())
+    assert baked["html_size_bytes"] < len(huge.encode())
 
 
 def test_create_prc_template_copies_oversize_creative_without_download(
@@ -1211,34 +1405,37 @@ def test_prc_bake_unresolved_fonts_reads_escaped_creative_srcdoc():
     assert _prc_bake_unresolved_fonts(bake) == ["aptos"]
 
 
-def test_create_prc_template_bake_rejects_unfaced_fonts(
+def test_create_prc_template_bake_does_not_add_a_writer_only_font_gate(
     app_harness: AppHarness,
     mint_token,
 ):
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "email"
+        session.commit()
     bake_key = f"cg_operation_prc_template/{OP_A1}/00000000-0000-0000-0000-000000000802.html"
     app_harness.s3.objects[("test-bucket-a", bake_key)] = _bake_with_style(
         '.a{font-family:"Aptos",sans-serif}'
     ).encode()
 
-    response = _create_call(
-        app_harness,
-        mint_token,
-        tenant_slug="tenant_a",
-        brand_id=BRAND_A1,
-        template_key="",
-        content_type="email",
-        name="",
-        confirmed=True,
-        operation_bake_s3_key=bake_key,
-        publish_target="operation",
-        operation_id=OP_A1,
+    payload = tool_payload(
+        _create_call(
+            app_harness,
+            mint_token,
+            tenant_slug="tenant_a",
+            brand_id=BRAND_A1,
+            template_key="",
+            content_type="email",
+            name="",
+            confirmed=True,
+            operation_bake_s3_key=bake_key,
+            publish_target="operation",
+            operation_id=OP_A1,
+        )
     )
-    error = _tool_error_text(response)
-    assert "names fonts it never faces" in error
-    assert "aptos" in error
-    # The message has to name both ways out, not just fail.
-    assert "@font-face" in error
-    assert "fonts.googleapis.com" in error
+
+    assert payload["prc_template_s3_key"] == bake_key
 
 
 def test_create_prc_template_both_bakes_then_appends_library(
@@ -1353,7 +1550,9 @@ def test_create_prc_template_bakes_from_presigned_s3_key(
         )
     )
     assert baked["prc_template_s3_key"] == bake_key
-    assert app_harness.s3.objects[("test-bucket-a", bake_key)] == OPERATION_BAKE_EMAIL.encode()
+    proof = app_harness.s3.objects[("test-bucket-a", bake_key)].decode()
+    assert "PRESERVED PRC EDIT" in proof
+    assert "draft v2 body" in proof
 
 
 def test_create_prc_template_rejects_missing_presigned_upload(

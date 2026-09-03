@@ -16,7 +16,9 @@ from conftest import (
 from sqlalchemy import select
 from test_server import rpc, tool_payload
 
-from solstice_mcp.operations import CgOperationMessage
+from solstice_mcp.brands import Brand
+from solstice_mcp.operations import CgOperation, CgOperationMessage, PrcTemplateVersion
+from solstice_mcp.storage import S3Error
 
 TENANT = "tenant_a"
 BUCKET = "test-bucket-a"
@@ -25,6 +27,83 @@ BUCKET = "test-bucket-a"
 # head is m2; staff see m3. Each must declare the head IT read.
 MEMBER_BASE = "m2"
 STAFF_BASE = "m3"
+DEFAULT_EMAIL_TEMPLATE_ID = "00000000-0000-0000-0000-000000000711"
+DEFAULT_EMAIL_TEMPLATE = (
+    '<!doctype html><html><head><meta name="sol-prc-contract" content="v2" data-profile="email">'
+    '<style id="sol-prc-export-style"></style></head>'
+    '<body class="sol-prc-export" data-sol-prc-proof="email"><main data-sol-prc-pages>'
+    '<section data-sol-prc-page="desktop" data-sol-prc-page-type="render">'
+    '<div data-sol-prc-field="file_name">DEFAULT EDIT</div>'
+    '<iframe data-sol-prc-creative="desktop" srcdoc="old"></iframe></section>'
+    '<script id="sol-prc-config" type="application/json">{}</script></main></body></html>'
+)
+FLEET_EMAIL_TEMPLATE = (
+    '<!doctype html><html><head><style id="sol-prc-export-style"></style></head>'
+    '<body data-sol-prc-proof="email"><main data-sol-prc-pages>'
+    '<section class="prc-page"><div data-slot="title">FLEET EDIT</div>'
+    '<iframe data-sol-prc-creative="desktop" srcdoc="old"></iframe></section>'
+    '<script type="application/json" id="prc-cover-data" data-sol-prc-config>{}</script>'
+    "</main></body></html>"
+)
+FLEET_SOCIAL_TEMPLATE = FLEET_EMAIL_TEMPLATE.replace(
+    'data-sol-prc-proof="email"', 'data-sol-prc-proof="social"'
+).replace('data-sol-prc-creative="desktop"', 'data-sol-prc-creative="social"')
+DEFAULT_BANNER_TEMPLATE = (
+    '<!doctype html><html><head><script id="banner-template-data" type="application/json">{}</script>'
+    '<style id="sol-prc-export-style"></style></head><body class="banner-proof-doc">'
+    '<main class="pages"><article class="page"><div class="header-title">DEFAULT EDIT</div>'
+    '<section data-banner-section><template id="frame-template">'
+    '<iframe class="banner-frame" srcdoc="old"></iframe></template>'
+    '<div data-slot="frames"></div></section></article></main></body></html>'
+)
+
+
+def _configure_email_prc(
+    harness: AppHarness,
+    op_id: str,
+    *,
+    enabled: bool = True,
+    template_html: str = DEFAULT_EMAIL_TEMPLATE,
+    content_type: str = "email",
+) -> None:
+    with harness.session_factory(TENANT) as session:
+        operation = session.get(CgOperation, op_id)
+        brand = session.get(Brand, operation.brand_id if operation else "")
+        assert operation is not None
+        assert brand is not None
+        operation.content_type = content_type
+        brand.brand_metadata = {
+            "prc_templates": {
+                content_type: {
+                    "enabled": enabled,
+                    **({"template_version_id": DEFAULT_EMAIL_TEMPLATE_ID} if not enabled else {}),
+                }
+            }
+        }
+        if enabled:
+            template = session.scalar(
+                select(PrcTemplateVersion).where(
+                    PrcTemplateVersion.template_key == f"platform_default_{content_type}",
+                    PrcTemplateVersion.content_type == content_type,
+                )
+            )
+            if template is None:
+                template = PrcTemplateVersion(
+                    id=DEFAULT_EMAIL_TEMPLATE_ID,
+                    template_key=f"platform_default_{content_type}",
+                    version_number=1,
+                    content_type=content_type,
+                    name=f"Default {content_type}",
+                    html_template=template_html,
+                    status="published",
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                    deleted_at=None,
+                )
+                session.add(template)
+            else:
+                template.html_template = template_html
+        session.commit()
 
 
 def _result(response) -> dict[str, Any]:
@@ -180,6 +259,7 @@ def test_commit_member_creates_final_version(app_harness: AppHarness, mint_token
     assert payload["id"] == payload["head_message_id"]
     assert payload["id"] != payload["message_id"]
     assert payload["s3_key"] == prep["s3_key"]
+    assert payload["s3_key"] == f"cg_operation_msg_html/{OP_A1}/{payload['message_id']}.html"
     # Existing rows untouched (append-only); two new rows appended (pill + doc).
     after = _live_rows(app_harness, OP_A1)
     assert len(after) - len(before) == 2
@@ -218,7 +298,27 @@ def test_commit_staff_creates_draft_version(app_harness: AppHarness, mint_token)
     assert after[-1][1] == "draft"
 
 
-def test_commit_v1_when_no_versions(app_harness: AppHarness, mint_token):
+@pytest.mark.parametrize(
+    ("content_type", "template_html", "slot"),
+    [
+        ("email", FLEET_EMAIL_TEMPLATE, "desktop"),
+        ("banner", DEFAULT_BANNER_TEMPLATE, "banner"),
+        ("social", FLEET_SOCIAL_TEMPLATE, "social"),
+    ],
+)
+def test_commit_v1_composes_each_prc_content_type(
+    app_harness: AppHarness,
+    mint_token,
+    content_type: str,
+    template_html: str,
+    slot: str,
+):
+    _configure_email_prc(
+        app_harness,
+        OP_A2,
+        content_type=content_type,
+        template_html=template_html,
+    )
     token = mint_token(sub=SHARED_SUB)
     prep = _prepare_and_upload(app_harness, token, OP_A2, "html", None)
     response = _call(
@@ -227,6 +327,12 @@ def test_commit_v1_when_no_versions(app_harness: AppHarness, mint_token):
     )
     payload = tool_payload(response)
     assert payload["intent"] == "final"
+    assert payload["prc_template_s3_key"] == (f"cg_operation_prc_template/{OP_A2}/{payload['head_message_id']}.html")
+    proof = app_harness.s3.objects[(BUCKET, payload["prc_template_s3_key"])].decode()
+    assert "&lt;html&gt;new&lt;/html&gt;" in proof
+    expected_edit = "DEFAULT EDIT" if content_type == "banner" else "FLEET EDIT"
+    assert expected_edit in proof
+    assert f'data-sol-prc-creative="{slot}"' in proof
 
 
 def test_consecutive_commits_chain_the_base(app_harness: AppHarness, mint_token):
@@ -410,10 +516,13 @@ def test_commit_metadata_mirrors_be_shape(app_harness: AppHarness, mint_token):
     assert "htmlDocumentLastVersion" not in meta
 
 
-def test_html_commit_carries_base_prc_bake_and_metadata(
-    app_harness: AppHarness, mint_token
-):
-    proof_key = f"cg_operation_prc_template/{OP_A1}/base-proof.html"
+def test_html_commit_recomposes_nearest_bake_and_preserves_prc_edits(app_harness: AppHarness, mint_token):
+    _configure_email_prc(app_harness, OP_A1)
+    proof_key = f"cg_operation_prc_template/{OP_A1}/00000000-0000-0000-0000-000000000503.html"
+    edited_proof = DEFAULT_EMAIL_TEMPLATE.replace("DEFAULT EDIT", "SENTINEL PRC EDIT").replace(
+        'srcdoc="old"', 'srcdoc="&lt;html&gt;old creative&lt;/html&gt;"'
+    )
+    app_harness.s3.put(BUCKET, proof_key, edited_proof.encode(), "text/html")
     prc_fields = {
         "schema_version": 1,
         "kind": "email",
@@ -430,6 +539,7 @@ def test_html_commit_carries_base_prc_bake_and_metadata(
         base.message_metadata = {
             "prc_template_fields": prc_fields,
             "email_settings": email_settings,
+            "prc_template_version_id": DEFAULT_EMAIL_TEMPLATE_ID,
             "unrelated": "do not carry",
         }
         session.commit()
@@ -455,19 +565,24 @@ def test_html_commit_carries_base_prc_bake_and_metadata(
     with app_harness.session_factory(TENANT) as session:
         row = session.get(CgOperationMessage, payload["head_message_id"])
         assert row is not None
-        assert row.prc_template_s3_key == proof_key
+        assert row.prc_template_s3_key == (f"cg_operation_prc_template/{OP_A1}/{row.id}.html")
+        assert row.prc_template_s3_key != proof_key
         assert row.message_metadata["prc_template_fields"] == prc_fields
         assert row.message_metadata["email_settings"] == email_settings
+        assert row.message_metadata["prc_template_version_id"] == DEFAULT_EMAIL_TEMPLATE_ID
         assert "unrelated" not in row.message_metadata
         assert row.message_metadata["type"] == "bot"
         assert row.message_metadata["isFinalDocument"] is True
         assert row.message_metadata["versionIntent"] == "draft"
         assert "documentVersion" not in row.message_metadata
+    proof = app_harness.s3.objects[(BUCKET, row.prc_template_s3_key)].decode()
+    assert "SENTINEL PRC EDIT" in proof
+    assert "&lt;html&gt;new&lt;/html&gt;" in proof
+    assert "old creative" not in proof
 
 
-def test_html_commit_does_not_invent_prc_bake_or_metadata(
-    app_harness: AppHarness, mint_token
-):
+def test_html_commit_explicit_disable_is_the_only_null_bake(app_harness: AppHarness, mint_token):
+    _configure_email_prc(app_harness, OP_A1, enabled=False)
     token = mint_token(sub=STAFF_SUB)
     prep = _prepare_and_upload(app_harness, token, OP_A1, "html", "op_a1.html")
     payload = tool_payload(
@@ -494,10 +609,146 @@ def test_html_commit_does_not_invent_prc_bake_or_metadata(
         assert "email_settings" not in row.message_metadata
 
 
-def test_html_commit_carries_prc_state_from_latest_html_when_head_is_pdf(
-    app_harness: AppHarness, mint_token
+def test_html_commit_historical_keyless_head_falls_back_to_default(app_harness: AppHarness, mint_token):
+    _configure_email_prc(app_harness, OP_A1)
+    token = mint_token(sub=STAFF_SUB)
+    prep = _prepare_and_upload(app_harness, token, OP_A1, "html", "op_a1.html")
+    payload = tool_payload(
+        _call(
+            app_harness,
+            token,
+            "solstice_commit_operation_version",
+            {
+                "tenant_slug": TENANT,
+                "operation_id": OP_A1,
+                "type": "html",
+                "s3_key": prep["s3_key"],
+                "base_message_id": STAFF_BASE,
+            },
+        )
+    )
+
+    proof = app_harness.s3.objects[(BUCKET, payload["prc_template_s3_key"])].decode()
+    assert "DEFAULT EDIT" in proof
+    assert "&lt;html&gt;new&lt;/html&gt;" in proof
+
+
+def test_html_commit_skips_invalid_prior_bake(app_harness: AppHarness, mint_token):
+    _configure_email_prc(app_harness, OP_A1)
+    older_key = f"cg_operation_prc_template/{OP_A1}/00000000-0000-0000-0000-000000000502.html"
+    invalid_key = f"cg_operation_prc_template/{OP_A1}/00000000-0000-0000-0000-000000000503.html"
+    older_proof = DEFAULT_EMAIL_TEMPLATE.replace("DEFAULT EDIT", "OLDER VALID EDIT")
+    app_harness.s3.put(BUCKET, older_key, older_proof.encode(), "text/html")
+    app_harness.s3.put(BUCKET, invalid_key, b"<html>invalid prior</html>", "text/html")
+    with app_harness.session_factory(TENANT) as session:
+        older = session.get(CgOperationMessage, "00000000-0000-0000-0000-000000000502")
+        latest = session.get(CgOperationMessage, "00000000-0000-0000-0000-000000000503")
+        assert older is not None
+        assert latest is not None
+        older.prc_template_s3_key = older_key
+        latest.prc_template_s3_key = invalid_key
+        session.commit()
+
+    token = mint_token(sub=STAFF_SUB)
+    prep = _prepare_and_upload(app_harness, token, OP_A1, "html", "op_a1.html")
+    payload = tool_payload(
+        _call(
+            app_harness,
+            token,
+            "solstice_commit_operation_version",
+            {
+                "tenant_slug": TENANT,
+                "operation_id": OP_A1,
+                "type": "html",
+                "s3_key": prep["s3_key"],
+                "base_message_id": STAFF_BASE,
+            },
+        )
+    )
+
+    proof = app_harness.s3.objects[(BUCKET, payload["prc_template_s3_key"])].decode()
+    assert "OLDER VALID EDIT" in proof
+
+
+def test_html_commit_aborts_on_transient_prior_bake_read_error(
+    app_harness: AppHarness,
+    mint_token,
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    proof_key = f"cg_operation_prc_template/{OP_A1}/html-proof.html"
+    _configure_email_prc(app_harness, OP_A1)
+    proof_key = f"cg_operation_prc_template/{OP_A1}/00000000-0000-0000-0000-000000000503.html"
+    app_harness.s3.put(BUCKET, proof_key, DEFAULT_EMAIL_TEMPLATE.encode(), "text/html")
+    with app_harness.session_factory(TENANT) as session:
+        latest = session.get(CgOperationMessage, "00000000-0000-0000-0000-000000000503")
+        assert latest is not None
+        latest.prc_template_s3_key = proof_key
+        session.commit()
+    original_download = app_harness.s3.download
+
+    def fail_prior_download(bucket: str, key: str, max_bytes: int):
+        if key == proof_key:
+            raise S3Error("temporary read outage")
+        return original_download(bucket, key, max_bytes)
+
+    monkeypatch.setattr(app_harness.s3, "download", fail_prior_download)
+    token = mint_token(sub=STAFF_SUB)
+    prep = _prepare_and_upload(app_harness, token, OP_A1, "html", "op_a1.html")
+    before = _live_rows(app_harness, OP_A1)
+    response = _call(
+        app_harness,
+        token,
+        "solstice_commit_operation_version",
+        {
+            "tenant_slug": TENANT,
+            "operation_id": OP_A1,
+            "type": "html",
+            "s3_key": prep["s3_key"],
+            "base_message_id": STAFF_BASE,
+        },
+    )
+
+    assert "not_available: s3 read failed: temporary read outage" in _tool_error_text(response)
+    assert _live_rows(app_harness, OP_A1) == before
+
+
+def test_html_commit_prc_s3_failure_inserts_no_row(
+    app_harness: AppHarness,
+    mint_token,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _configure_email_prc(app_harness, OP_A1)
+    token = mint_token(sub=STAFF_SUB)
+    prep = _prepare_and_upload(app_harness, token, OP_A1, "html", "op_a1.html")
+    before = _live_rows(app_harness, OP_A1)
+    original_put = app_harness.s3.put
+
+    def fail_proof_put(bucket: str, key: str, body: bytes, content_type: str = "application/octet-stream"):
+        if key.startswith(f"cg_operation_prc_template/{OP_A1}/"):
+            raise S3Error("proof upload failed")
+        original_put(bucket, key, body, content_type)
+
+    monkeypatch.setattr(app_harness.s3, "put", fail_proof_put)
+    response = _call(
+        app_harness,
+        token,
+        "solstice_commit_operation_version",
+        {
+            "tenant_slug": TENANT,
+            "operation_id": OP_A1,
+            "type": "html",
+            "s3_key": prep["s3_key"],
+            "base_message_id": STAFF_BASE,
+        },
+    )
+
+    assert "not_available: s3 write failed" in _tool_error_text(response)
+    assert _live_rows(app_harness, OP_A1) == before
+
+
+def test_html_commit_carries_metadata_from_latest_html_when_head_is_pdf(app_harness: AppHarness, mint_token):
+    _configure_email_prc(app_harness, OP_A1)
+    proof_key = f"cg_operation_prc_template/{OP_A1}/00000000-0000-0000-0000-000000000503.html"
+    app_harness.s3.put(BUCKET, proof_key, DEFAULT_EMAIL_TEMPLATE.encode(), "text/html")
     prc_fields = {"schema_version": 1, "kind": "email"}
     email_settings = {"subject": "HTML subject", "preheader": "HTML preheader"}
     pdf_row_id = "00000000-0000-0000-0000-000000000599"
@@ -549,7 +800,7 @@ def test_html_commit_carries_prc_state_from_latest_html_when_head_is_pdf(
     with app_harness.session_factory(TENANT) as session:
         row = session.get(CgOperationMessage, payload["head_message_id"])
         assert row is not None
-        assert row.prc_template_s3_key == proof_key
+        assert row.prc_template_s3_key == (f"cg_operation_prc_template/{OP_A1}/{row.id}.html")
         assert row.message_metadata["prc_template_fields"] == prc_fields
         assert row.message_metadata["email_settings"] == email_settings
 
@@ -675,6 +926,98 @@ def test_commit_proceeds_when_hidden_draft_head_is_confirmed(app_harness: AppHar
     ))
     assert payload["intent"] == "final"
     assert _live_rows(app_harness, OP_A1)[-1][2] == prep["s3_key"]
+
+
+def test_confirmed_member_commit_uses_visible_final_proof(
+    app_harness: AppHarness,
+    mint_token,
+):
+    _configure_email_prc(app_harness, OP_A1)
+    final_key = f"cg_operation_prc_template/{OP_A1}/00000000-0000-0000-0000-000000000502.html"
+    draft_key = f"cg_operation_prc_template/{OP_A1}/00000000-0000-0000-0000-000000000503.html"
+    app_harness.s3.put(
+        BUCKET,
+        final_key,
+        DEFAULT_EMAIL_TEMPLATE.replace("DEFAULT EDIT", "VISIBLE FINAL EDIT").encode(),
+        "text/html",
+    )
+    app_harness.s3.put(
+        BUCKET,
+        draft_key,
+        DEFAULT_EMAIL_TEMPLATE.replace("DEFAULT EDIT", "HIDDEN DRAFT EDIT").encode(),
+        "text/html",
+    )
+    with app_harness.session_factory(TENANT) as session:
+        final = session.get(CgOperationMessage, "00000000-0000-0000-0000-000000000502")
+        draft = session.get(CgOperationMessage, "00000000-0000-0000-0000-000000000503")
+        assert final is not None
+        assert draft is not None
+        final.prc_template_s3_key = final_key
+        draft.prc_template_s3_key = draft_key
+        session.commit()
+
+    token = mint_token(sub=SHARED_SUB)
+    prep = _prepare_and_upload(app_harness, token, OP_A1, "html", "op_a1.html")
+    payload = tool_payload(
+        _call(
+            app_harness,
+            token,
+            "solstice_commit_operation_version",
+            {
+                "tenant_slug": TENANT,
+                "operation_id": OP_A1,
+                "type": "html",
+                "s3_key": prep["s3_key"],
+                "base_message_id": MEMBER_BASE,
+                "confirmed": True,
+            },
+        )
+    )
+
+    proof = app_harness.s3.objects[(BUCKET, payload["prc_template_s3_key"])].decode()
+    assert "VISIBLE FINAL EDIT" in proof
+    assert "HIDDEN DRAFT EDIT" not in proof
+
+
+def test_confirmed_member_commit_falls_back_to_catalog_when_only_draft_has_proof(
+    app_harness: AppHarness,
+    mint_token,
+):
+    _configure_email_prc(app_harness, OP_A1)
+    draft_key = f"cg_operation_prc_template/{OP_A1}/00000000-0000-0000-0000-000000000503.html"
+    app_harness.s3.put(
+        BUCKET,
+        draft_key,
+        DEFAULT_EMAIL_TEMPLATE.replace("DEFAULT EDIT", "HIDDEN DRAFT EDIT").encode(),
+        "text/html",
+    )
+    with app_harness.session_factory(TENANT) as session:
+        draft = session.get(CgOperationMessage, "00000000-0000-0000-0000-000000000503")
+        assert draft is not None
+        draft.prc_template_s3_key = draft_key
+        session.commit()
+
+    token = mint_token(sub=SHARED_SUB)
+    prep = _prepare_and_upload(app_harness, token, OP_A1, "html", "op_a1.html")
+    payload = tool_payload(
+        _call(
+            app_harness,
+            token,
+            "solstice_commit_operation_version",
+            {
+                "tenant_slug": TENANT,
+                "operation_id": OP_A1,
+                "type": "html",
+                "s3_key": prep["s3_key"],
+                "base_message_id": MEMBER_BASE,
+                "confirmed": True,
+            },
+        )
+    )
+
+    proof = app_harness.s3.objects[(BUCKET, payload["prc_template_s3_key"])].decode()
+    assert "DEFAULT EDIT" in proof
+    assert "HIDDEN DRAFT EDIT" not in proof
 
 
 def test_commit_refused_when_every_version_is_hidden(app_harness: AppHarness, mint_token):

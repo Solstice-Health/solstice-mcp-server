@@ -290,8 +290,7 @@ def register_content_tools(
     ) -> dict[str, Any]:
         """Resolve the effective PRC proof template for a brand and content type.
 
-        Reads ``prc_template_versions`` using the same precedence as Solstice:
-        operation override, explicit/derived brand template, environment
+        Uses operation override, explicit/derived brand template, environment
         default, then platform default. When ``operation_id`` is set, also
         returns ``operation_bake`` (newest-``created_at`` html row's ``prc_template_s3_key``)
         and ``publish_targets`` so the caller can ask whether to bake onto
@@ -300,9 +299,8 @@ def register_content_tools(
         By default returns metadata and field configuration without the
         potentially large HTML body. Set ``fetch=True`` when the template HTML
         is needed as a structural exemplar (IDs, slots, builders). Do not copy
-        layout, palette, or typography from it. A brand opt-out (``enabled=false``
-        with no pinned template) returns ``not_found`` instead of falling
-        through to a default.
+        layout, palette, or typography from it. An unpinned brand opt-out
+        returns ``not_found`` instead of falling through to a default.
 
         Read-only; gated at MEMBER on the selected brand. ``operation_id`` is
         honored only when that operation belongs to the same brand and exact
@@ -356,31 +354,22 @@ def register_content_tools(
 
         If ``solstice_prc_template(..., operation_id=)`` returned
         ``operation_bake`` or the user is editing a specific asset, ask one
-        question first: bake this proof onto the operation (new draft html
-        version + ``prc_template_s3_key``), publish to the library
-        (``prc_template_versions``), or both. Then pass
+        question first: apply this proof to the operation, publish it to the
+        library, or both. Then pass
         ``publish_target`` as ``operation``, ``library``, or ``both``.
 
         Library / both: after the HTML preview, ask separately for display
         name and template key, then ``confirmed=true``. This inserts a new
-        ``prc_template_versions`` row and never changes brand or operation
-        catalog selections. Reserved auto-resolving key prefixes are rejected.
+        library version. Reserved auto-resolving key prefixes are rejected.
 
         Operation / both: ``solstice_prepare_prc_template_bake``, PUT the bake
         HTML to ``upload_url``, then pass ``operation_id`` and
         ``operation_bake_s3_key``. Size does not matter — never inline the bake
-        as ``operation_bake_html``. The bake must be a self-contained Contract
-        v2 operation bake: hydrated fields, creative ``srcdoc``, baked layout,
-        and an export marker (``body.sol-prc-export`` or
-        ``style#sol-prc-export-style``). A raw ``html_template`` catalog shell
-        is rejected because it is not a proof bake. If the source is pre-v2 or
-        validation fails, repair the fetched bake locally against
-        ``solstice_prc_template_rules``, preview it, and retry only after the
-        user approves the operation update. This tool is producer-neutral and
-        does not compose or repair proof HTML. The server copies the current
-        creative and its PRC field snapshots onto a new draft html row and
-        stamps ``prc_template_s3_key``. Staff intent is draft. Requires
-        SOLSTICE_STAFF on the selected brand.
+        as ``operation_bake_html``. Upload the approved edited or fleet-shaped proof.
+        It is normalized against the current creative and appended as one complete
+        draft version. If validation fails, repair it against
+        ``solstice_prc_template_rules``, preview it, and retry only after approval.
+        Requires SOLSTICE_STAFF on the selected brand.
         """
         template = create_prc_template_version(
             require_subject(),
@@ -426,8 +415,8 @@ def register_content_tools(
         commit requires. The user-facing label is ``V{display_version}`` on
         that row, not a number in the S3 key.
 
-        Mirrors Backend ``content-url``: ``url`` / ``s3_key`` are the creative;
-        ``prc_proof_url`` / ``prc_proof_s3_key`` are the bake when present.
+        ``url`` / ``s3_key`` are the creative; ``prc_proof_url`` /
+        ``prc_proof_s3_key`` are the proof when present.
         Download those URLs when you need the body — the payload never inlines
         HTML. ``fetch`` is ignored (kept so older callers do not error). Catalog
         ``solstice_prc_template`` HTML is not a substitute for the bake.
@@ -469,12 +458,9 @@ def register_content_tools(
         solstice_prepare_operation_version -> upload -> solstice_commit_operation_version
         using the returned operation_id.
 
-        ``content_type`` is REQUIRED. Unlike the Backend-Server UI flow, the
-        MCP path has no Query Agent that detects or asks for the content type
-        after creation — nothing later sets it. Use the type the user
-        explicitly stated (e.g. ``EMAIL``, ``BANNER``, ``SOCIAL``). If the
-        user did not state one, ASK THEM which content type this asset is —
-        never guess or silently default to a type.
+        ``content_type`` is REQUIRED. Use the type the user explicitly stated
+        (e.g. ``EMAIL``, ``BANNER``, ``SOCIAL``). If the user did not state one,
+        ASK THEM which content type this asset is — never guess or silently default.
 
         The response includes ``asset_url`` — the operation's Solstice page.
         End your user-facing reply with ``[Open asset in Solstice](<asset_url>)``
@@ -562,9 +548,9 @@ def register_content_tools(
         the file bytes directly to upload_url, then call
         solstice_commit_operation_version with the returned s3_key. Gated at
         MEMBER on the operation's brand.
-        The returned ``message_id`` is an upload-key UUID embedded in ``s3_key``;
-        it is not the document row address. After commit, use the response's
-        ``head_message_id`` / ``id`` (the new row PK).
+        The returned ``message_id`` is embedded in ``s3_key`` and remains the
+        upload identity. After commit, use ``head_message_id`` / ``id`` as the
+        new row address.
         ``type`` is ``html``, ``pdf``, or ``source`` (design source file for
         edit operations only — records a metadata pointer, not a version;
         ``file_name`` is required for source uploads).
@@ -639,6 +625,9 @@ def register_content_tools(
         instead of inserting a version). For edit operations, html/pdf commits
         also complete the upload contract (is_html_saved, approved_pdf_s3_key,
         status) automatically.
+        HTML commits for PRC-enabled email, banner, and social assets also
+        create that row's proof. Explicit ``enabled=false`` is the keyless
+        exception. Do not run a separate PRC bake after commit.
 
         ``base_message_id`` — the row ``id`` of the version you actually read
         and edited (``head_message_id`` from ``solstice_operation_messages``).
@@ -680,8 +669,8 @@ def register_content_tools(
         user's intent in your own reasoning, not in this argument.
 
         The response includes ``id`` / ``head_message_id`` for the newly inserted
-        row. Use that value as the next ``base_message_id``; ``message_id`` remains
-        the upload-key UUID for compatibility. The response also includes
+        row. Use that value as the next ``base_message_id``. ``message_id``
+        remains the prepare-derived upload identity. The response also includes
         ``asset_url`` — the operation's Solstice page.
         End your user-facing reply with ``[Open asset in Solstice](<asset_url>)``
         instead of handing the user the operation UUID.
