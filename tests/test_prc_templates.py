@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from test_server import rpc, tool_payload
 
+import solstice_mcp.operations as operations
 from solstice_mcp.brands import Brand
 from solstice_mcp.operations import (
     CgOperation,
@@ -1485,6 +1486,43 @@ def test_create_prc_template_rejects_oversize_uploaded_bake_before_writes(
         bucket == "test-bucket-a" and key == bake_key and max_bytes == 2_000_000
         for bucket, key, max_bytes in app_harness.s3.download_calls
     )
+
+
+def test_create_prc_template_rejects_oversize_composed_bake_before_writes(
+    app_harness: AppHarness,
+    mint_token,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "email"
+        session.commit()
+
+    bake_key = _upload_operation_bake(app_harness, mint_token)
+    before_objects = dict(app_harness.s3.objects)
+    monkeypatch.setattr(
+        operations,
+        "_compose_supplied_prc_proof",
+        lambda *_args: "<html>" + ("x" * 2_000_000) + "</html>",
+    )
+
+    response = _create_call(
+        app_harness,
+        mint_token,
+        tenant_slug="tenant_a",
+        brand_id=BRAND_A1,
+        template_key="",
+        content_type="email",
+        name="",
+        confirmed=True,
+        operation_bake_s3_key=bake_key,
+        publish_target="operation",
+        operation_id=OP_A1,
+    )
+
+    assert "too_large" in _tool_error_text(response)
+    assert app_harness.s3.objects == before_objects
 
 
 def test_bake_copies_newest_created_at_html_not_highest_version_number(

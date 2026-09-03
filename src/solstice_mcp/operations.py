@@ -790,7 +790,7 @@ def _finalize_html_prc_transition(
             if size is None:
                 continue
             if size > max_inline_bytes:
-                raise _too_large_error("prior PRC proof", size, max_inline_bytes)
+                continue
             try:
                 base = s3.download(bucket, key, max_inline_bytes).decode("utf-8")
                 proof = compose_prc_proof(base, creative, content_type)
@@ -798,7 +798,7 @@ def _finalize_html_prc_transition(
             except S3ObjectMissing:
                 continue
             except S3ObjectTooLarge:
-                raise _too_large_error("prior PRC proof", size, max_inline_bytes) from None
+                continue
             except S3Error as exc:
                 raise ToolError(f"not_available: s3 read failed: {exc}") from exc
             except (UnicodeDecodeError, InvalidPrcProofError):
@@ -811,6 +811,7 @@ def _finalize_html_prc_transition(
                 raise ToolError(f"invalid_state: PRC template composition failed: {exc}") from exc
     if proof is None:
         raise ToolError(f"invalid_state: no PRC template resolved for {content_type}")
+    _ensure_inline_size("composed PRC proof", proof, max_inline_bytes)
     _raise_if_unresolved_prc_fonts(proof)
     bake_key = f"{_PRC_TEMPLATE_S3_KEY_PREFIX}/{operation.id}/{row_id}.html"
     try:
@@ -1225,9 +1226,11 @@ def bake_prc_template_to_operation(
             creative_html = head_content
             if not creative_html.encode("utf-8").strip():
                 raise ToolError("invalid_state: current html document is empty")
+            _ensure_inline_size("current html", creative_html, max_inline_bytes)
         supplied_proof = _compose_supplied_prc_proof(
             supplied_proof, creative_html, content_type
         )
+        _ensure_inline_size("operation bake html", supplied_proof, max_inline_bytes)
         _raise_if_unresolved_prc_fonts(supplied_proof)
         message_id = str(uuid4())
         creative_key = _version_s3_key("html", parsed_operation_id, message_id, locked.file_name)

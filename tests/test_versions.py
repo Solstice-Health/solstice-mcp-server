@@ -804,7 +804,7 @@ def test_html_commit_skips_invalid_prior_bake(app_harness: AppHarness, mint_toke
     assert "OLDER VALID EDIT" in proof
 
 
-def test_html_commit_rejects_oversize_prior_bake_before_writes(
+def test_html_commit_skips_oversize_prior_bake(
     app_harness: AppHarness,
     mint_token,
 ):
@@ -820,24 +820,23 @@ def test_html_commit_rejects_oversize_prior_bake_before_writes(
 
     token = mint_token(sub=STAFF_SUB)
     prep = _prepare_and_upload(app_harness, token, OP_A1, "html", "op_a1.html")
-    before_rows = _live_rows(app_harness, OP_A1)
-    response = _call(
-        app_harness,
-        token,
-        "solstice_commit_operation_version",
-        {
-            "tenant_slug": TENANT,
-            "operation_id": OP_A1,
-            "type": "html",
-            "s3_key": prep["s3_key"],
-            "base_message_id": STAFF_BASE,
-        },
+    payload = tool_payload(
+        _call(
+            app_harness,
+            token,
+            "solstice_commit_operation_version",
+            {
+                "tenant_slug": TENANT,
+                "operation_id": OP_A1,
+                "type": "html",
+                "s3_key": prep["s3_key"],
+                "base_message_id": STAFF_BASE,
+            },
+        )
     )
-    error = _tool_error_text(response)
 
-    assert "too_large" in error
-    assert "inline limit is 2000000" in error
-    assert _live_rows(app_harness, OP_A1) == before_rows
+    proof = app_harness.s3.objects[(BUCKET, payload["prc_template_s3_key"])].decode()
+    assert "DEFAULT EDIT" in proof
     assert any(
         bucket == BUCKET and key == too_large_key and max_bytes == 2_000_000
         for bucket, key, max_bytes in app_harness.s3.download_calls
