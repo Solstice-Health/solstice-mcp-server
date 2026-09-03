@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -138,7 +139,6 @@ def test_compose_prc_proof_republishes_every_banner_creative_derived_global():
         "window.__SOL_PRC_ADCHOICES_MAGENTA_BRACKETS__ = false;\n"
         'window.__BANNER_TEMPLATE_SRCDOCS__ = ["<html>stale</html>"];\n'
         'window.__BANNER_TEMPLATE_SRCDOC_ADCHOICES__ = "<html>stale</html>";\n'
-        'window.__BANNER_TEMPLATE_EXPANDED_SRCDOC__ = "<html>stale isi</html>";\n'
         "</script>"
     )
     template = BANNER_TEMPLATE.replace("</head>", f"{existing}</head>")
@@ -150,6 +150,103 @@ def test_compose_prc_proof_republishes_every_banner_creative_derived_global():
     assert "__BANNER_TEMPLATE_SRCDOC__ = " in proof
     # Non-creative publish flags are reviewer state, not creative, so they stay.
     assert "__SOL_PRC_ADCHOICES_MAGENTA_BRACKETS__ = false" in proof
+
+
+def test_compose_prc_proof_preserves_current_single_expanded_banner_payload():
+    creative = "<html>current banner</html>"
+    existing = (
+        "<script id='sol-prc-banner-template-data'>"
+        f"window.__BANNER_TEMPLATE_SRCDOC__ = {json.dumps(creative)};\n"
+        'window.__BANNER_TEMPLATE_EXPANDED_SRCDOC__ = "<html>expanded isi</html>";\n'
+        "</script>"
+    )
+    template = BANNER_TEMPLATE.replace("</head>", f"{existing}</head>")
+
+    proof = compose_prc_proof(template, creative, "banner")
+
+    assert "__BANNER_TEMPLATE_SRCDOC__" in proof
+    assert "__BANNER_TEMPLATE_EXPANDED_SRCDOC__" in proof
+    payload_match = re.search(
+        r'id=["\']sol-prc-banner-template-data["\'][^>]*>(.*?)</script>',
+        proof,
+        re.IGNORECASE | re.DOTALL,
+    )
+    assert payload_match is not None
+    payload = payload_match.group(1)
+    expanded_match = re.search(r"__BANNER_TEMPLATE_EXPANDED_SRCDOC__\s*=\s*(.+);", payload)
+    assert expanded_match is not None
+    assert json.loads(expanded_match.group(1)) == "<html>expanded isi</html>"
+
+
+def test_compose_prc_proof_rejects_stale_single_expanded_banner_payload():
+    existing = (
+        "<script id='sol-prc-banner-template-data'>"
+        'window.__BANNER_TEMPLATE_SRCDOC__ = "<html>old banner</html>";\n'
+        'window.__BANNER_TEMPLATE_EXPANDED_SRCDOC__ = "<html>expanded isi</html>";\n'
+        "</script>"
+    )
+    template = BANNER_TEMPLATE.replace("</head>", f"{existing}</head>")
+
+    with pytest.raises(InvalidPrcProofError, match="expanded banner ISI payload is stale"):
+        compose_prc_proof(template, "<html>new banner</html>", "banner")
+
+
+def test_compose_prc_proof_preserves_current_multi_expanded_banner_payloads():
+    creative = "<!DOCTYPE html><html>A</html>\n\n<!DOCTYPE html><html>B</html>"
+    split = [
+        "<!DOCTYPE html><html>A</html>",
+        "<!DOCTYPE html><html>B</html>",
+    ]
+    existing = (
+        "<script id='sol-prc-banner-template-data'>"
+        f"window.__BANNER_TEMPLATE_SRCDOCS__ = {json.dumps(split)};\n"
+        'window.__BANNER_TEMPLATE_EXPANDED_SRCDOCS__ = ["<html>expanded a</html>", null];\n'
+        "</script>"
+    )
+    template = BANNER_TEMPLATE.replace("</head>", f"{existing}</head>")
+
+    proof = compose_prc_proof(template, creative, "banner")
+
+    assert "__BANNER_TEMPLATE_SRCDOCS__" in proof
+    assert "__BANNER_TEMPLATE_EXPANDED_SRCDOCS__" in proof
+    payload_match = re.search(
+        r'id=["\']sol-prc-banner-template-data["\'][^>]*>(.*?)</script>',
+        proof,
+        re.IGNORECASE | re.DOTALL,
+    )
+    assert payload_match is not None
+    payload = payload_match.group(1)
+    expanded_match = re.search(r"__BANNER_TEMPLATE_EXPANDED_SRCDOCS__\s*=\s*(.+);", payload)
+    assert expanded_match is not None
+    assert json.loads(expanded_match.group(1)) == ["<html>expanded a</html>", None]
+
+
+def test_compose_prc_proof_rejects_stale_multi_expanded_banner_payloads():
+    existing = (
+        "<script id='sol-prc-banner-template-data'>"
+        'window.__BANNER_TEMPLATE_SRCDOCS__ = ["<!DOCTYPE html><html>A</html>", "<!DOCTYPE html><html>B</html>"];\n'
+        'window.__BANNER_TEMPLATE_EXPANDED_SRCDOCS__ = ["<html>expanded a</html>", "<html>expanded b</html>"];\n'
+        "</script>"
+    )
+    template = BANNER_TEMPLATE.replace("</head>", f"{existing}</head>")
+    creative = "<!DOCTYPE html><html>NEW A</html>\n\n<!DOCTYPE html><html>B</html>"
+
+    with pytest.raises(InvalidPrcProofError, match="expanded banner ISI payload is stale"):
+        compose_prc_proof(template, creative, "banner")
+
+
+def test_compose_prc_proof_rejects_stale_expanded_payload_in_second_script():
+    creative = "<html>current banner</html>"
+    second_script = (
+        '<script id="sol-prc-banner-template-data">\n'
+        'window.__BANNER_TEMPLATE_SRCDOC__ = "<html>old banner</html>";\n'
+        'window.__BANNER_TEMPLATE_EXPANDED_SRCDOC__ = "<html>old expanded</html>";\n'
+        "</script>"
+    )
+    template = BANNER_TEMPLATE.replace("</head>", f"{second_script}</head>")
+
+    with pytest.raises(InvalidPrcProofError, match="expanded banner ISI payload is stale"):
+        compose_prc_proof(template, creative, "banner")
 
 
 def test_compose_prc_proof_accepts_contract_attributes_in_any_order():

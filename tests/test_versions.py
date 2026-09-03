@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 from conftest import (
+    BRAND_A1,
     OP_A1,
     OP_A2,
     OP_A3,
@@ -1097,6 +1098,56 @@ def test_commit_refused_when_every_version_is_hidden(app_harness: AppHarness, mi
     assert "draft" not in lowered
     assert "staff" not in lowered
     assert "unapproved" not in lowered
+
+
+def test_commit_refuses_when_prc_enabled_but_no_template_resolves(
+    app_harness: AppHarness, mint_token
+):
+    with app_harness.session_factory(TENANT) as session:
+        operation = session.get(CgOperation, OP_A1)
+        brand = session.get(Brand, BRAND_A1)
+        assert operation is not None
+        assert brand is not None
+        operation.content_type = "email"
+        operation.operation_metadata = {}
+        brand.brand_metadata = {"prc_templates": {"email": {"enabled": True}}}
+        session.execute(
+            PrcTemplateVersion.__table__.delete().where(
+                PrcTemplateVersion.content_type == "email"
+            )
+        )
+        session.commit()
+
+    token = mint_token(sub=STAFF_SUB)
+    prep = _prepare_and_upload(app_harness, token, OP_A1, "html", "op_a1.html")
+    before = _live_rows(app_harness, OP_A1)
+    proof_prefix = f"cg_operation_prc_template/{OP_A1}/"
+    before_proof_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == BUCKET and key.startswith(proof_prefix)
+    }
+    response = _call(
+        app_harness,
+        token,
+        "solstice_commit_operation_version",
+        {
+            "tenant_slug": TENANT,
+            "operation_id": OP_A1,
+            "type": "html",
+            "s3_key": prep["s3_key"],
+            "base_message_id": STAFF_BASE,
+        },
+    )
+
+    assert "invalid_state: no PRC template resolved for email" in _tool_error_text(response)
+    assert _live_rows(app_harness, OP_A1) == before
+    after_proof_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == BUCKET and key.startswith(proof_prefix)
+    }
+    assert after_proof_objects == before_proof_objects
 
 
 def test_commit_needs_no_confirmation_for_staff(app_harness: AppHarness, mint_token):

@@ -244,6 +244,132 @@ _BANNER_PAYLOAD_SCRIPT = re.compile(
     r'(<script\b[^>]*id=["\']sol-prc-banner-template-data["\'][^>]*>)(.*?)(</script\s*>)',
     re.IGNORECASE | re.DOTALL,
 )
+_BANNER_EXPANDED_GLOBALS = (
+    "__BANNER_TEMPLATE_EXPANDED_SRCDOC__",
+    "__BANNER_TEMPLATE_EXPANDED_SRCDOCS__",
+)
+_BANNER_SPLIT_RE = re.compile(r"(?=<!DOCTYPE\s+html>)", re.IGNORECASE)
+
+
+def _json_inline(value: object) -> str:
+    return json.dumps(value).replace("</", "<\\/")
+
+
+def _decode_banner_payload_value(raw: str) -> object:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise InvalidPrcProofError("expanded banner ISI payload unreadable; clear and rebake") from exc
+
+
+def _read_js_assignment_value(script_body: str, assignment_end: int) -> str:
+    i = assignment_end
+    length = len(script_body)
+    while i < length and script_body[i].isspace():
+        i += 1
+    if i >= length:
+        raise InvalidPrcProofError("expanded banner ISI payload unreadable; clear and rebake")
+
+    if script_body.startswith("null", i):
+        j = i + 4
+    elif script_body[i] == '"':
+        j = i + 1
+        escaped = False
+        while j < length:
+            ch = script_body[j]
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                j += 1
+                break
+            j += 1
+        else:
+            raise InvalidPrcProofError("expanded banner ISI payload unreadable; clear and rebake")
+    elif script_body[i] == "[":
+        j = i
+        depth = 0
+        in_string = False
+        escaped = False
+        while j < length:
+            ch = script_body[j]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == "[":
+                    depth += 1
+                elif ch == "]":
+                    depth -= 1
+                    if depth == 0:
+                        j += 1
+                        break
+            j += 1
+        if depth != 0:
+            raise InvalidPrcProofError("expanded banner ISI payload unreadable; clear and rebake")
+    else:
+        raise InvalidPrcProofError("expanded banner ISI payload unreadable; clear and rebake")
+
+    while j < length and script_body[j].isspace():
+        j += 1
+    if j >= length or script_body[j] != ";":
+        raise InvalidPrcProofError("expanded banner ISI payload unreadable; clear and rebake")
+    return script_body[i:j]
+
+
+def _split_banner_docs(creative_html: str) -> list[str]:
+    parts = [part.strip() for part in _BANNER_SPLIT_RE.split(creative_html) if part.strip()]
+    return parts if len(parts) > 1 else [creative_html]
+
+
+def _extract_payload_assignments(script_body: str) -> dict[str, object]:
+    found: dict[str, object] = {}
+    for name in _BANNER_CREATIVE_GLOBALS:
+        match = re.search(rf"window\.{name}\s*=", script_body)
+        if not match:
+            continue
+        found[name] = _decode_banner_payload_value(_read_js_assignment_value(script_body, match.end()))
+    for name in ("__BANNER_TEMPLATE_SRCDOC__", "__BANNER_TEMPLATE_SRCDOCS__", *_BANNER_EXPANDED_GLOBALS):
+        if re.search(rf"window\.{name}\s*=", script_body) and name not in found:
+            raise InvalidPrcProofError("expanded banner ISI payload unreadable; clear and rebake")
+    return found
+
+
+def _expanded_assignments_to_preserve(script_body: str, creative_html: str) -> list[tuple[str, object]]:
+    if not any(re.search(rf"window\.{name}\s*=", script_body) for name in _BANNER_EXPANDED_GLOBALS):
+        return []
+    assignments = _extract_payload_assignments(script_body)
+    split_docs = _split_banner_docs(creative_html)
+    keep: list[tuple[str, object]] = []
+
+    if re.search(r"window\.__BANNER_TEMPLATE_EXPANDED_SRCDOC__\s*=", script_body):
+        if assignments.get("__BANNER_TEMPLATE_SRCDOC__") != creative_html:
+            raise InvalidPrcProofError("expanded banner ISI payload is stale; clear and rebake")
+        keep.append(("__BANNER_TEMPLATE_EXPANDED_SRCDOC__", assignments["__BANNER_TEMPLATE_EXPANDED_SRCDOC__"]))
+
+    if re.search(r"window\.__BANNER_TEMPLATE_EXPANDED_SRCDOCS__\s*=", script_body):
+        if assignments.get("__BANNER_TEMPLATE_SRCDOCS__") != split_docs:
+            raise InvalidPrcProofError("expanded banner ISI payload is stale; clear and rebake")
+        keep.append(("__BANNER_TEMPLATE_EXPANDED_SRCDOCS__", assignments["__BANNER_TEMPLATE_EXPANDED_SRCDOCS__"]))
+
+    return keep
+
+
+def _collect_expanded_assignments(source: str, creative_html: str) -> list[tuple[str, object]]:
+    preserved: list[tuple[str, object]] = []
+    for match in _BANNER_PAYLOAD_SCRIPT.finditer(source):
+        for name, value in _expanded_assignments_to_preserve(match.group(2), creative_html):
+            if any(existing_name == name for existing_name, _ in preserved):
+                raise InvalidPrcProofError("expanded banner ISI payload has conflicting sources; clear and rebake")
+            preserved.append((name, value))
+    return preserved
 
 
 def _set_banner_srcdoc_payload(source: str, creative_html: str) -> str:
@@ -255,17 +381,25 @@ def _set_banner_srcdoc_payload(source: str, creative_html: str) -> str:
     a dropped expanded-ISI payload renders blank rather than stale safety copy.
     Non-creative publish flags in the same script are preserved.
     """
-    assignment = f"window.__BANNER_TEMPLATE_SRCDOC__ = {json.dumps(creative_html).replace('</', '<\\/')};"
+    raw_assignments = [f"window.__BANNER_TEMPLATE_SRCDOC__ = {_json_inline(creative_html)};"]
+    split_docs = _split_banner_docs(creative_html)
+    if len(split_docs) > 1:
+        raw_assignments.append(f"window.__BANNER_TEMPLATE_SRCDOCS__ = {_json_inline(split_docs)};")
+    preserved_expanded = _collect_expanded_assignments(source, creative_html)
     # Document-wide: a proof can carry more than one payload script, and any
     # surviving assignment outranks the one published here.
     source = _STALE_BANNER_GLOBAL.sub("", source)
     match = _BANNER_PAYLOAD_SCRIPT.search(source)
     if match:
         kept = match.group(2).strip()
-        body = f"{kept}\n{assignment}" if kept else assignment
+        assignments = list(raw_assignments)
+        assignments.extend(f"window.{name} = {_json_inline(value)};" for name, value in preserved_expanded)
+        body = f"{kept}\n{'\n'.join(assignments)}" if kept else "\n".join(assignments)
         return f"{source[: match.start()]}{match.group(1)}{body}{match.group(3)}{source[match.end() :]}"
-    script = f'<script id="sol-prc-banner-template-data">{assignment}</script>'
-    return re.sub(r"</head\s*>", f"{script}</head>", source, count=1, flags=re.IGNORECASE)
+    assignments = list(raw_assignments)
+    assignments.extend(f"window.{name} = {_json_inline(value)};" for name, value in preserved_expanded)
+    script = f'<script id="sol-prc-banner-template-data">{"\n".join(assignments)}</script>'
+    return re.sub(r"</head\s*>", f"{script}</head>", source, count=1, flags=re.I)
 
 
 def validate_prc_proof(source: str, content_type: str) -> None:
