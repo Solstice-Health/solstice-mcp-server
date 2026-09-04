@@ -779,8 +779,16 @@ def _compose_supplied_prc_proof(
         ) from exc
 
 
-def _raise_if_unresolved_prc_fonts(proof: str) -> None:
-    unresolved = _prc_bake_unresolved_fonts(proof)
+def _raise_if_unresolved_prc_fonts(
+    proof: str,
+    grandfathered: set[str] | None = None,
+) -> None:
+    allowed = grandfathered or set()
+    unresolved = [
+        family
+        for family in _prc_bake_unresolved_fonts(proof)
+        if family not in allowed
+    ]
     if unresolved:
         raise ToolError(
             "invalid_request: operation_bake_html names fonts it never faces, so the "
@@ -817,6 +825,7 @@ def _finalize_html_prc_transition(
         max_inline_bytes=max_inline_bytes,
     )
     proof: str | None = precomposed_proof
+    grandfathered_fonts: set[str] = set()
     if proof is not None:
         _ensure_inline_size("operation bake html", proof, max_inline_bytes)
     if proof is None and supplied_proof is not None:
@@ -850,6 +859,9 @@ def _finalize_html_prc_transition(
             try:
                 base = s3.download(bucket, key, max_inline_bytes).decode("utf-8")
                 proof = compose_prc_proof(base, creative, content_type)
+                # Permit unresolved families inherited from this exact legacy
+                # base. Newly introduced families still fail below.
+                grandfathered_fonts = set(_prc_bake_unresolved_fonts(base))
                 break
             except S3ObjectMissing:
                 continue
@@ -868,7 +880,7 @@ def _finalize_html_prc_transition(
     if proof is None:
         raise ToolError(f"invalid_state: no PRC template resolved for {content_type}")
     _ensure_inline_size("composed PRC proof", proof, max_inline_bytes)
-    _raise_if_unresolved_prc_fonts(proof)
+    _raise_if_unresolved_prc_fonts(proof, grandfathered_fonts)
     bake_key = f"{_PRC_TEMPLATE_S3_KEY_PREFIX}/{operation.id}/{row_id}.html"
     try:
         s3.put(bucket, bake_key, proof.encode("utf-8"), "text/html")
