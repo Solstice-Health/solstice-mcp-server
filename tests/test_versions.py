@@ -672,6 +672,110 @@ def test_html_commit_recomposes_nearest_bake_and_preserves_prc_edits(app_harness
     assert "old creative" not in proof
 
 
+def test_html_commit_grandfathers_unfaced_fonts_from_prior_bake(
+    app_harness: AppHarness,
+    mint_token,
+):
+    _configure_email_prc(app_harness, OP_A1)
+    proof_key = f"cg_operation_prc_template/{OP_A1}/00000000-0000-0000-0000-000000000503.html"
+    legacy_proof = DEFAULT_EMAIL_TEMPLATE.replace(
+        '<style id="sol-prc-export-style"></style>',
+        '<style id="sol-prc-export-style">.legacy{font-family:Avenir,sans-serif}</style>',
+    )
+    app_harness.s3.put(BUCKET, proof_key, legacy_proof.encode(), "text/html")
+    with app_harness.session_factory(TENANT) as session:
+        base = session.get(
+            CgOperationMessage,
+            "00000000-0000-0000-0000-000000000503",
+        )
+        assert base is not None
+        base.prc_template_s3_key = proof_key
+        session.commit()
+
+    token = mint_token(sub=STAFF_SUB)
+    prep = _prepare_and_upload(app_harness, token, OP_A1, "html", "op_a1.html")
+    payload = tool_payload(
+        _call(
+            app_harness,
+            token,
+            "solstice_commit_operation_version",
+            {
+                "tenant_slug": TENANT,
+                "operation_id": OP_A1,
+                "type": "html",
+                "s3_key": prep["s3_key"],
+                "file_name": "op_a1.html",
+                "base_message_id": STAFF_BASE,
+            },
+        )
+    )
+
+    proof = app_harness.s3.objects[(BUCKET, payload["prc_template_s3_key"])].decode()
+    assert "font-family:Avenir" in proof
+    assert "&lt;html&gt;new&lt;/html&gt;" in proof
+
+
+def test_html_commit_rejects_new_unfaced_font_when_prior_bake_has_legacy_font(
+    app_harness: AppHarness,
+    mint_token,
+):
+    _configure_email_prc(app_harness, OP_A1)
+    proof_key = f"cg_operation_prc_template/{OP_A1}/00000000-0000-0000-0000-000000000503.html"
+    legacy_proof = DEFAULT_EMAIL_TEMPLATE.replace(
+        '<style id="sol-prc-export-style"></style>',
+        '<style id="sol-prc-export-style">.legacy{font-family:Avenir,sans-serif}</style>',
+    )
+    app_harness.s3.put(BUCKET, proof_key, legacy_proof.encode(), "text/html")
+    with app_harness.session_factory(TENANT) as session:
+        base = session.get(
+            CgOperationMessage,
+            "00000000-0000-0000-0000-000000000503",
+        )
+        assert base is not None
+        base.prc_template_s3_key = proof_key
+        session.commit()
+
+    token = mint_token(sub=STAFF_SUB)
+    prep = _prepare_and_upload(app_harness, token, OP_A1, "html", "op_a1.html")
+    app_harness.s3.put(
+        BUCKET,
+        prep["s3_key"],
+        b"<html><style>.new{font-family:Aptos,sans-serif}</style>new</html>",
+        "text/html",
+    )
+    before = _live_rows(app_harness, OP_A1)
+    before_proof_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == BUCKET and key.startswith(f"cg_operation_prc_template/{OP_A1}/")
+    }
+    response = _call(
+        app_harness,
+        token,
+        "solstice_commit_operation_version",
+        {
+            "tenant_slug": TENANT,
+            "operation_id": OP_A1,
+            "type": "html",
+            "s3_key": prep["s3_key"],
+            "file_name": "op_a1.html",
+            "base_message_id": STAFF_BASE,
+        },
+    )
+
+    error = _tool_error_text(response)
+    assert "names fonts it never faces" in error
+    assert "aptos" in error
+    assert "avenir" not in error
+    assert _live_rows(app_harness, OP_A1) == before
+    after_proof_objects = {
+        key: body
+        for (bucket, key), body in app_harness.s3.objects.items()
+        if bucket == BUCKET and key.startswith(f"cg_operation_prc_template/{OP_A1}/")
+    }
+    assert after_proof_objects == before_proof_objects
+
+
 def test_html_commit_explicit_disable_is_the_only_null_bake(app_harness: AppHarness, mint_token):
     _configure_email_prc(app_harness, OP_A1, enabled=False)
     token = mint_token(sub=STAFF_SUB)
