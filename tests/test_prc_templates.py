@@ -1843,6 +1843,14 @@ def _bake_with_style(css: str, *, head: str = "") -> str:
             "",
             ["aptos"],
         ),
+        # Variables can be one token in a larger family stack or shorthand.
+        (
+            ":root{--body-font:13px/1.4 Aptos,Arial,sans-serif}"
+            ".a{font:italic var(--body-font)}"
+            ".b{font-family:var(--heading-font),Inter,sans-serif}",
+            "",
+            ["aptos", "inter"],
+        ),
         # Outlook's prefixed property is not a family to host.
         (".a{mso-generic-font-family:swiss;font-family:Arial,sans-serif}", "", []),
         (
