@@ -155,7 +155,15 @@ def _replace_first_tag(source: str, tag: str, predicate: str, transform) -> str:
     return source
 
 
-def _inject_slot(source: str, slot: str, creative_html: str) -> str:
+def _replace_all_tags(source: str, tag: str, predicate: str, transform) -> str:
+    updated = source
+    for match, opening in reversed(list(_iter_open_tags(source, tag))):
+        if re.search(predicate, opening, re.IGNORECASE):
+            updated = f"{updated[: match.start()]}{transform(opening)}{updated[match.end() :]}"
+    return updated
+
+
+def _inject_slot(source: str, slot: str, creative_html: str, *, replace_all: bool = True) -> str:
     found = False
 
     def transform(tag: str) -> str:
@@ -163,7 +171,8 @@ def _inject_slot(source: str, slot: str, creative_html: str) -> str:
         found = True
         return _set_attr(_remove_attr(tag, "src"), "srcdoc", creative_html)
 
-    updated = _replace_first_tag(
+    replacer = _replace_all_tags if replace_all else _replace_first_tag
+    updated = replacer(
         source,
         "iframe",
         rf'data-sol-prc-creative\s*=\s*(["\']){re.escape(slot)}\1',
@@ -468,9 +477,14 @@ def validate_prc_proof(source: str, content_type: str) -> None:
     if not present:
         raise InvalidPrcProofError("PRC template is missing creative slots")
     for slot in present:
-        frame = _tag_with_attrs(source, "iframe", **{"data-sol-prc-creative": slot})
-        if frame is None or not html.unescape(_attr_value(frame, "srcdoc") or "").strip():
-            raise InvalidPrcProofError("PRC proof has an empty creative slot")
+        frames = [
+            opening
+            for _match, opening in _iter_open_tags(source, "iframe")
+            if _attr_value(opening, "data-sol-prc-creative") == slot
+        ]
+        for frame in frames[:1] if content_type == "banner" else frames:
+            if not html.unescape(_attr_value(frame, "srcdoc") or "").strip():
+                raise InvalidPrcProofError("PRC proof has an empty creative slot")
 
 
 def compose_prc_proof(base_html: str, creative_html: str, content_type: str) -> str:
@@ -485,7 +499,7 @@ def compose_prc_proof(base_html: str, creative_html: str, content_type: str) -> 
     else:
         for slot in _SLOTS[content_type]:
             if _slot_present(base_html, slot):
-                proof = _inject_slot(proof, slot, creative_html)
+                proof = _inject_slot(proof, slot, creative_html, replace_all=content_type != "banner")
     if content_type == "banner":
         proof = _set_banner_srcdoc_payload(proof, creative_html)
     proof = _canonicalize_l4_config(proof)
