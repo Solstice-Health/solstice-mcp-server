@@ -715,12 +715,19 @@ def _compose_supplied_prc_proof(
     creative: str,
     content_type: str,
 ) -> str:
-    from solstice_mcp.prc_proof_composer import InvalidPrcProofError, compose_prc_proof
+    from solstice_mcp.prc_proof_composer import (
+        InvalidPrcProofError,
+        compose_prc_proof,
+        validate_prc_proof,
+    )
 
     try:
+        validate_prc_proof(supplied_proof, content_type)
         return compose_prc_proof(supplied_proof, creative, content_type)
     except InvalidPrcProofError as exc:
-        raise ToolError(f"invalid_request: {exc}") from exc
+        raise ToolError(
+            f"invalid_request: operation bake must satisfy baked contract v2: {exc}"
+        ) from exc
 
 
 def _raise_if_unresolved_prc_fonts(proof: str) -> None:

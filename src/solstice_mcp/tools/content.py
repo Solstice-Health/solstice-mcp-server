@@ -365,9 +365,9 @@ def register_content_tools(
         Operation / both: ``solstice_prepare_prc_template_bake``, PUT the bake
         HTML to ``upload_url``, then pass ``operation_id`` and
         ``operation_bake_s3_key``. Size does not matter — never inline the bake
-        as ``operation_bake_html``. Upload the approved edited or fleet-shaped proof.
-        It is normalized against the current creative and appended as one complete
-        draft version. If validation fails, repair it against
+        as ``operation_bake_html``. Upload the approved, self-contained Contract v2
+        operation bake, not a reusable catalog shell. It is rebound to the current
+        creative and appended as one complete draft version. If validation fails, repair it against
         ``solstice_prc_template_rules``, preview it, and retry only after approval.
         Requires SOLSTICE_STAFF on the selected brand.
         """

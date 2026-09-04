@@ -141,8 +141,8 @@ operation catalog selections. Reserved auto-resolving keys are rejected.
 
 Operation / both: `solstice_prepare_prc_template_bake` → PUT the approved proof
 to `upload_url` → pass `operation_id` + `operation_bake_s3_key`. Never pass
-`operation_bake_html`. Edited and fleet-shaped proofs are normalized against
-the current creative and appended as a new draft version.
+`operation_bake_html`. Upload a self-contained Contract v2 operation bake, not
+a reusable catalog shell. It is rebound to current creative and appended as a draft.
 
 ## Unsupported changes
 

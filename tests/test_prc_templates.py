@@ -372,6 +372,7 @@ def _upload_operation_bake(
     app_harness: AppHarness,
     mint_token,
     html: str = OPERATION_BAKE_EMAIL,
+    content_type: str = "email",
 ) -> str:
     prepared = tool_payload(
         _prepare_prc_bake_call(
@@ -380,7 +381,7 @@ def _upload_operation_bake(
             tenant_slug="tenant_a",
             brand_id=BRAND_A1,
             operation_id=OP_A1,
-            content_type="email",
+            content_type=content_type,
         )
     )
     key = prepared["prc_template_s3_key"]
@@ -1093,9 +1094,9 @@ def test_create_prc_template_version_points_authors_at_the_contract(app_harness:
     assert "operation_bake_html" in description
     assert "operation_bake_s3_key" in description
     assert "solstice_prepare_prc_template_bake" in description
-    assert "edited or fleet-shaped proof" in description
-    assert "normalized" in description and "current creative" in description
-    assert "catalog shell is rejected" not in description
+    assert "self-contained Contract v2" in description
+    assert "not a reusable catalog shell" in description
+    assert "rebound" in description
     assert "frontend-composed" not in description
     assert "Backend" not in description
 
@@ -1255,7 +1256,7 @@ def test_operation_bake_carries_metadata_from_exact_current_head(
             '<body data-sol-prc-proof="email"><main data-sol-prc-pages>'
             '<section data-sol-prc-page="page_desktop" data-sol-prc-page-type="render">'
             '<iframe data-sol-prc-creative="desktop"></iframe></section></main></body></html>',
-            "contract v2 or fleet seed anatomy",
+            "operation bake must satisfy baked contract v2",
         ),
         (
             '<!doctype html><html><head>'
@@ -1264,7 +1265,7 @@ def test_operation_bake_carries_metadata_from_exact_current_head(
             '<section data-sol-prc-page="page_desktop" data-sol-prc-page-type="render">'
             '<iframe data-sol-prc-creative="desktop" '
             'srcdoc="&lt;html&gt;creative&lt;/html&gt;"></iframe></section></main></body></html>',
-            "contract v2 or fleet seed anatomy",
+            "operation bake must satisfy baked contract v2",
         ),
     ],
 )
@@ -1297,6 +1298,38 @@ def test_create_prc_template_operation_target_requires_a_contract_v2_bake(
     response = _create_call(app_harness, mint_token, **arguments)
 
     assert error in _tool_error_text(response)
+
+
+def test_create_prc_template_rejects_catalog_shell_as_operation_bake(
+    app_harness: AppHarness,
+    mint_token,
+):
+    with app_harness.session_factory("tenant_a") as session:
+        op = session.get(CgOperation, OP_A1)
+        assert op is not None
+        op.content_type = "social"
+        session.commit()
+
+    catalog_shell = SOCIAL_TEMPLATE.replace(
+        '<meta name="sol-prc-contract" content="v2" data-profile="social">', ""
+    ).replace('srcdoc="old"', 'src="about:blank"')
+    response = _create_call(
+        app_harness,
+        mint_token,
+        tenant_slug="tenant_a",
+        brand_id=BRAND_A1,
+        template_key="",
+        content_type="social",
+        name="",
+        confirmed=True,
+        operation_bake_s3_key=_upload_operation_bake(
+            app_harness, mint_token, catalog_shell, "social"
+        ),
+        publish_target="operation",
+        operation_id=OP_A1,
+    )
+
+    assert "operation bake must satisfy baked contract v2" in _tool_error_text(response)
 
 
 def test_create_prc_template_rejects_inline_operation_bake_html(
