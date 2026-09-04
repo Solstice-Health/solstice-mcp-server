@@ -29,7 +29,7 @@ from solstice_mcp.operations import (
     PrcTemplateVersion,
     _prc_bake_unresolved_fonts,
 )
-from solstice_mcp.prc_proof_composer import InvalidPrcProofError, compose_prc_proof
+from solstice_mcp.prc_proof_composer import InvalidPrcProofError, compose_prc_proof, validate_prc_proof
 
 PINNED_EMAIL = "00000000-0000-0000-0000-000000000701"
 OPERATION_EMAIL = "00000000-0000-0000-0000-000000000702"
@@ -97,6 +97,45 @@ def test_compose_prc_proof_normalizes_fleet_templates_and_preserves_edits(
     assert f'data-sol-prc-creative="{slot}"' in proof
     assert "NEW CREATIVE" in proof
     assert "KEEP EDIT" in proof
+
+
+def test_compose_prc_proof_injects_every_duplicate_social_slot():
+    template = SOCIAL_TEMPLATE.replace(
+        '<iframe data-sol-prc-creative="social" srcdoc="old"></iframe>',
+        '<iframe data-sol-prc-creative="social" srcdoc="old one"></iframe>'
+        '<template><iframe data-sol-prc-creative="social"></iframe></template>'
+        '<iframe data-sol-prc-creative="social" srcdoc="old two"></iframe>',
+    )
+
+    proof = compose_prc_proof(template, CREATIVE, "social")
+
+    assert proof.count("NEW CREATIVE") == 3
+    assert "old one" not in proof
+    assert "old two" not in proof
+
+
+def test_validate_prc_proof_rejects_empty_duplicate_social_slot():
+    proof = compose_prc_proof(SOCIAL_TEMPLATE, CREATIVE, "social")
+    proof = proof.replace(
+        "</main>",
+        '<iframe data-sol-prc-creative="social"></iframe></main>',
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="empty creative slot"):
+        validate_prc_proof(proof, "social")
+
+
+def test_compose_prc_proof_preserves_distinct_banner_scene_frames():
+    template = BANNER_TEMPLATE.replace(
+        '<iframe class="banner-frame" srcdoc="old"></iframe>',
+        '<iframe class="banner-frame" srcdoc="scene one"></iframe>'
+        '<iframe class="banner-frame" srcdoc="scene two"></iframe>',
+    )
+
+    proof = compose_prc_proof(template, CREATIVE, "banner")
+
+    assert 'srcdoc="scene one"' not in proof
+    assert 'srcdoc="scene two"' in proof
 
 
 def test_compose_prc_proof_rejects_invalid_contract():
