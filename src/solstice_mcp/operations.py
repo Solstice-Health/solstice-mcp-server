@@ -135,11 +135,27 @@ _FONT_DECL_RE = re.compile(r"(?:(?<![-\w])font-family|(?<![-\w])font)\s*:\s*([^;
 _FONT_FACE_RE = re.compile(r"@font-face\s*\{([^}]*)\}", re.IGNORECASE)
 _FONT_FACE_FAMILY_RE = re.compile(r"font-family\s*:\s*([^;}]+)", re.IGNORECASE)
 _GOOGLE_FAMILY_RE = re.compile(r"[?&]family=([^&\"'\s>]+)", re.IGNORECASE)
+_CSS_CUSTOM_PROPERTY_RE = re.compile(r"(--[\w-]+)\s*:\s*([^;{}]+)", re.IGNORECASE)
+_CSS_VAR_VALUE_RE = re.compile(r"^var\(\s*(--[\w-]+)(?:\s*,\s*(.*))?\)$", re.IGNORECASE | re.DOTALL)
 _FONT_SIZE_RE = re.compile(
     r"(?:\d+(?:\.\d+)?(?:px|em|rem|pt|%)|xx?-small|x-small|small|medium|large|"
     r"x-large|xx-large|smaller|larger)(?:\s*/\s*[^\s,]+)?\s+(.+)",
     re.IGNORECASE,
 )
+
+
+def _resolve_css_var(value: str, custom_properties: dict[str, str], seen: frozenset[str] = frozenset()) -> str:
+    """Resolve a whole-value CSS var(), using its fallback when undefined."""
+    trimmed = re.sub(r"\s*!important\s*$", "", value.strip(), flags=re.IGNORECASE)
+    match = _CSS_VAR_VALUE_RE.fullmatch(trimmed)
+    if match is None:
+        return trimmed
+    name = match.group(1).lower()
+    fallback = match.group(2) or ""
+    if name in seen:
+        return fallback
+    resolved = custom_properties.get(name, fallback)
+    return _resolve_css_var(resolved, custom_properties, seen | {name})
 
 
 def _font_family_names(value: str) -> list[str]:
@@ -185,6 +201,10 @@ def _prc_bake_unresolved_fonts(html: str) -> list[str]:
     # srcdoc creatives arrive escaped inside an attribute; unescape so their CSS
     # reads like the rest of the document.
     text = unescape(html)
+    css = _FONT_FACE_RE.sub("", text)
+    custom_properties = {
+        name.lower(): value for name, value in _CSS_CUSTOM_PROPERTY_RE.findall(css)
+    }
     faced: set[str] = set()
     for body in _FONT_FACE_RE.findall(text):
         if "url(" not in body.lower():
@@ -197,8 +217,8 @@ def _prc_bake_unresolved_fonts(html: str) -> list[str]:
 
     named: list[str] = []
     seen: set[str] = set()
-    for value in _FONT_DECL_RE.findall(_FONT_FACE_RE.sub("", text)):
-        for name in _font_family_names(value):
+    for value in _FONT_DECL_RE.findall(css):
+        for name in _font_family_names(_resolve_css_var(value, custom_properties)):
             if name in faced or name in seen:
                 continue
             seen.add(name)

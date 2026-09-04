@@ -1819,6 +1819,30 @@ def _bake_with_style(css: str, *, head: str = "") -> str:
             "",
             [],
         ),
+        # Resolve font shorthand custom properties instead of treating var(...)
+        # syntax as a family name.
+        (
+            "@font-face{font-family:'Inter';src:url(https://cdn.example/i.woff2)}"
+            ":root{--body-font:13px/1.4 Inter,Arial,sans-serif;"
+            "--sol-prc-annotation-font:11px/1.35 Inter,Arial,sans-serif}"
+            ".a{font:var(--body-font)}"
+            ".b{font:var(--sol-prc-annotation-font,11px/14px Arial,sans-serif)}",
+            "",
+            [],
+        ),
+        # Resolving a variable must not hide a genuinely unfaced family.
+        (
+            ":root{--body-font:13px/1.4 Aptos,Arial,sans-serif}"
+            ".a{font:var(--body-font)}",
+            "",
+            ["aptos"],
+        ),
+        # An undefined variable uses its fallback, which still needs validation.
+        (
+            ".a{font:var(--missing-font,13px/1.4 Aptos,Arial,sans-serif)}",
+            "",
+            ["aptos"],
+        ),
         # Outlook's prefixed property is not a family to host.
         (".a{mso-generic-font-family:swiss;font-family:Arial,sans-serif}", "", []),
         (
