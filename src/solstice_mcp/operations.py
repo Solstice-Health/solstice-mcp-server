@@ -136,7 +136,7 @@ _FONT_FACE_RE = re.compile(r"@font-face\s*\{([^}]*)\}", re.IGNORECASE)
 _FONT_FACE_FAMILY_RE = re.compile(r"font-family\s*:\s*([^;}]+)", re.IGNORECASE)
 _GOOGLE_FAMILY_RE = re.compile(r"[?&]family=([^&\"'\s>]+)", re.IGNORECASE)
 _CSS_CUSTOM_PROPERTY_RE = re.compile(r"(--[\w-]+)\s*:\s*([^;{}]+)", re.IGNORECASE)
-_CSS_VAR_VALUE_RE = re.compile(r"^var\(\s*(--[\w-]+)(?:\s*,\s*(.*))?\)$", re.IGNORECASE | re.DOTALL)
+_CSS_DYNAMIC_VALUE_RE = re.compile(r"\b(var|env)\s*\(", re.IGNORECASE)
 _FONT_SIZE_RE = re.compile(
     r"(?:\d+(?:\.\d+)?(?:px|em|rem|pt|%)|xx?-small|x-small|small|medium|large|"
     r"x-large|xx-large|smaller|larger)(?:\s*/\s*[^\s,]+)?\s+(.+)",
@@ -144,18 +144,49 @@ _FONT_SIZE_RE = re.compile(
 )
 
 
-def _resolve_css_var(value: str, custom_properties: dict[str, str], seen: frozenset[str] = frozenset()) -> str:
-    """Resolve a whole-value CSS var(), using its fallback when undefined."""
-    trimmed = re.sub(r"\s*!important\s*$", "", value.strip(), flags=re.IGNORECASE)
-    match = _CSS_VAR_VALUE_RE.fullmatch(trimmed)
-    if match is None:
-        return trimmed
-    name = match.group(1).lower()
-    fallback = match.group(2) or ""
-    if name in seen:
-        return fallback
-    resolved = custom_properties.get(name, fallback)
-    return _resolve_css_var(resolved, custom_properties, seen | {name})
+def _css_function_parts(value: str, body_start: int) -> tuple[int, str, str] | None:
+    """Return a balanced function's close index, first argument, and fallback."""
+    depth = 1
+    quote = ""
+    comma = -1
+    i = body_start
+    while i < len(value):
+        char = value[i]
+        if quote:
+            if char == "\\":
+                i += 2
+                continue
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                split = comma if comma >= 0 else i
+                return i, value[body_start:split].strip(), value[comma + 1 : i].strip() if comma >= 0 else ""
+        elif char == "," and depth == 1 and comma < 0:
+            comma = i
+        i += 1
+    return None
+
+
+def _resolve_css_vars(value: str, custom_properties: dict[str, str], seen: frozenset[str] = frozenset()) -> str:
+    """Resolve var() anywhere in a font value; undefined env()/var() use fallback."""
+    rendered = re.sub(r"\s*!important\s*$", "", value.strip(), flags=re.IGNORECASE)
+    while match := _CSS_DYNAMIC_VALUE_RE.search(rendered):
+        parts = _css_function_parts(rendered, match.end())
+        if parts is None:
+            return rendered[: match.start()]
+        close, name, fallback = parts
+        replacement = fallback
+        if match.group(1).lower() == "var" and name not in seen:
+            replacement = custom_properties.get(name, fallback)
+            replacement = _resolve_css_vars(replacement, custom_properties, seen | {name})
+        rendered = f"{rendered[: match.start()]}{replacement}{rendered[close + 1 :]}"
+    return rendered
 
 
 def _font_family_names(value: str) -> list[str]:
@@ -202,9 +233,7 @@ def _prc_bake_unresolved_fonts(html: str) -> list[str]:
     # reads like the rest of the document.
     text = unescape(html)
     css = _FONT_FACE_RE.sub("", text)
-    custom_properties = {
-        name.lower(): value for name, value in _CSS_CUSTOM_PROPERTY_RE.findall(css)
-    }
+    custom_properties = dict(_CSS_CUSTOM_PROPERTY_RE.findall(css))
     faced: set[str] = set()
     for body in _FONT_FACE_RE.findall(text):
         if "url(" not in body.lower():
@@ -218,7 +247,7 @@ def _prc_bake_unresolved_fonts(html: str) -> list[str]:
     named: list[str] = []
     seen: set[str] = set()
     for value in _FONT_DECL_RE.findall(css):
-        for name in _font_family_names(_resolve_css_var(value, custom_properties)):
+        for name in _font_family_names(_resolve_css_vars(value, custom_properties)):
             if name in faced or name in seen:
                 continue
             seen.add(name)
