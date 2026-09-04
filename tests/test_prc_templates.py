@@ -163,6 +163,24 @@ def test_compose_prc_proof_stamps_legacy_section_page():
     assert 'id="prc-cover-data"' not in proof
 
 
+def test_compose_prc_proof_inserts_banner_payload_when_creative_has_unicode():
+    """Catalog shells have no payload script; insertion must not parse JSON \\u as a regex repl."""
+    creative = "<html><body>café — 20µg</body></html>"
+
+    proof = compose_prc_proof(BANNER_TEMPLATE, creative, "banner")
+
+    script = re.search(
+        r'<script id="sol-prc-banner-template-data">(.*?)</script>',
+        proof,
+        re.DOTALL,
+    )
+    assert script
+    assignment = script.group(1).split("__BANNER_TEMPLATE_SRCDOC__", 1)[1]
+    value, _ = json.JSONDecoder().raw_decode(assignment.split("=", 1)[1].lstrip())
+    assert value == creative
+    validate_prc_proof(proof, "banner")
+
+
 def test_compose_prc_proof_replaces_existing_legacy_banner_payload_script():
     existing = '<script id="sol-prc-banner-template-data">window.__BANNER_TEMPLATE_SRCDOC__ = "stale";</script>'
     template = BANNER_TEMPLATE.replace("</head>", f"{existing}</head>")

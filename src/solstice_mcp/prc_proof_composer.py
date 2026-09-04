@@ -451,7 +451,8 @@ def _set_banner_srcdoc_payload(source: str, creative_html: str) -> str:
     assignments = list(raw_assignments)
     assignments.extend(f"window.{name} = {_json_inline(value)};" for name, value in preserved_expanded)
     script = f'<script id="sol-prc-banner-template-data">{"\n".join(assignments)}</script>'
-    return re.sub(r"</head\s*>", f"{script}</head>", source, count=1, flags=re.I)
+    # Callable repl: json.dumps emits \uXXXX; a string repl would parse those as regex escapes.
+    return re.sub(r"</head\s*>", lambda match: f"{script}{match.group(0)}", source, count=1, flags=re.I)
 
 
 def validate_prc_proof(source: str, content_type: str) -> None:
