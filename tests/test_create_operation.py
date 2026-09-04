@@ -197,7 +197,7 @@ def test_create_requires_content_type(app_harness: AppHarness, mint_token):
 # ---------------------------------------------------------------------------
 
 
-def test_create_then_add_v1_version(app_harness: AppHarness, mint_token):
+def test_create_then_add_v1_version(app_harness: AppHarness, mint_token, seed_default_email_prc):
     token = mint_token(sub=SHARED_SUB)  # ADMIN on BRAND_A1 -> final intent
     created = tool_payload(_call(
         app_harness, token, "solstice_create_operation",

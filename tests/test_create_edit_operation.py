@@ -157,7 +157,7 @@ def test_create_edit_denied_for_non_member(app_harness: AppHarness, mint_token):
 # ---------------------------------------------------------------------------
 
 
-def test_edit_html_commit_sets_is_html_saved(app_harness: AppHarness, mint_token):
+def test_edit_html_commit_sets_is_html_saved(app_harness: AppHarness, mint_token, seed_default_email_prc):
     token = mint_token(sub=SHARED_SUB)  # ADMIN -> final intent
     op_id = tool_payload(_create_edit(app_harness, token, "html"))["operation_id"]
     _land_version(app_harness, token, op_id, "html", "doc.html")
@@ -199,7 +199,7 @@ def test_edit_pdf_draft_commit_skips_status_flip(app_harness: AppHarness, mint_t
     assert op.is_html_saved is not True
 
 
-def test_generated_op_commit_has_no_finishing_writes(app_harness: AppHarness, mint_token):
+def test_generated_op_commit_has_no_finishing_writes(app_harness: AppHarness, mint_token, seed_default_email_prc):
     token = mint_token(sub=SHARED_SUB)
     created = tool_payload(_call(
         app_harness, token, "solstice_create_operation",

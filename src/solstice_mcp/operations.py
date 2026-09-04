@@ -52,7 +52,6 @@ from collections.abc import Sequence
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from html import unescape
-from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import unquote_plus
 from uuid import UUID, uuid4
@@ -70,7 +69,7 @@ from solstice_mcp.brands import (
     role_satisfies,
 )
 from solstice_mcp.requests import complete_pending_requests_for_operation
-from solstice_mcp.storage import S3Error, S3ObjectMissing, S3Reader
+from solstice_mcp.storage import S3Error, S3ObjectMissing, S3ObjectTooLarge, S3Reader
 from solstice_mcp.tenants import Base, SessionFactory, TenantRegistry, tenant_session
 
 logger = logging.getLogger(__name__)
@@ -207,81 +206,6 @@ def _prc_bake_unresolved_fonts(html: str) -> list[str]:
     return named
 
 
-class _OperationPrcBakeProbe(HTMLParser):
-    """Collect the Contract v2 seams that distinguish a bake from a catalog shell."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.has_doctype = False
-        self.has_html = False
-        self.has_contract_v2 = False
-        self.contract_profile: str | None = None
-        self.profile: str | None = None
-        self.has_export_marker = False
-        self.has_pages = False
-        self.has_page = False
-        self.has_frozen_creative = False
-
-    def handle_decl(self, decl: str) -> None:
-        if decl.strip().lower() == "doctype html":
-            self.has_doctype = True
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        values = dict(attrs)
-        if tag == "html":
-            self.has_html = True
-        elif tag == "meta":
-            if values.get("name") == "sol-prc-contract" and values.get("content") == "v2":
-                self.has_contract_v2 = True
-                self.contract_profile = values.get("data-profile")
-        elif tag == "style" and values.get("id") == "sol-prc-export-style":
-            self.has_export_marker = True
-        elif tag == "body":
-            self.profile = values.get("data-sol-prc-proof")
-            self.has_export_marker |= "sol-prc-export" in (values.get("class") or "").split()
-        elif tag == "main" and "data-sol-prc-pages" in values:
-            self.has_pages = True
-        elif "data-sol-prc-page" in values and "data-sol-prc-page-type" in values:
-            self.has_page = True
-        elif (
-            tag == "iframe"
-            and values.get("data-sol-prc-creative") in _PRC_CONTENT_TYPES | {"desktop", "mobile"}
-            and bool((values.get("srcdoc") or "").strip())
-        ):
-            self.has_frozen_creative = True
-
-
-def _validate_operation_prc_bake(html: str, content_type: str) -> None:
-    probe = _OperationPrcBakeProbe()
-    probe.feed(html)
-    if not all(
-        (
-            probe.has_doctype,
-            probe.has_html,
-            probe.has_contract_v2,
-            probe.contract_profile == content_type,
-            probe.profile == content_type,
-            probe.has_export_marker,
-            probe.has_pages,
-            probe.has_page,
-            probe.has_frozen_creative,
-        )
-    ):
-        raise ToolError(
-            "invalid_request: operation_bake_html must be a self-contained Contract v2 "
-            "operation bake with matching profile, an export marker, page markers, and "
-            "creative srcdoc; a catalog template shell is not an operation bake"
-        )
-    unresolved = _prc_bake_unresolved_fonts(html)
-    if unresolved:
-        raise ToolError(
-            "invalid_request: operation_bake_html names fonts it never faces, so the "
-            f"proof would render a substitute: {', '.join(sorted(unresolved))}. Declare an "
-            "@font-face with a woff2 URL for each, or switch to a family served by "
-            f"{' or '.join(_FONT_SHEET_HOSTS)}"
-        )
-
-
 def _validate_prc_template_bake_s3_key(key: str, operation_id: str) -> str:
     """Return the row UUID embedded in a prepared PRC bake key."""
     prefix = f"{_PRC_TEMPLATE_S3_KEY_PREFIX}/{operation_id}/"
@@ -299,32 +223,47 @@ def _validate_prc_template_bake_s3_key(key: str, operation_id: str) -> str:
     return row_id
 
 
+def _too_large_error(kind: str, size_bytes: int, max_inline_bytes: int) -> ToolError:
+    return ToolError(
+        f"too_large: {kind} is {size_bytes} bytes; inline limit is {max_inline_bytes}"
+    )
+
+
+def _ensure_inline_size(kind: str, html: str, max_inline_bytes: int) -> None:
+    size_bytes = len(html.encode("utf-8"))
+    if size_bytes > max_inline_bytes:
+        raise _too_large_error(kind, size_bytes, max_inline_bytes)
+
+
 def _load_uploaded_operation_bake(
     *,
     operation_bake_s3_key: str,
     operation_id: str,
-    content_type: str,
     bucket: str,
     s3: S3Reader,
-) -> tuple[int, str]:
-    """Validate a presigned-upload bake; return (size, key)."""
-    _validate_prc_template_bake_s3_key(operation_bake_s3_key, operation_id)
+    max_inline_bytes: int,
+) -> tuple[str, str]:
+    """Load a presigned-upload proof edit; composition validates the result."""
+    row_id = _validate_prc_template_bake_s3_key(operation_bake_s3_key, operation_id)
     size = s3.head(bucket, operation_bake_s3_key)
     if size is None:
         raise ToolError(
             "not_found: object not uploaded - PUT the bake HTML to upload_url first"
         )
+    if size > max_inline_bytes:
+        raise _too_large_error("operation bake html", size, max_inline_bytes)
     try:
         # ponytail: loads bake into MCP memory; stream-parse if process OOM
-        html = s3.download(bucket, operation_bake_s3_key, size).decode("utf-8")
+        html = s3.download(bucket, operation_bake_s3_key, max_inline_bytes).decode("utf-8")
     except S3ObjectMissing:
         raise ToolError(
             "not_found: object not uploaded - PUT the bake HTML to upload_url first"
         ) from None
+    except S3ObjectTooLarge:
+        raise _too_large_error("operation bake html", size, max_inline_bytes) from None
     except S3Error as exc:
         raise ToolError(f"not_available: s3 read failed: {exc}") from exc
-    _validate_operation_prc_bake(html, content_type)
-    return size, operation_bake_s3_key
+    return row_id, html
 
 
 def _looks_like_s3_key(content: str | None) -> bool:
@@ -608,43 +547,47 @@ def _normalized_uuid(value: Any) -> str | None:
         return None
 
 
-def _pinned_template_id(metadata: Any, content_type: str) -> str | None:
+def _prc_template_configs(metadata: Any, content_type: str) -> list[dict[str, Any]]:
     if not isinstance(metadata, dict):
-        return None
+        return []
+    configs: list[dict[str, Any]] = []
     prc_templates = metadata.get("prc_templates")
     if isinstance(prc_templates, dict):
         config = prc_templates.get(content_type)
         if isinstance(config, dict):
-            pinned = _normalized_uuid(config.get("template_version_id"))
-            if pinned:
-                return pinned
+            configs.append(config)
     if content_type == "email":
         email_settings = metadata.get("email_settings")
         if isinstance(email_settings, dict):
             legacy = email_settings.get("interactive_prc_template")
             if isinstance(legacy, dict):
-                return _normalized_uuid(legacy.get("template_version_id"))
+                configs.append(legacy)
+    return configs
+
+
+def _pinned_template_id(metadata: Any, content_type: str) -> str | None:
+    for config in _prc_template_configs(metadata, content_type):
+        pinned = _normalized_uuid(config.get("template_version_id"))
+        if pinned:
+            return pinned
     return None
 
 
 def _prc_explicitly_disabled(metadata: Any, content_type: str) -> bool:
-    if not isinstance(metadata, dict):
-        return False
-    prc_templates = metadata.get("prc_templates")
-    if isinstance(prc_templates, dict):
-        config = prc_templates.get(content_type)
-        if isinstance(config, dict):
-            pinned = _normalized_uuid(config.get("template_version_id"))
-            if config.get("enabled") is False and pinned is None:
-                return True
-    if content_type == "email":
-        email_settings = metadata.get("email_settings")
-        if isinstance(email_settings, dict):
-            legacy = email_settings.get("interactive_prc_template")
-            if isinstance(legacy, dict):
-                pinned = _normalized_uuid(legacy.get("template_version_id"))
-                return legacy.get("enabled") is False and pinned is None
+    """Read behavior keeps an explicitly pinned selection inspectable."""
+    for config in _prc_template_configs(metadata, content_type):
+        pinned = _normalized_uuid(config.get("template_version_id"))
+        if config.get("enabled") is False and pinned is None:
+            return True
     return False
+
+
+def _prc_writer_explicitly_disabled(metadata: Any, content_type: str) -> bool:
+    """Writer behavior treats every explicit enabled=false as keyless."""
+    return any(
+        config.get("enabled") is False
+        for config in _prc_template_configs(metadata, content_type)
+    )
 
 
 def _template_by_id(session, template_id: str | None) -> PrcTemplateVersion | None:
@@ -677,29 +620,212 @@ def _latest_published_template(
 
 def _brand_template(
     session,
+    brand_id,
     brand_name: str,
     content_type: str,
 ) -> PrcTemplateVersion | None:
+    # Brand id binds the row to ONE brand; a display-name slug does not, so it
+    # is tried first and never falls through to another brand's template.
+    if brand_id:
+        by_id = _latest_published_template(session, f"brand_{brand_id}_{content_type}", content_type)
+        if by_id is not None:
+            return by_id
+
+    prefix = "brand_"
     suffix = f"_{content_type}"
-    rows = session.scalars(
+    templates = session.scalars(
         select(PrcTemplateVersion)
         .where(
-            PrcTemplateVersion.template_key.like(f"brand_%{suffix}"),
+            PrcTemplateVersion.template_key.startswith(prefix),
+            PrcTemplateVersion.template_key.endswith(suffix),
             PrcTemplateVersion.content_type == content_type,
             PrcTemplateVersion.status == "published",
             PrcTemplateVersion.deleted_at.is_(None),
         )
         .order_by(PrcTemplateVersion.version_number.desc())
-    ).all()
-    matches: list[tuple[int, int, PrcTemplateVersion]] = []
-    lowered_name = brand_name.lower()
-    for row in rows:
-        slug = row.template_key[len("brand_") : -len(suffix)]
-        if slug and slug in lowered_name:
-            matches.append((len(slug), row.version_number, row))
-    if not matches:
-        return None
-    return max(matches, key=lambda item: (item[0], item[1]))[2]
+    )
+    latest_by_slug: dict[str, PrcTemplateVersion] = {}
+    for template in templates:
+        slug = template.template_key[len(prefix) : -len(suffix)]
+        if slug:
+            latest_by_slug.setdefault(slug, template)
+
+    lowered = brand_name.lower()
+    for slug in sorted(latest_by_slug, key=len, reverse=True):
+        if slug in lowered:
+            return latest_by_slug[slug]
+    return None
+
+
+def _resolved_prc_template_for_operation(
+    session,
+    operation: CgOperation,
+) -> tuple[bool, str, str | None]:
+    content_type = (operation.content_type or "").strip().lower()
+    if content_type not in _PRC_CONTENT_TYPES:
+        return False, content_type, None
+    brand = session.scalar(select(Brand).where(Brand.id == operation.brand_id, Brand.deleted_at.is_(None)))
+    if brand is None:
+        raise ToolError("not_authorized: unknown brand")
+    metadata = brand.brand_metadata if isinstance(brand.brand_metadata, dict) else {}
+    if _prc_writer_explicitly_disabled(metadata, content_type):
+        return False, content_type, None
+
+    operation_metadata = operation.operation_metadata if isinstance(operation.operation_metadata, dict) else {}
+    template = _template_by_id(
+        session,
+        _normalized_uuid(operation_metadata.get("prc_template_version_id")),
+    )
+    if template is None or template.content_type != content_type:
+        template = _template_by_id(session, _pinned_template_id(metadata, content_type))
+    if template is None or template.content_type != content_type:
+        template = _brand_template(session, brand.id, brand.name, content_type)
+    if template is None:
+        template = _latest_published_template(session, f"environment_default_{content_type}", content_type)
+    if template is None:
+        template = _latest_published_template(session, f"platform_default_{content_type}", content_type)
+    return True, content_type, template.html_template if template is not None else None
+
+
+def _download_html(
+    *,
+    bucket: str,
+    key: str,
+    s3: S3Reader,
+    missing_error: str,
+    max_inline_bytes: int,
+) -> str:
+    size = s3.head(bucket, key)
+    if size is None:
+        raise ToolError(missing_error)
+    if size > max_inline_bytes:
+        raise _too_large_error("html object", size, max_inline_bytes)
+    try:
+        return s3.download(bucket, key, max_inline_bytes).decode("utf-8")
+    except (S3ObjectMissing, UnicodeDecodeError):
+        raise ToolError(missing_error) from None
+    except S3ObjectTooLarge:
+        raise _too_large_error("html object", size, max_inline_bytes) from None
+    except S3Error as exc:
+        raise ToolError(f"not_available: s3 read failed: {exc}") from exc
+
+
+def _compose_supplied_prc_proof(
+    supplied_proof: str,
+    creative: str,
+    content_type: str,
+) -> str:
+    from solstice_mcp.prc_proof_composer import (
+        InvalidPrcProofError,
+        compose_prc_proof,
+        validate_prc_proof,
+    )
+
+    try:
+        validate_prc_proof(supplied_proof, content_type)
+        return compose_prc_proof(supplied_proof, creative, content_type)
+    except InvalidPrcProofError as exc:
+        raise ToolError(
+            f"invalid_request: operation bake must satisfy baked contract v2: {exc}"
+        ) from exc
+
+
+def _raise_if_unresolved_prc_fonts(proof: str) -> None:
+    unresolved = _prc_bake_unresolved_fonts(proof)
+    if unresolved:
+        raise ToolError(
+            "invalid_request: operation_bake_html names fonts it never faces, so the "
+            f"proof would render a substitute: {', '.join(sorted(unresolved))}. Declare an "
+            "@font-face with a woff2 URL for each, or switch to a family served by "
+            f"{' or '.join(_FONT_SHEET_HOSTS)}"
+        )
+
+
+def _finalize_html_prc_transition(
+    *,
+    session,
+    operation: CgOperation,
+    row_id: str,
+    creative_key: str,
+    bucket: str,
+    s3: S3Reader,
+    staff: bool,
+    supplied_proof: str | None = None,
+    precomposed_proof: str | None = None,
+    max_inline_bytes: int,
+) -> tuple[str | None, int]:
+    enabled, content_type, resolved_template = _resolved_prc_template_for_operation(session, operation)
+    if not enabled:
+        return None, 0
+
+    from solstice_mcp.prc_proof_composer import InvalidPrcProofError, compose_prc_proof
+
+    creative = _download_html(
+        bucket=bucket,
+        key=creative_key,
+        s3=s3,
+        missing_error="not_found: current html object missing in s3",
+        max_inline_bytes=max_inline_bytes,
+    )
+    proof: str | None = precomposed_proof
+    if proof is not None:
+        _ensure_inline_size("operation bake html", proof, max_inline_bytes)
+    if proof is None and supplied_proof is not None:
+        _ensure_inline_size("operation bake html", supplied_proof, max_inline_bytes)
+        proof = _compose_supplied_prc_proof(supplied_proof, creative, content_type)
+    if proof is None:
+        prior_filters = [
+            CgOperationMessage.operation_id == operation.id,
+            CgOperationMessage.type == "html",
+            CgOperationMessage.deleted_at.is_(None),
+            CgOperationMessage.prc_template_s3_key.is_not(None),
+        ]
+        if not staff:
+            prior_filters.append(_final_document_visibility_clause())
+        prior_rows = session.scalars(
+            select(CgOperationMessage).where(*prior_filters).order_by(*_MESSAGE_ORDER_NEWEST_FIRST)
+        ).all()
+        prefix = f"{_PRC_TEMPLATE_S3_KEY_PREFIX}/{operation.id}/"
+        for prior in prior_rows:
+            key = prior.prc_template_s3_key
+            if not isinstance(key, str) or not key.startswith(prefix):
+                continue
+            try:
+                size = s3.head(bucket, key)
+            except S3Error as exc:
+                raise ToolError(f"not_available: s3 read failed: {exc}") from exc
+            if size is None:
+                continue
+            if size > max_inline_bytes:
+                continue
+            try:
+                base = s3.download(bucket, key, max_inline_bytes).decode("utf-8")
+                proof = compose_prc_proof(base, creative, content_type)
+                break
+            except S3ObjectMissing:
+                continue
+            except S3ObjectTooLarge:
+                continue
+            except S3Error as exc:
+                raise ToolError(f"not_available: s3 read failed: {exc}") from exc
+            except (UnicodeDecodeError, InvalidPrcProofError):
+                continue
+        if proof is None and isinstance(resolved_template, str) and resolved_template.strip():
+            _ensure_inline_size("resolved PRC template", resolved_template, max_inline_bytes)
+            try:
+                proof = compose_prc_proof(resolved_template, creative, content_type)
+            except InvalidPrcProofError as exc:
+                raise ToolError(f"invalid_state: PRC template composition failed: {exc}") from exc
+    if proof is None:
+        raise ToolError(f"invalid_state: no PRC template resolved for {content_type}")
+    _ensure_inline_size("composed PRC proof", proof, max_inline_bytes)
+    _raise_if_unresolved_prc_fonts(proof)
+    bake_key = f"{_PRC_TEMPLATE_S3_KEY_PREFIX}/{operation.id}/{row_id}.html"
+    try:
+        s3.put(bucket, bake_key, proof.encode("utf-8"), "text/html")
+    except S3Error as exc:
+        raise ToolError(f"not_available: s3 write failed: {exc}") from exc
+    return bake_key, len(proof.encode("utf-8"))
 
 
 def _prc_template_payload(
@@ -801,7 +927,7 @@ def resolve_prc_template_for_brand(
                 template = None
 
         if template is None:
-            template = _brand_template(session, brand.name, normalized_content_type)
+            template = _brand_template(session, brand.id, brand.name, normalized_content_type)
             if template is not None:
                 tier = "brand"
 
@@ -1049,6 +1175,7 @@ def bake_prc_template_to_operation(
     registry: TenantRegistry,
     session_factory: SessionFactory,
     s3: S3Reader,
+    max_inline_bytes: int = 2_000_000,
 ) -> dict[str, Any]:
     """Append a draft version that copies the creative and stores an operation bake.
 
@@ -1068,14 +1195,13 @@ def bake_prc_template_to_operation(
     bucket = tenant_config.s3_bucket if tenant_config is not None else ""
     if not bucket:
         raise ToolError("not_configured: tenant has no s3_bucket")
-    html_size_bytes, bake_key = _load_uploaded_operation_bake(
+    row_id, supplied_proof = _load_uploaded_operation_bake(
         operation_bake_s3_key=operation_bake_s3_key,
         operation_id=parsed_operation_id,
-        content_type=content_type,
         bucket=bucket,
         s3=s3,
+        max_inline_bytes=max_inline_bytes,
     )
-    row_id = _validate_prc_template_bake_s3_key(bake_key, parsed_operation_id)
 
     with tenant_session(tenant_slug, session_factory) as session:
         locked = session.scalar(
@@ -1094,9 +1220,27 @@ def bake_prc_template_to_operation(
             raise ToolError(
                 "invalid_state: operation has no html document to attach a proof bake to"
             )
+        head_content = head.content or ""
+        if _looks_like_s3_key(head_content):
+            creative_html = _download_html(
+                bucket=bucket,
+                key=head_content,
+                s3=s3,
+                missing_error="not_found: current html object missing in s3",
+                max_inline_bytes=max_inline_bytes,
+            )
+        else:
+            creative_html = head_content
+            if not creative_html.encode("utf-8").strip():
+                raise ToolError("invalid_state: current html document is empty")
+            _ensure_inline_size("current html", creative_html, max_inline_bytes)
+        supplied_proof = _compose_supplied_prc_proof(
+            supplied_proof, creative_html, content_type
+        )
+        _ensure_inline_size("operation bake html", supplied_proof, max_inline_bytes)
+        _raise_if_unresolved_prc_fonts(supplied_proof)
         message_id = str(uuid4())
         creative_key = _version_s3_key("html", parsed_operation_id, message_id, locked.file_name)
-        head_content = head.content or ""
         if _looks_like_s3_key(head_content):
             try:
                 s3.copy_object(bucket, head_content, creative_key, "text/html")
@@ -1105,13 +1249,26 @@ def bake_prc_template_to_operation(
             except S3Error as exc:
                 raise ToolError(f"not_available: s3 write failed: {exc}") from exc
         else:
-            creative = head_content.encode("utf-8")
+            creative = creative_html.encode("utf-8")
             if not creative.strip():
                 raise ToolError("invalid_state: current html document is empty")
             try:
                 s3.put(bucket, creative_key, creative, "text/html")
             except S3Error as exc:
                 raise ToolError(f"not_available: s3 write failed: {exc}") from exc
+        finalized_bake_key, html_size_bytes = _finalize_html_prc_transition(
+            session=session,
+            operation=locked,
+            row_id=row_id,
+            creative_key=creative_key,
+            bucket=bucket,
+            s3=s3,
+            staff=True,
+            precomposed_proof=supplied_proof,
+            max_inline_bytes=max_inline_bytes,
+        )
+        if finalized_bake_key is None:
+            raise ToolError("invalid_state: PRC is explicitly disabled for this operation")
         now = datetime.now(UTC)
         # Backend sorts (created_at, id); 1µs gap so UUID tiebreak cannot invert the pair.
         doc_at = now + timedelta(microseconds=1)
@@ -1154,7 +1311,7 @@ def bake_prc_template_to_operation(
                 type="html",
                 content=creative_key,
                 intent=intent,
-                prc_template_s3_key=bake_key,
+                prc_template_s3_key=finalized_bake_key,
                 message_metadata=message_metadata,
                 created_at=doc_at,
                 deleted_at=None,
@@ -1167,7 +1324,7 @@ def bake_prc_template_to_operation(
         "intent": intent,
         "message_id": message_id,
         "s3_key": creative_key,
-        "prc_template_s3_key": bake_key,
+        "prc_template_s3_key": finalized_bake_key,
         "html_size_bytes": html_size_bytes,
         "asset_url": build_asset_url(tenant_slug, parsed_operation_id),
     }
@@ -1286,6 +1443,7 @@ def create_prc_template_version(
             registry=registry,
             session_factory=session_factory,
             s3=s3,
+            max_inline_bytes=max_inline_bytes,
         )
 
     library: dict[str, Any] | None = None
@@ -2244,11 +2402,15 @@ def _html_snapshot_metadata(base: CgOperationMessage | None) -> dict[str, Any]:
     """Copy client-owned HTML snapshots from the last HTML row."""
     if base is None or not isinstance(base.message_metadata, dict):
         return {}
-    return {
+    snapshots: dict[str, Any] = {
         key: dict(value)
         for key in ("prc_template_fields", "email_settings")
         if isinstance((value := base.message_metadata.get(key)), dict)
     }
+    template_version_id = base.message_metadata.get("prc_template_version_id")
+    if isinstance(template_version_id, str) and template_version_id.strip():
+        snapshots["prc_template_version_id"] = template_version_id
+    return snapshots
 
 
 def prepare_operation_version(
@@ -2347,6 +2509,7 @@ def commit_operation_version(
     registry: TenantRegistry,
     session_factory: SessionFactory,
     s3: S3Reader,
+    max_inline_bytes: int = 2_000_000,
 ) -> dict[str, Any]:
     """Insert a new document version row after the client has uploaded to S3.
 
@@ -2529,10 +2692,8 @@ def commit_operation_version(
                 "working. Re-read solstice_operation_messages, reapply your change "
                 "to the new head_message_id, and commit that"
             )
-        # Both key shapes now carry the message_id minted at prepare, so the id
-        # the caller was handed is the id that lands. Previously pdf keys carried
-        # none and commit minted a second one, so the prepare-time id named a row
-        # that never existed.
+        # The prepare-derived message id remains the upload/content identity.
+        # The row id is minted separately below and owns the proof key.
         message_id = _validate_version_key(kind, s3_key, operation_id)
         size = s3.head(bucket, s3_key)
         if size is None:
@@ -2567,6 +2728,19 @@ def commit_operation_version(
                     _final_document_visibility_clause(),
                 )
             )
+        row_id = str(uuid4())
+        prc_template_s3_key = None
+        if kind == "html":
+            prc_template_s3_key, _ = _finalize_html_prc_transition(
+                session=session,
+                operation=locked,
+                row_id=row_id,
+                creative_key=s3_key,
+                bucket=bucket,
+                s3=s3,
+                staff=staff,
+                max_inline_bytes=max_inline_bytes,
+            )
         now = datetime.now(UTC)
         # Backend sorts (created_at, id); 1µs gap so UUID tiebreak cannot invert the pair.
         doc_at = now + timedelta(microseconds=1)
@@ -2599,18 +2773,14 @@ def commit_operation_version(
             deleted_at=None,
         )
         doc = CgOperationMessage(
-            id=str(uuid4()),
+            id=row_id,
             operation_id=operation_id,
             message_id=message_id,
             author_id=None,
             type=kind,
             content=s3_key,
             intent=intent,
-            prc_template_s3_key=(
-                html_snapshot_base.prc_template_s3_key
-                if kind == "html" and html_snapshot_base is not None
-                else None
-            ),
+            prc_template_s3_key=prc_template_s3_key,
             message_metadata=message_metadata,
             created_at=doc_at,
             deleted_at=None,
@@ -2648,6 +2818,7 @@ def commit_operation_version(
         "head_message_id": doc.id,
         "message_id": message_id,
         "s3_key": s3_key,
+        "prc_template_s3_key": doc.prc_template_s3_key,
         "size": size,
         "asset_url": build_asset_url(tenant_slug, operation_id),
     }
