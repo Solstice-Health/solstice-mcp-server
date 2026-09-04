@@ -241,6 +241,28 @@ def _adapt_legacy_banner(source: str, creative_html: str) -> str:
     return _replace_first_tag(source, "iframe", r'\bclass\s*=\s*["\'][^"\']*\bbanner-frame\b', frame)
 
 
+def _canonicalize_l4_config(source: str) -> str:
+    if _tag_with_attrs(source, "script", type="application/json", id="sol-prc-config") is not None:
+        return source
+    for legacy_id in ("prc-cover-data", "banner-template-data"):
+        found = False
+
+        def transform(tag: str) -> str:
+            nonlocal found
+            found = True
+            return _set_attr(_set_attr(tag, "id", "sol-prc-config"), "type", "application/json")
+
+        updated = _replace_first_tag(
+            source,
+            "script",
+            rf'\bid\s*=\s*["\']{re.escape(legacy_id)}["\']',
+            transform,
+        )
+        if found:
+            return updated
+    return source
+
+
 # Creative-derived globals the banner hydrator reads. It prefers these over the
 # iframe `srcdoc`, and the per-banner arrays outrank the single global.
 _BANNER_CREATIVE_GLOBALS = (
@@ -428,9 +450,7 @@ def validate_prc_proof(source: str, content_type: str) -> None:
     if slots is None:
         raise InvalidPrcProofError(f"Unsupported PRC content type: {content_type}")
     body = _tag_with_attrs(source, "body", **{"data-sol-prc-proof": content_type})
-    config = _tag_with_attrs(
-        source, "script", type="application/json", **{"data-sol-prc-config": None}
-    ) or _tag_with_attrs(source, "script", type="application/json", id="sol-prc-config")
+    config = _tag_with_attrs(source, "script", type="application/json", id="sol-prc-config")
     required = (
         _tag_with_attrs(source, "meta", name="sol-prc-contract", content="v2"),
         body,
@@ -468,5 +488,6 @@ def compose_prc_proof(base_html: str, creative_html: str, content_type: str) -> 
                 proof = _inject_slot(proof, slot, creative_html)
     if content_type == "banner":
         proof = _set_banner_srcdoc_payload(proof, creative_html)
+    proof = _canonicalize_l4_config(proof)
     validate_prc_proof(proof, content_type)
     return proof

@@ -92,6 +92,7 @@ def test_compose_prc_proof_normalizes_fleet_templates_and_preserves_edits(
     proof = compose_prc_proof(template, CREATIVE, content_type)
 
     assert 'name="sol-prc-contract-baked" content="v2"' in proof
+    assert 'id="sol-prc-config"' in proof
     assert f'data-sol-prc-proof="{content_type}"' in proof
     assert f'data-sol-prc-creative="{slot}"' in proof
     assert "NEW CREATIVE" in proof
@@ -119,6 +120,8 @@ def test_compose_prc_proof_stamps_legacy_section_page():
     proof = compose_prc_proof(template, CREATIVE, "email")
 
     assert '<section class="prc-page" data-sol-prc-page="legacy_page">' in proof
+    assert 'id="sol-prc-config"' in proof
+    assert 'id="prc-cover-data"' not in proof
 
 
 def test_compose_prc_proof_replaces_existing_legacy_banner_payload_script():
