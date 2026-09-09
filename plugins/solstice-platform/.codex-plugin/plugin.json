@@ -1,6 +1,6 @@
 {
   "name": "solstice-platform",
-  "version": "0.3.28",
+  "version": "0.3.29",
   "description": "Access Solstice workspaces, reviews, and documents, including append-only HTML and PDF versions.",
   "author": {
     "name": "Solstice Health",
