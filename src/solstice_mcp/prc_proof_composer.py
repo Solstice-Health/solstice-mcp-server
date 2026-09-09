@@ -28,6 +28,23 @@ _RAW_TEXT_BLOCK = re.compile(
     re.IGNORECASE,
 )
 _BANNER_PROTOTYPE_IDS = {"frame-template", "isi-region-template"}
+_EMAIL_COVER_HOST_IDS = {"prc-filename", "prc-to", "prc-from", "prc-options"}
+_VOID_TAGS = {
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+}
 
 
 @dataclass(frozen=True)
@@ -37,6 +54,23 @@ class _ParsedTag:
     start: int
     end: int
     in_banner_prototype: bool
+    in_isi_region: bool
+
+
+@dataclass(frozen=True)
+class _OpenElement:
+    tag: str
+    pages: bool
+    template: bool
+    template_id: str | None
+    isi_region: bool
+    cover_index: int | None
+
+
+@dataclass
+class _CoverPage:
+    nested_in_pages: bool
+    host_ids: set[str]
 
 
 class _PrcStructureParser(HTMLParser):
@@ -51,20 +85,60 @@ class _PrcStructureParser(HTMLParser):
         self.line_starts.extend(match.end() for match in re.finditer(r"\n", feed))
         self.attr_names: set[str] = set()
         self.iframes: list[_ParsedTag] = []
-        self._template_stack: list[str | None] = []
+        self.has_pages = False
+        self.has_page_in_pages = False
+        self.has_page_in_template = False
+        self.cover_pages: list[_CoverPage] = []
+        self._stack: list[_OpenElement] = []
 
     def _absolute_offset(self) -> int:
         line, column = self.getpos()
         return self.line_starts[line - 1] + column
 
-    def _record(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+    def _active(self, name: str) -> bool:
+        return any(bool(getattr(element, name)) for element in self._stack)
+
+    def _record(self, tag: str, attrs: list[tuple[str, str | None]]) -> int | None:
+        tag = tag.lower()
         normalized = {name.lower(): value for name, value in attrs}
         self.attr_names.update(normalized)
-        if tag.lower() != "iframe":
-            return
+        active_template = self._active("template")
+        active_pages = self._active("pages")
+        classes = (normalized.get("class") or "").split()
+        isi_region = (
+            "isi-region" in classes
+            or "isi-image-wrapper" in classes
+            or "data-isi-iframe" in normalized
+        )
+        element_id = normalized.get("id")
+        if element_id in _EMAIL_COVER_HOST_IDS and not active_template:
+            for element in self._stack:
+                if element.cover_index is not None:
+                    self.cover_pages[element.cover_index].host_ids.add(element_id)
+        # DOM querySelector does not descend into template.content. A template
+        # element may itself be the live pages host, but a host inside its inert
+        # content cannot satisfy L2.
+        if "data-sol-prc-pages" in normalized and not active_template:
+            self.has_pages = True
+        if "data-sol-prc-page" in normalized:
+            if active_pages and not active_template:
+                self.has_page_in_pages = True
+            if active_template:
+                self.has_page_in_template = True
+        cover_index = None
+        if normalized.get("data-sol-prc-page-type") == "cover":
+            cover_index = len(self.cover_pages)
+            self.cover_pages.append(
+                _CoverPage(
+                    nested_in_pages=active_pages and not active_template,
+                    host_ids=set(),
+                )
+            )
+        if tag != "iframe":
+            return cover_index
         opening = self.get_starttag_text()
         if opening is None:
-            return
+            return cover_index
         start = self._absolute_offset()
         self.iframes.append(
             _ParsedTag(
@@ -72,22 +146,45 @@ class _PrcStructureParser(HTMLParser):
                 opening=opening,
                 start=start,
                 end=start + len(opening),
-                in_banner_prototype=any(template_id in _BANNER_PROTOTYPE_IDS for template_id in self._template_stack),
+                in_banner_prototype=any(
+                    element.template_id in _BANNER_PROTOTYPE_IDS for element in self._stack
+                ),
+                in_isi_region=isi_region or self._active("isi_region"),
             )
         )
+        return cover_index
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self._record(tag, attrs)
-        if tag.lower() == "template":
-            template_attrs = {name.lower(): value for name, value in attrs}
-            self._template_stack.append(template_attrs.get("id"))
+        normalized = {name.lower(): value for name, value in attrs}
+        cover_index = self._record(tag, attrs)
+        tag = tag.lower()
+        if tag in _VOID_TAGS:
+            return
+        classes = (normalized.get("class") or "").split()
+        self._stack.append(
+            _OpenElement(
+                tag=tag,
+                pages="data-sol-prc-pages" in normalized,
+                template=tag == "template",
+                template_id=normalized.get("id") if tag == "template" else None,
+                isi_region=(
+                    "isi-region" in classes
+                    or "isi-image-wrapper" in classes
+                    or "data-isi-iframe" in normalized
+                ),
+                cover_index=cover_index,
+            )
+        )
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self._record(tag, attrs)
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.lower() == "template" and self._template_stack:
-            self._template_stack.pop()
+        tag = tag.lower()
+        for index in range(len(self._stack) - 1, -1, -1):
+            if self._stack[index].tag == tag:
+                del self._stack[index:]
+                return
 
 
 def _has(source: str, pattern: str) -> bool:
@@ -592,11 +689,13 @@ def validate_prc_proof(
     structure = _parse_structure(source)
     body = _tag_with_attrs(source, "body", **{"data-sol-prc-proof": content_type})
     config = _tag_with_attrs(source, "script", type="application/json", id="sol-prc-config")
+    pages_match = structure.has_page_in_pages or (
+        content_type == "social" and structure.has_pages and structure.has_page_in_template
+    )
     required = (
         _tag_with_attrs(source, "meta", name="sol-prc-contract", content="v2"),
         body,
-        "data-sol-prc-pages" in structure.attr_names,
-        "data-sol-prc-page" in structure.attr_names,
+        pages_match,
         config,
         "data-sol-prc-field" in structure.attr_names,
         _tag_with_attrs(source, "meta", name="sol-prc-contract-baked", content="v2"),
@@ -605,13 +704,23 @@ def validate_prc_proof(
     )
     if not all(required):
         raise InvalidPrcProofError("PRC proof does not satisfy baked contract v2")
+    if any(not cover.nested_in_pages for cover in structure.cover_pages):
+        raise InvalidPrcProofError("PRC cover page does not satisfy baked contract v2")
+    if content_type == "email" and any(
+        not _EMAIL_COVER_HOST_IDS.issubset(cover.host_ids) for cover in structure.cover_pages
+    ):
+        raise InvalidPrcProofError("PRC email cover page is missing required fields")
     if not allow_legacy_annotations:
         try:
             assert_no_legacy_annotations(source)
         except LegacyAnnotationFormatError as exc:
             raise InvalidPrcProofError(str(exc)) from exc
     if content_type == "banner":
-        banner_frames = [frame for frame in structure.iframes if frame.attrs.get("data-sol-prc-creative") == "banner"]
+        banner_frames = [
+            frame
+            for frame in structure.iframes
+            if frame.attrs.get("data-sol-prc-creative") == "banner" and not frame.in_isi_region
+        ]
         if not banner_frames:
             raise InvalidPrcProofError("PRC template is missing creative slots")
         for frame in banner_frames:
@@ -631,12 +740,21 @@ def validate_prc_proof(
             raise InvalidPrcProofError("PRC banner proof is missing its creative payload")
         return
     present = [
-        slot for slot in slots if any(frame.attrs.get("data-sol-prc-creative") == slot for frame in structure.iframes)
+        slot
+        for slot in slots
+        if any(
+            frame.attrs.get("data-sol-prc-creative") == slot and not frame.in_isi_region
+            for frame in structure.iframes
+        )
     ]
     if not present:
         raise InvalidPrcProofError("PRC template is missing creative slots")
     for slot in present:
-        slot_frames = [frame for frame in structure.iframes if frame.attrs.get("data-sol-prc-creative") == slot]
+        slot_frames = [
+            frame
+            for frame in structure.iframes
+            if frame.attrs.get("data-sol-prc-creative") == slot and not frame.in_isi_region
+        ]
         for frame in slot_frames:
             if not html.unescape(frame.attrs.get("srcdoc") or "").strip():
                 raise InvalidPrcProofError("PRC proof has an empty creative slot")

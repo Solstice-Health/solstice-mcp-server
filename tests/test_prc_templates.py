@@ -132,6 +132,102 @@ def test_validate_prc_proof_rejects_empty_duplicate_social_slot():
         validate_prc_proof(proof, "social")
 
 
+def test_validate_prc_proof_rejects_page_outside_pages_container():
+    proof = compose_prc_proof(EMAIL_TEMPLATE, CREATIVE, "email")
+    proof = proof.replace("<main data-sol-prc-pages>", "<main>", 1)
+    proof = proof.replace("</body>", '<div data-sol-prc-pages></div></body>', 1)
+
+    with pytest.raises(InvalidPrcProofError, match="baked contract v2"):
+        validate_prc_proof(proof, "email")
+
+
+def test_validate_prc_proof_accepts_social_page_inside_template():
+    proof = compose_prc_proof(SOCIAL_TEMPLATE, CREATIVE, "social")
+    page = re.search(r"(<section data-sol-prc-page=.*?</section>)", proof, re.DOTALL)
+    assert page
+    proof = proof.replace(page.group(1), f"<template>{page.group(1)}</template>", 1)
+
+    validate_prc_proof(proof, "social")
+
+
+def test_validate_prc_proof_rejects_social_pages_container_only_inside_template():
+    proof = compose_prc_proof(SOCIAL_TEMPLATE, CREATIVE, "social")
+    proof = proof.replace("<main data-sol-prc-pages>", "<main>", 1)
+    proof = proof.replace(
+        "</main>",
+        '<template><div data-sol-prc-pages><section data-sol-prc-page="templated"></section></div></template>'
+        "</main>",
+        1,
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="baked contract v2"):
+        validate_prc_proof(proof, "social")
+
+
+def test_validate_prc_proof_rejects_slot_only_inside_isi_region():
+    proof = compose_prc_proof(EMAIL_TEMPLATE, CREATIVE, "email")
+    proof = proof.replace(
+        '<iframe data-sol-prc-creative="desktop"',
+        '<div class="isi-region"><iframe data-sol-prc-creative="desktop"',
+        1,
+    ).replace("</iframe>", "</iframe></div>", 1)
+
+    with pytest.raises(InvalidPrcProofError, match="missing creative slots"):
+        validate_prc_proof(proof, "email")
+
+
+def test_validate_prc_proof_rejects_incomplete_email_cover():
+    proof = compose_prc_proof(EMAIL_TEMPLATE, CREATIVE, "email")
+    proof = proof.replace(
+        "<main data-sol-prc-pages>",
+        '<main data-sol-prc-pages><section data-sol-prc-page="cover" '
+        'data-sol-prc-page-type="cover"><div id="prc-filename"></div></section>',
+        1,
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="cover page"):
+        validate_prc_proof(proof, "email")
+
+
+def test_validate_prc_proof_accepts_complete_email_cover():
+    proof = compose_prc_proof(EMAIL_TEMPLATE, CREATIVE, "email")
+    hosts = "".join(f'<div id="{host}"></div>' for host in ("prc-filename", "prc-to", "prc-from", "prc-options"))
+    proof = proof.replace(
+        "<main data-sol-prc-pages>",
+        '<main data-sol-prc-pages><section data-sol-prc-page="cover" '
+        f'data-sol-prc-page-type="cover">{hosts}</section>',
+        1,
+    )
+
+    validate_prc_proof(proof, "email")
+
+
+def test_validate_prc_proof_does_not_count_template_content_as_email_cover_hosts():
+    proof = compose_prc_proof(EMAIL_TEMPLATE, CREATIVE, "email")
+    hosts = "".join(f'<div id="{host}"></div>' for host in ("prc-filename", "prc-to", "prc-from", "prc-options"))
+    proof = proof.replace(
+        "<main data-sol-prc-pages>",
+        '<main data-sol-prc-pages><section data-sol-prc-page="cover" '
+        f'data-sol-prc-page-type="cover"><template>{hosts}</template></section>',
+        1,
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="cover page"):
+        validate_prc_proof(proof, "email")
+
+
+def test_validate_prc_proof_rejects_cover_outside_pages_for_social():
+    proof = compose_prc_proof(SOCIAL_TEMPLATE, CREATIVE, "social")
+    proof = proof.replace(
+        "</body>",
+        '<section data-sol-prc-page="cover" data-sol-prc-page-type="cover"></section></body>',
+        1,
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="cover page"):
+        validate_prc_proof(proof, "social")
+
+
 def test_compose_prc_proof_leaves_banner_prototype_bare():
     # Reference banner templates label the prototype themselves; composition
     # clears its stale document and leaves that labelling alone.
