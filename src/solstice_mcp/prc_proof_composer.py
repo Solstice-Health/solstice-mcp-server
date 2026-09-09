@@ -163,21 +163,79 @@ def _replace_all_tags(source: str, tag: str, predicate: str, transform) -> str:
     return updated
 
 
+_TEMPLATE_BLOCK = re.compile(
+    r"<template\b(?:[^>\"']|\"[^\"]*\"|'[^']*')*>[\s\S]*?</template\s*>",
+    re.IGNORECASE,
+)
+
+
+def _template_ranges(source: str) -> list[tuple[int, int]]:
+    masked = _mask_raw_text(source)
+    return [(match.start(), match.end()) for match in _TEMPLATE_BLOCK.finditer(masked)]
+
+
+def _in_template(ranges: list[tuple[int, int]], position: int) -> bool:
+    return any(start <= position < end for start, end in ranges)
+
+
+def _live_slot_present(source: str, slot: str) -> bool:
+    """Slot iframes inside <template> are inert prototypes, not render targets."""
+    ranges = _template_ranges(source)
+    for match, opening in _iter_open_tags(source, "iframe"):
+        if _in_template(ranges, match.start()):
+            continue
+        if _attr_value(opening, "data-sol-prc-creative") == slot:
+            return True
+    return False
+
+
+def _strip_template_creative_frames(source: str) -> str:
+    """Clear creative payloads baked onto <template> prototype frames.
+
+    The runtime clones the prototype and assigns the real srcdoc after
+    insertion; Chrome commits a cloned iframe's srcdoc from the value held at
+    insertion, so a baked-in stamp wins over the reassignment and every frame
+    renders the same whole-creative blob.
+    """
+    ranges = _template_ranges(source)
+    if not ranges:
+        return source
+    parts: list[str] = []
+    cursor = 0
+    for match, opening in _iter_open_tags(source, "iframe"):
+        if not _in_template(ranges, match.start()):
+            continue
+        if _attr_value(opening, "data-sol-prc-creative") is None:
+            continue
+        parts.append(source[cursor : match.start()])
+        parts.append(_remove_attr(_remove_attr(opening, "srcdoc"), "src"))
+        cursor = match.end()
+    if not parts:
+        return source
+    parts.append(source[cursor:])
+    return "".join(parts)
+
+
 def _inject_slot(source: str, slot: str, creative_html: str, *, replace_all: bool = True) -> str:
     found = False
+    ranges = _template_ranges(source)
 
     def transform(tag: str) -> str:
         nonlocal found
         found = True
         return _set_attr(_remove_attr(tag, "src"), "srcdoc", creative_html)
 
-    replacer = _replace_all_tags if replace_all else _replace_first_tag
-    updated = replacer(
-        source,
-        "iframe",
-        rf'data-sol-prc-creative\s*=\s*(["\']){re.escape(slot)}\1',
-        transform,
-    )
+    predicate = rf'data-sol-prc-creative\s*=\s*(["\']){re.escape(slot)}\1'
+    matches = [
+        (match, opening)
+        for match, opening in _iter_open_tags(source, "iframe")
+        if re.search(predicate, opening, re.IGNORECASE) and not _in_template(ranges, match.start())
+    ]
+    if not replace_all:
+        matches = matches[:1]
+    updated = source
+    for match, opening in reversed(matches):
+        updated = f"{updated[: match.start()]}{transform(opening)}{updated[match.end() :]}"
     if not found or html.escape(creative_html, quote=True) not in updated:
         raise InvalidPrcProofError("PRC creative injection failed")
     return updated
@@ -477,13 +535,22 @@ def validate_prc_proof(source: str, content_type: str) -> None:
     present = [slot for slot in slots if _slot_present(source, slot)]
     if not present:
         raise InvalidPrcProofError("PRC template is missing creative slots")
+    ranges = _template_ranges(source)
     for slot in present:
+        # Banner creative rides the payload script; the frame-template prototype stays bare.
+        if content_type == "banner":
+            if not _has(source, r'window\.__BANNER_TEMPLATE_SRCDOC__\s*=\s*"(?:[^"\\]|\\.)+"'):
+                raise InvalidPrcProofError("PRC proof has an empty creative slot")
+            continue
         frames = [
             opening
-            for _match, opening in _iter_open_tags(source, "iframe")
+            for match, opening in _iter_open_tags(source, "iframe")
             if _attr_value(opening, "data-sol-prc-creative") == slot
+            and not _in_template(ranges, match.start())
         ]
-        for frame in frames[:1] if content_type == "banner" else frames:
+        if not frames:
+            raise InvalidPrcProofError("PRC proof has an empty creative slot")
+        for frame in frames:
             if not html.unescape(_attr_value(frame, "srcdoc") or "").strip():
                 raise InvalidPrcProofError("PRC proof has an empty creative slot")
 
@@ -499,8 +566,9 @@ def compose_prc_proof(base_html: str, creative_html: str, content_type: str) -> 
         proof = _adapt_legacy_banner(proof, creative_html)
     else:
         for slot in _SLOTS[content_type]:
-            if _slot_present(base_html, slot):
+            if _live_slot_present(base_html, slot):
                 proof = _inject_slot(proof, slot, creative_html, replace_all=content_type != "banner")
+        proof = _strip_template_creative_frames(proof)
     if content_type == "banner":
         proof = _set_banner_srcdoc_payload(proof, creative_html)
     proof = _canonicalize_l4_config(proof)

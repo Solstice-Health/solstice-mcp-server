@@ -74,6 +74,19 @@ BANNER_TEMPLATE = (
     '<iframe class="banner-frame" srcdoc="old"></iframe></template>'
     '<div data-slot="frames"></div></section></article></main></body></html>'
 )
+# Contract-v2 banner anatomy: the only creative iframe is the inert prototype
+# inside <template id="frame-template">; the creative rides the payload script.
+BANNER_TEMPLATE_V2 = (
+    '<!doctype html><html><head><meta name="sol-prc-contract" content="v2">'
+    '<style id="sol-prc-export-style"></style></head>'
+    '<body data-sol-prc-proof="banner"><main data-sol-prc-pages>'
+    '<article data-sol-prc-page="p1"><div data-sol-prc-field="file_name">KEEP EDIT</div>'
+    '<section data-banner-section><template id="frame-template">'
+    '<iframe class="banner-frame" data-sol-prc-creative="banner"></iframe></template>'
+    '<div data-slot="frames"></div></section></article>'
+    '<script id="sol-prc-config" type="application/json">{}</script>'
+    '</main></body></html>'
+)
 
 
 @pytest.mark.parametrize(
@@ -109,9 +122,11 @@ def test_compose_prc_proof_injects_every_duplicate_social_slot():
 
     proof = compose_prc_proof(template, CREATIVE, "social")
 
-    assert proof.count("NEW CREATIVE") == 3
+    # Live duplicates are stamped; the <template> prototype is inert and stays bare.
+    assert proof.count("NEW CREATIVE") == 2
     assert "old one" not in proof
     assert "old two" not in proof
+    assert "<template><iframe data-sol-prc-creative=\"social\"></iframe></template>" in proof
 
 
 def test_validate_prc_proof_rejects_empty_duplicate_social_slot():
@@ -189,6 +204,37 @@ def test_compose_prc_proof_replaces_existing_legacy_banner_payload_script():
 
     assert proof.count('id="sol-prc-banner-template-data"') == 1
     assert '"stale"' not in proof
+    assert "NEW CREATIVE" in proof
+
+
+def _frame_template_block(proof: str) -> str:
+    match = re.search(r'<template id="frame-template">[\s\S]*?</template>', proof)
+    assert match is not None
+    return match.group(0)
+
+
+def test_compose_prc_proof_leaves_banner_prototype_bare():
+    """The runtime clones the frame-template prototype and assigns srcdoc after
+    insertion; a baked-in stamp is committed by Chrome at clone time and wins
+    over the reassignment, so every frame renders the same whole-creative blob."""
+    proof = compose_prc_proof(BANNER_TEMPLATE_V2, CREATIVE, "banner")
+
+    assert "srcdoc" not in _frame_template_block(proof)
+    assert "window.__BANNER_TEMPLATE_SRCDOC__" in proof
+    assert "NEW CREATIVE" in proof
+    assert "KEEP EDIT" in proof
+
+
+def test_compose_prc_proof_strips_stale_prototype_stamp_on_recompose():
+    stamped = BANNER_TEMPLATE_V2.replace(
+        '<iframe class="banner-frame" data-sol-prc-creative="banner">',
+        '<iframe class="banner-frame" data-sol-prc-creative="banner" srcdoc="STALE STAMP">',
+    )
+
+    proof = compose_prc_proof(stamped, CREATIVE, "banner")
+
+    assert "srcdoc" not in _frame_template_block(proof)
+    assert "STALE STAMP" not in proof
     assert "NEW CREATIVE" in proof
 
 
