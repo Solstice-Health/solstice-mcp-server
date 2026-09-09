@@ -63,6 +63,18 @@ ruff check .
 pytest
 ```
 
+PRC write-path and SOL-3398 mold checks live here (not in Solstice-Frontend).
+`pytest` always runs the harness tests. Live platform-testing coverage is skipped
+unless `STAGING_E2E=1`:
+
+```bash
+STAGING_E2E=1 MCP_STAGING_TOKEN=… pytest tests/e2e/test_staging_prc_coverage.py
+```
+
+Default project: `92cfc1cd-0e3c-4b20-bde0-71aa2d489e68` on `platform_testing`.
+Mutations need `STAGING_E2E_MUTATIONS=1` and `STAGING_MUTABLE_BANNER_OPERATION_ID`
+/ `STAGING_MUTABLE_SOCIAL_OPERATION_ID` pointing at disposable duplicates.
+
 Run the service after setting the required environment:
 
 ```bash
