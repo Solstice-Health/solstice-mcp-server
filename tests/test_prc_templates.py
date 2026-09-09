@@ -176,6 +176,16 @@ def test_validate_prc_proof_rejects_comment_only_field():
         validate_prc_proof(proof, "email")
 
 
+def test_validate_prc_proof_rejects_legacy_annotation_residue():
+    proof = compose_prc_proof(EMAIL_TEMPLATE, CREATIVE, "email").replace(
+        "</body>",
+        '<div class="callout-overlay"></div></body>',
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="legacy annotation DOM"):
+        validate_prc_proof(proof, "email")
+
+
 def test_compose_prc_proof_stamps_field_when_only_comment_mentions_it():
     template = (
         EMAIL_TEMPLATE.replace(
@@ -195,6 +205,44 @@ def test_compose_prc_proof_stamps_field_when_only_comment_mentions_it():
     proof = compose_prc_proof(template, CREATIVE, "email")
 
     assert '<span hidden data-sol-prc-field="file_name"></span>' in proof
+
+
+@pytest.mark.parametrize(
+    ("content_type", "template"),
+    [
+        ("email", EMAIL_TEMPLATE),
+        ("banner", BANNER_TEMPLATE),
+        ("social", SOCIAL_TEMPLATE),
+    ],
+)
+def test_compose_prc_proof_removes_legacy_annotation_format(
+    content_type: str,
+    template: str,
+):
+    creative = '<!doctype html><html><body><a href="https://example.test/landing">CTA</a></body></html>'
+    legacy = (
+        '<div class="callout-overlay"><div class="callout-box">old</div></div>'
+        "<style>.callout-line{stroke:red}.layout-kept{display:block}</style>"
+        "<script>function layoutStage(){};"
+        'document.querySelector(".prc-callout-gutter");'
+        'document.querySelector(".prc-connector-svg");</script>'
+        "<script>window.__prc_annotation_positions = {old:{x:1}};</script>"
+    )
+
+    proof = compose_prc_proof(template.replace("</body>", f"{legacy}</body>"), creative, content_type)
+
+    assert "https://example.test/landing" in proof
+    assert ".layout-kept{display:block}" in proof
+    for leftover in (
+        "callout-overlay",
+        "callout-box",
+        "callout-line",
+        "layoutStage",
+        "prc-callout-gutter",
+        "prc-connector-svg",
+        "__prc_annotation_positions",
+    ):
+        assert leftover not in proof
 
 
 def test_compose_prc_proof_preserves_distinct_banner_scene_frames():
@@ -1317,6 +1365,28 @@ def test_create_prc_template_bakes_a_draft_operation_version(
         # is created_at then id, so the pair cannot share a timestamp.
         assert feedback.created_at < row.created_at
         assert feedback.message_metadata["kind"] == "user_feedback"
+
+
+def test_supplied_operation_bake_normalizes_legacy_annotations_before_strict_validation():
+    supplied = OPERATION_BAKE_EMAIL.replace(
+        "</body>",
+        '<div class="callout-overlay"></div>'
+        "<script>function layoutStage(){};"
+        'document.querySelector(".prc-callout-gutter");'
+        'document.querySelector(".prc-connector-svg");</script>'
+        "</body>",
+    )
+
+    proof = operations._compose_supplied_prc_proof(
+        supplied,
+        "<html><body>current creative</body></html>",
+        "email",
+    )
+
+    assert "current creative" in proof
+    assert "callout-overlay" not in proof
+    assert "layoutStage" not in proof
+    validate_prc_proof(proof, "email")
 
 
 def test_operation_bake_carries_metadata_from_exact_current_head(

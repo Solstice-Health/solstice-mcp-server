@@ -6,6 +6,12 @@ import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
+from solstice_mcp.prc_annotation_normalizer import (
+    LegacyAnnotationFormatError,
+    assert_no_legacy_annotations,
+    normalize_legacy_annotations,
+)
+
 
 class InvalidPrcProofError(ValueError):
     pass
@@ -551,7 +557,12 @@ def _set_banner_srcdoc_payload(source: str, creative_html: str) -> str:
     return re.sub(r"</head\s*>", lambda match: f"{script}{match.group(0)}", source, count=1, flags=re.I)
 
 
-def validate_prc_proof(source: str, content_type: str) -> None:
+def validate_prc_proof(
+    source: str,
+    content_type: str,
+    *,
+    allow_legacy_annotations: bool = False,
+) -> None:
     slots = _SLOTS.get(content_type)
     if slots is None:
         raise InvalidPrcProofError(f"Unsupported PRC content type: {content_type}")
@@ -571,6 +582,11 @@ def validate_prc_proof(source: str, content_type: str) -> None:
     )
     if not all(required):
         raise InvalidPrcProofError("PRC proof does not satisfy baked contract v2")
+    if not allow_legacy_annotations:
+        try:
+            assert_no_legacy_annotations(source)
+        except LegacyAnnotationFormatError as exc:
+            raise InvalidPrcProofError(str(exc)) from exc
     if content_type == "banner":
         banner_frames = [frame for frame in structure.iframes if frame.attrs.get("data-sol-prc-creative") == "banner"]
         if not banner_frames:
@@ -622,6 +638,10 @@ def compose_prc_proof(base_html: str, creative_html: str, content_type: str) -> 
                 )
     if content_type == "banner":
         proof = _set_banner_srcdoc_payload(proof, creative_html)
+    try:
+        proof = normalize_legacy_annotations(proof, content_type)
+    except LegacyAnnotationFormatError as exc:
+        raise InvalidPrcProofError(str(exc)) from exc
     proof = _canonicalize_l4_config(proof)
     validate_prc_proof(proof, content_type)
     return proof
