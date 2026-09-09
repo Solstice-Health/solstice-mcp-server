@@ -133,7 +133,13 @@ def test_validate_prc_proof_rejects_empty_duplicate_social_slot():
 
 
 def test_compose_prc_proof_leaves_banner_prototype_bare():
+    # Reference banner templates label the prototype themselves; composition
+    # clears its stale document and leaves that labelling alone.
     template = BANNER_TEMPLATE.replace(
+        '<iframe class="banner-frame" srcdoc="old"></iframe>',
+        '<iframe class="banner-frame" data-sol-prc-creative="banner" srcdoc="old"></iframe>',
+        1,
+    ).replace(
         "</main>",
         '<template id="isi-region-template">'
         '<iframe class="banner-frame" data-sol-prc-creative="banner" srcdoc="stale"></iframe>'
@@ -262,6 +268,33 @@ def test_compose_prc_proof_keeps_stylesheet_when_style_block_spans_lines():
     assert "width: var(--page-width);" in style.group(1)
     assert "max-width: var(--page-width);" in style.group(1)
     assert "<iframe" not in style.group(1)
+
+
+def test_compose_prc_proof_does_not_relabel_a_non_creative_prototype():
+    # The ISI prototype is hydrated from __BANNER_TEMPLATE_EXPANDED_SRCDOC__, not
+    # from the banner creative. Tagging it as a banner slot makes the runtime
+    # stamp the wrong document into it.
+    template = BANNER_TEMPLATE.replace(
+        '<iframe class="banner-frame" srcdoc="old"></iframe>',
+        '<iframe class="banner-frame" data-sol-prc-creative="banner" srcdoc="old"></iframe>',
+        1,
+    ).replace(
+        "</main>",
+        '<template id="isi-region-template">'
+        '<iframe class="banner-frame" title="Expanded ISI"></iframe>'
+        "</template></main>",
+    )
+
+    proof = compose_prc_proof(template, CREATIVE, "banner")
+
+    isi = re.search(
+        r'<template\b[^>]*id=["\']isi-region-template["\'][^>]*>(.*?)</template\s*>',
+        proof,
+        re.DOTALL | re.IGNORECASE,
+    )
+    assert isi
+    assert "data-sol-prc-creative" not in isi.group(1)
+    assert "srcdoc=" not in isi.group(1)
 
 
 def test_validate_prc_proof_rejects_empty_live_banner_slot():

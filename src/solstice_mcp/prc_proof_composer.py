@@ -280,11 +280,10 @@ def _prepare_banner_slots(source: str, creative_html: str) -> str:
     ]
     updated = source
     for frame in reversed(prototype_frames):
-        opening = _set_attr(
-            _remove_attr(_remove_attr(frame.opening, "src"), "srcdoc"),
-            "data-sol-prc-creative",
-            "banner",
-        )
+        # Only clear the stale document. Labelling a prototype that was not
+        # already a creative slot rebinds it: the ISI prototype hydrates from
+        # __BANNER_TEMPLATE_EXPANDED_SRCDOC__ and must stay unlabelled.
+        opening = _remove_attr(_remove_attr(frame.opening, "src"), "srcdoc")
         # Splicing by offset silently rewrites whatever occupies that span, so
         # refuse unless it is still the tag we parsed. A drifted offset lands in
         # a stylesheet or script and destroys it without any later check noticing.
