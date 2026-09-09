@@ -29,7 +29,12 @@ from solstice_mcp.operations import (
     PrcTemplateVersion,
     _prc_bake_unresolved_fonts,
 )
-from solstice_mcp.prc_proof_composer import InvalidPrcProofError, compose_prc_proof, validate_prc_proof
+from solstice_mcp.prc_proof_composer import (
+    InvalidPrcProofError,
+    _parse_structure,
+    compose_prc_proof,
+    validate_prc_proof,
+)
 
 PINNED_EMAIL = "00000000-0000-0000-0000-000000000701"
 OPERATION_EMAIL = "00000000-0000-0000-0000-000000000702"
@@ -152,6 +157,63 @@ def test_compose_prc_proof_leaves_banner_prototype_bare():
     assignment = payload.group(1).split("__BANNER_TEMPLATE_SRCDOC__", 1)[1]
     value, _ = json.JSONDecoder().raw_decode(assignment.split("=", 1)[1].lstrip())
     assert value == CREATIVE
+
+
+def test_parse_structure_offsets_address_the_original_source():
+    source = (
+        "<html>\n<head>\n"
+        "<style>\n  .page {\n    width: 10px;\n  }\n</style>\n"
+        "</head>\n<body>\n"
+        '<iframe class="banner-frame" data-sol-prc-creative="banner"></iframe>\n'
+        "</body>\n</html>"
+    )
+
+    frames = _parse_structure(source).iframes
+
+    assert len(frames) == 1
+    assert source[frames[0].start : frames[0].end] == frames[0].opening
+
+
+def test_compose_prc_proof_keeps_stylesheet_when_style_block_spans_lines():
+    # Raw-text masking blanks script/style bodies, turning their newlines into
+    # spaces. Tag offsets must resolve against that masked feed; resolving them
+    # against the unmasked source drifts by every swallowed newline and splices
+    # iframes into the stylesheet.
+    css = "\n".join(
+        (
+            "  [data-banner-section] {",
+            "    width: 100%;",
+            "    max-width: var(--page-width);",
+            "  }",
+            "  .page {",
+            "    position: relative;",
+            "    width: var(--page-width);",
+            "  }",
+        )
+    )
+    template = (
+        BANNER_TEMPLATE.replace(
+            '<iframe class="banner-frame" srcdoc="old"></iframe>',
+            '<iframe class="banner-frame" data-sol-prc-creative="banner" srcdoc="old"></iframe>',
+            1,
+        )
+        .replace(
+            '<style id="sol-prc-export-style"></style>',
+            f'<style id="sol-prc-export-style">\n{css}\n</style>',
+            1,
+        )
+        # Real proofs are pretty-printed: newlines exist outside the raw-text
+        # blocks too, so the drifted line index resolves to a bogus offset.
+        .replace("><", ">\n<")
+    )
+
+    proof = compose_prc_proof(template, CREATIVE, "banner")
+
+    style = re.search(r"<style id=\"sol-prc-export-style\">(.*?)</style>", proof, re.DOTALL)
+    assert style
+    assert "width: var(--page-width);" in style.group(1)
+    assert "max-width: var(--page-width);" in style.group(1)
+    assert "<iframe" not in style.group(1)
 
 
 def test_validate_prc_proof_rejects_empty_live_banner_slot():

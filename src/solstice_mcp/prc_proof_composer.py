@@ -40,11 +40,15 @@ class _ParsedTag:
 
 
 class _PrcStructureParser(HTMLParser):
-    def __init__(self, source: str) -> None:
+    def __init__(self, source: str, feed: str) -> None:
         super().__init__(convert_charrefs=True)
         self.source = source
+        # getpos() reports line/column within the text fed to the parser, which
+        # is the masked source: same length, but script/style newlines blanked.
+        # Indexing line starts on the raw source would drift by every newline
+        # masking swallowed and address the wrong span.
         self.line_starts = [0]
-        self.line_starts.extend(match.end() for match in re.finditer(r"\n", source))
+        self.line_starts.extend(match.end() for match in re.finditer(r"\n", feed))
         self.attr_names: set[str] = set()
         self.iframes: list[_ParsedTag] = []
         self._template_stack: list[str | None] = []
@@ -115,8 +119,9 @@ def _mask_raw_text(source: str) -> str:
 
 
 def _parse_structure(source: str) -> _PrcStructureParser:
-    parser = _PrcStructureParser(source)
-    parser.feed(_mask_raw_text(source))
+    masked = _mask_raw_text(source)
+    parser = _PrcStructureParser(source, masked)
+    parser.feed(masked)
     parser.close()
     return parser
 
