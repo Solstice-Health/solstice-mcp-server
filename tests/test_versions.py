@@ -330,7 +330,11 @@ def test_commit_v1_composes_each_prc_content_type(
     assert payload["intent"] == "final"
     assert payload["prc_template_s3_key"] == (f"cg_operation_prc_template/{OP_A2}/{payload['head_message_id']}.html")
     proof = app_harness.s3.objects[(BUCKET, payload["prc_template_s3_key"])].decode()
-    assert "&lt;html&gt;new&lt;/html&gt;" in proof
+    if content_type == "banner":
+        assert 'window.__BANNER_TEMPLATE_SRCDOC__ = "<html>new<\\/html>";' in proof
+        assert '<iframe class="banner-frame" data-sol-prc-creative="banner"></iframe>' in proof
+    else:
+        assert "&lt;html&gt;new&lt;/html&gt;" in proof
     expected_edit = "DEFAULT EDIT" if content_type == "banner" else "FLEET EDIT"
     assert expected_edit in proof
     assert f'data-sol-prc-creative="{slot}"' in proof

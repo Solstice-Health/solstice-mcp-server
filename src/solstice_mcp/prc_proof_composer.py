@@ -3,6 +3,8 @@ from __future__ import annotations
 import html
 import json
 import re
+from dataclasses import dataclass
+from html.parser import HTMLParser
 
 
 class InvalidPrcProofError(ValueError):
@@ -19,6 +21,63 @@ _RAW_TEXT_BLOCK = re.compile(
     r"(<(?P<tag>script|style|textarea)\b[^>]*>)([\s\S]*?)(</(?P=tag)\s*>)",
     re.IGNORECASE,
 )
+_BANNER_PROTOTYPE_IDS = {"frame-template", "isi-region-template"}
+
+
+@dataclass(frozen=True)
+class _ParsedTag:
+    attrs: dict[str, str | None]
+    opening: str
+    start: int
+    end: int
+    in_banner_prototype: bool
+
+
+class _PrcStructureParser(HTMLParser):
+    def __init__(self, source: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.source = source
+        self.line_starts = [0]
+        self.line_starts.extend(match.end() for match in re.finditer(r"\n", source))
+        self.attr_names: set[str] = set()
+        self.iframes: list[_ParsedTag] = []
+        self._template_stack: list[str | None] = []
+
+    def _absolute_offset(self) -> int:
+        line, column = self.getpos()
+        return self.line_starts[line - 1] + column
+
+    def _record(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        normalized = {name.lower(): value for name, value in attrs}
+        self.attr_names.update(normalized)
+        if tag.lower() != "iframe":
+            return
+        opening = self.get_starttag_text()
+        if opening is None:
+            return
+        start = self._absolute_offset()
+        self.iframes.append(
+            _ParsedTag(
+                attrs=normalized,
+                opening=opening,
+                start=start,
+                end=start + len(opening),
+                in_banner_prototype=any(template_id in _BANNER_PROTOTYPE_IDS for template_id in self._template_stack),
+            )
+        )
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._record(tag, attrs)
+        if tag.lower() == "template":
+            template_attrs = {name.lower(): value for name, value in attrs}
+            self._template_stack.append(template_attrs.get("id"))
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._record(tag, attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "template" and self._template_stack:
+            self._template_stack.pop()
 
 
 def _has(source: str, pattern: str) -> bool:
@@ -40,7 +99,7 @@ def _mask_raw_text(source: str) -> str:
     masked: list[str] = []
     cursor = 0
     for match in _RAW_TEXT_BLOCK.finditer(source):
-        masked.append(source[cursor: match.start(3)])
+        masked.append(source[cursor : match.start(3)])
         masked.append(" " * len(match.group(3)))
         cursor = match.start(4)
     if cursor == 0:
@@ -49,10 +108,21 @@ def _mask_raw_text(source: str) -> str:
     return "".join(masked)
 
 
+def _parse_structure(source: str) -> _PrcStructureParser:
+    parser = _PrcStructureParser(source)
+    parser.feed(_mask_raw_text(source))
+    parser.close()
+    return parser
+
+
+def _has_element_attr(source: str, name: str) -> bool:
+    return name.lower() in _parse_structure(source).attr_names
+
+
 def _iter_open_tags(source: str, tag: str):
     masked = _mask_raw_text(source)
     for match in re.finditer(_OPEN_TAG.format(tag=tag), masked, re.IGNORECASE):
-        yield match, source[match.start(): match.end()]
+        yield match, source[match.start() : match.end()]
 
 
 def _tag_with_attrs(source: str, tag: str, **attrs: str | None) -> str | None:
@@ -66,14 +136,15 @@ def _tag_with_attrs(source: str, tag: str, **attrs: str | None) -> str | None:
 
 
 def _slot_present(source: str, slot: str) -> bool:
-    return _tag_with_attrs(source, "iframe", **{"data-sol-prc-creative": slot}) is not None
+    return any(frame.attrs.get("data-sol-prc-creative") == slot for frame in _parse_structure(source).iframes)
 
 
 def _required_slots(source: str, content_type: str) -> bool:
     slots = _SLOTS.get(content_type)
     if slots is None:
         raise InvalidPrcProofError(f"Unsupported PRC content type: {content_type}")
-    present = [_slot_present(source, slot) for slot in slots]
+    frames = _parse_structure(source).iframes
+    present = [any(frame.attrs.get("data-sol-prc-creative") == slot for frame in frames) for slot in slots]
     return any(present) if content_type == "email" else all(present)
 
 
@@ -92,7 +163,7 @@ def _is_legacy_seed(source: str, content_type: str) -> bool:
     return all(
         (
             _tag_with_attrs(source, "body", **{"data-sol-prc-proof": content_type}),
-            _has(source, r"data-sol-prc-pages"),
+            _has_element_attr(source, "data-sol-prc-pages"),
             _tag_with_attrs(
                 source,
                 "script",
@@ -106,14 +177,15 @@ def _is_legacy_seed(source: str, content_type: str) -> bool:
 def _validate_base(source: str, content_type: str) -> None:
     if content_type not in _SLOTS:
         raise InvalidPrcProofError(f"Unsupported PRC content type: {content_type}")
+    structure = _parse_structure(source)
     strict = all(
         (
             _tag_with_attrs(source, "meta", name="sol-prc-contract", content="v2"),
             _tag_with_attrs(source, "body", **{"data-sol-prc-proof": content_type}),
-            _has(source, r"data-sol-prc-pages[\s\S]*data-sol-prc-page"),
+            {"data-sol-prc-pages", "data-sol-prc-page"}.issubset(structure.attr_names),
             _tag_with_attrs(source, "script", type="application/json", **{"data-sol-prc-config": None})
             or _tag_with_attrs(source, "script", type="application/json", id="sol-prc-config"),
-            _has(source, r"data-sol-prc-field"),
+            "data-sol-prc-field" in structure.attr_names,
         )
     )
     if not strict and not _is_legacy_seed(source, content_type):
@@ -183,6 +255,30 @@ def _inject_slot(source: str, slot: str, creative_html: str, *, replace_all: boo
     return updated
 
 
+def _prepare_banner_slots(source: str, creative_html: str) -> str:
+    frames = _parse_structure(source).iframes
+    prototype_frames = [
+        frame
+        for frame in frames
+        if frame.in_banner_prototype
+        and (
+            frame.attrs.get("data-sol-prc-creative") == "banner"
+            or "banner-frame" in (frame.attrs.get("class") or "").split()
+        )
+    ]
+    updated = source
+    for frame in reversed(prototype_frames):
+        opening = _set_attr(
+            _remove_attr(_remove_attr(frame.opening, "src"), "srcdoc"),
+            "data-sol-prc-creative",
+            "banner",
+        )
+        updated = f"{updated[: frame.start]}{opening}{updated[frame.end :]}"
+    if prototype_frames:
+        return updated
+    return _inject_slot(updated, "banner", creative_html, replace_all=False)
+
+
 def _stamp_contract(source: str, content_type: str) -> str:
     head_bits = []
     if _tag_with_attrs(source, "meta", name="sol-prc-contract", content="v2") is None:
@@ -205,7 +301,7 @@ def _stamp_contract(source: str, content_type: str) -> str:
         r"(?:data-sol-prc-pages|\bclass\s*=\s*[\"'][^\"']*\bpages\b)",
         lambda tag: _set_attr(tag, "data-sol-prc-pages"),
     )
-    if not _has(source, r"\bdata-sol-prc-page(?:\s|=)"):
+    if not _has_element_attr(source, "data-sol-prc-page"):
         source = _replace_first_tag(
             source,
             "article",
@@ -218,14 +314,14 @@ def _stamp_contract(source: str, content_type: str) -> str:
             r'\bclass\s*=\s*["\'][^"\']*\bprc-page\b',
             lambda tag: _set_attr(tag, "data-sol-prc-page", "legacy_page"),
         )
-    if not _has(source, r"\bdata-sol-prc-field(?=[\s=>])"):
+    if not _has_element_attr(source, "data-sol-prc-field"):
         source = _replace_first_tag(
             source,
             "div",
             r'\b(?:data-slot\s*=\s*["\']title["\']|class\s*=\s*["\'][^"\']*\bheader-title\b)',
             lambda tag: _set_attr(tag, "data-sol-prc-field", "file_name"),
         )
-    if not _has(source, r"\bdata-sol-prc-field(?=[\s=>])"):
+    if not _has_element_attr(source, "data-sol-prc-field"):
         source = re.sub(
             r"</body\s*>",
             '<span hidden data-sol-prc-field="file_name"></span></body>',
@@ -236,7 +332,7 @@ def _stamp_contract(source: str, content_type: str) -> str:
     return source
 
 
-def _adapt_legacy_banner(source: str, creative_html: str) -> str:
+def _adapt_legacy_banner(source: str) -> str:
     source = _replace_first_tag(
         source,
         "script",
@@ -245,7 +341,7 @@ def _adapt_legacy_banner(source: str, creative_html: str) -> str:
     )
 
     def frame(tag: str) -> str:
-        return _set_attr(_set_attr(tag, "data-sol-prc-creative", "banner"), "srcdoc", creative_html)
+        return _set_attr(_remove_attr(_remove_attr(tag, "src"), "srcdoc"), "data-sol-prc-creative", "banner")
 
     return _replace_first_tag(source, "iframe", r'\bclass\s*=\s*["\'][^"\']*\bbanner-frame\b', frame)
 
@@ -459,32 +555,51 @@ def validate_prc_proof(source: str, content_type: str) -> None:
     slots = _SLOTS.get(content_type)
     if slots is None:
         raise InvalidPrcProofError(f"Unsupported PRC content type: {content_type}")
+    structure = _parse_structure(source)
     body = _tag_with_attrs(source, "body", **{"data-sol-prc-proof": content_type})
     config = _tag_with_attrs(source, "script", type="application/json", id="sol-prc-config")
     required = (
         _tag_with_attrs(source, "meta", name="sol-prc-contract", content="v2"),
         body,
-        _has(source, r"\bdata-sol-prc-pages(?=[\s=>])"),
-        _has(source, r"\bdata-sol-prc-page(?=[\s=>])"),
+        "data-sol-prc-pages" in structure.attr_names,
+        "data-sol-prc-page" in structure.attr_names,
         config,
-        _has(source, r"\bdata-sol-prc-field(?=[\s=>])"),
+        "data-sol-prc-field" in structure.attr_names,
         _tag_with_attrs(source, "meta", name="sol-prc-contract-baked", content="v2"),
         _tag_with_attrs(source, "style", id="sol-prc-export-style"),
         body is not None and "sol-prc-export" in (_attr_value(body, "class") or "").split(),
     )
     if not all(required):
         raise InvalidPrcProofError("PRC proof does not satisfy baked contract v2")
-    present = [slot for slot in slots if _slot_present(source, slot)]
+    if content_type == "banner":
+        banner_frames = [frame for frame in structure.iframes if frame.attrs.get("data-sol-prc-creative") == "banner"]
+        if not banner_frames:
+            raise InvalidPrcProofError("PRC template is missing creative slots")
+        for frame in banner_frames:
+            srcdoc = html.unescape(frame.attrs.get("srcdoc") or "").strip()
+            if frame.in_banner_prototype:
+                if srcdoc:
+                    raise InvalidPrcProofError("PRC banner prototype must remain empty")
+            elif not srcdoc:
+                raise InvalidPrcProofError("PRC proof has an empty creative slot")
+        payload = _BANNER_PAYLOAD_SCRIPT.search(source)
+        creative_payload = (
+            _extract_payload_assignments(payload.group(2)).get("__BANNER_TEMPLATE_SRCDOC__")
+            if payload is not None
+            else None
+        )
+        if not str(creative_payload or "").strip():
+            raise InvalidPrcProofError("PRC banner proof is missing its creative payload")
+        return
+    present = [
+        slot for slot in slots if any(frame.attrs.get("data-sol-prc-creative") == slot for frame in structure.iframes)
+    ]
     if not present:
         raise InvalidPrcProofError("PRC template is missing creative slots")
     for slot in present:
-        frames = [
-            opening
-            for _match, opening in _iter_open_tags(source, "iframe")
-            if _attr_value(opening, "data-sol-prc-creative") == slot
-        ]
-        for frame in frames[:1] if content_type == "banner" else frames:
-            if not html.unescape(_attr_value(frame, "srcdoc") or "").strip():
+        slot_frames = [frame for frame in structure.iframes if frame.attrs.get("data-sol-prc-creative") == slot]
+        for frame in slot_frames:
+            if not html.unescape(frame.attrs.get("srcdoc") or "").strip():
                 raise InvalidPrcProofError("PRC proof has an empty creative slot")
 
 
@@ -496,11 +611,15 @@ def compose_prc_proof(base_html: str, creative_html: str, content_type: str) -> 
     _validate_base(base_html, content_type)
     proof = _stamp_contract(base_html, content_type)
     if content_type == "banner" and not _required_slots(base_html, content_type):
-        proof = _adapt_legacy_banner(proof, creative_html)
+        proof = _adapt_legacy_banner(proof)
     else:
         for slot in _SLOTS[content_type]:
             if _slot_present(base_html, slot):
-                proof = _inject_slot(proof, slot, creative_html, replace_all=content_type != "banner")
+                proof = (
+                    _prepare_banner_slots(proof, creative_html)
+                    if content_type == "banner"
+                    else _inject_slot(proof, slot, creative_html)
+                )
     if content_type == "banner":
         proof = _set_banner_srcdoc_payload(proof, creative_html)
     proof = _canonicalize_l4_config(proof)

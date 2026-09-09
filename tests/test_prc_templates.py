@@ -125,16 +125,92 @@ def test_validate_prc_proof_rejects_empty_duplicate_social_slot():
         validate_prc_proof(proof, "social")
 
 
+def test_compose_prc_proof_leaves_banner_prototype_bare():
+    template = BANNER_TEMPLATE.replace(
+        "</main>",
+        '<template id="isi-region-template">'
+        '<iframe class="banner-frame" data-sol-prc-creative="banner" srcdoc="stale"></iframe>'
+        "</template></main>",
+    )
+    proof = compose_prc_proof(template, CREATIVE, "banner")
+
+    for template_id in ("frame-template", "isi-region-template"):
+        prototype = re.search(
+            rf'<template\b[^>]*id=["\']{template_id}["\'][^>]*>(.*?)</template\s*>',
+            proof,
+            re.DOTALL | re.IGNORECASE,
+        )
+        assert prototype
+        assert 'data-sol-prc-creative="banner"' in prototype.group(1)
+        assert "srcdoc=" not in prototype.group(1)
+    payload = re.search(
+        r'<script id="sol-prc-banner-template-data">(.*?)</script>',
+        proof,
+        re.DOTALL,
+    )
+    assert payload
+    assignment = payload.group(1).split("__BANNER_TEMPLATE_SRCDOC__", 1)[1]
+    value, _ = json.JSONDecoder().raw_decode(assignment.split("=", 1)[1].lstrip())
+    assert value == CREATIVE
+
+
+def test_validate_prc_proof_rejects_empty_live_banner_slot():
+    proof = compose_prc_proof(BANNER_TEMPLATE, CREATIVE, "banner")
+    proof = proof.replace(
+        "</main>",
+        '<iframe data-sol-prc-creative="banner"></iframe></main>',
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="empty creative slot"):
+        validate_prc_proof(proof, "banner")
+
+
+def test_validate_prc_proof_rejects_comment_only_field():
+    proof = compose_prc_proof(EMAIL_TEMPLATE, CREATIVE, "email")
+    proof = proof.replace(
+        '<div data-sol-prc-field="file_name">KEEP EDIT</div>',
+        '<!-- data-sol-prc-field="file_name" -->',
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="baked contract v2"):
+        validate_prc_proof(proof, "email")
+
+
+def test_compose_prc_proof_stamps_field_when_only_comment_mentions_it():
+    template = (
+        EMAIL_TEMPLATE.replace(
+            '<div data-sol-prc-field="file_name">KEEP EDIT</div>',
+            '<!-- data-sol-prc-field="file_name" -->',
+        )
+        .replace(
+            '<script id="sol-prc-config" type="application/json">',
+            '<script id="prc-cover-data" type="application/json" data-sol-prc-config>',
+        )
+        .replace(
+            '<meta name="sol-prc-contract" content="v2" data-profile="email">',
+            "",
+        )
+    )
+
+    proof = compose_prc_proof(template, CREATIVE, "email")
+
+    assert '<span hidden data-sol-prc-field="file_name"></span>' in proof
+
+
 def test_compose_prc_proof_preserves_distinct_banner_scene_frames():
     template = BANNER_TEMPLATE.replace(
         '<iframe class="banner-frame" srcdoc="old"></iframe>',
-        '<iframe class="banner-frame" srcdoc="scene one"></iframe>'
-        '<iframe class="banner-frame" srcdoc="scene two"></iframe>',
+        '<iframe class="banner-frame"></iframe>',
+    ).replace(
+        "</template>",
+        '</template><iframe data-sol-prc-creative="banner" srcdoc="scene one"></iframe>'
+        '<iframe data-sol-prc-creative="banner" srcdoc="scene two"></iframe>',
+        1,
     )
 
     proof = compose_prc_proof(template, CREATIVE, "banner")
 
-    assert 'srcdoc="scene one"' not in proof
+    assert 'srcdoc="scene one"' in proof
     assert 'srcdoc="scene two"' in proof
 
 
