@@ -106,6 +106,26 @@ def test_compose_prc_proof_normalizes_fleet_templates_and_preserves_edits(
     assert "KEEP EDIT" in proof
 
 
+def test_compose_prc_proof_keeps_banner_payload_when_creative_mentions_legacy_tokens():
+    creative = (
+        '<!doctype html><html><body>'
+        '<div class="callout-box">layoutStage prc-callout-gutter prc-connector-svg</div>'
+        "</body></html>"
+    )
+
+    proof = compose_prc_proof(BANNER_TEMPLATE, creative, "banner")
+
+    payload = re.search(
+        r'<script id="sol-prc-banner-template-data">(.*?)</script>',
+        proof,
+        re.DOTALL,
+    )
+    assert payload
+    assignment = payload.group(1).split("__BANNER_TEMPLATE_SRCDOC__", 1)[1]
+    value, _ = json.JSONDecoder().raw_decode(assignment.split("=", 1)[1].lstrip())
+    assert value == creative
+
+
 def test_compose_prc_proof_injects_every_duplicate_social_slot():
     template = SOCIAL_TEMPLATE.replace(
         '<iframe data-sol-prc-creative="social" srcdoc="old"></iframe>',

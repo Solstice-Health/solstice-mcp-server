@@ -22,6 +22,7 @@ _PLATFORM_RUNTIME_IDS = {
     "sol-prc-export-style",
 }
 _CANONICAL_POSITIONS_ID = "sol-prc-annotation-positions"
+_CREATIVE_PAYLOAD_SCRIPT_IDS = {"sol-prc-banner-template-data"}
 _V2_OVERLAY_CLASS = "sol-prc-annotation-overlay-v2"
 _LEGACY_REMOVE_CLASSES = {
     "prc-callout",
@@ -343,6 +344,7 @@ def _raw_block_is_ignored(tag: str, attrs: str) -> bool:
     return bool(
         element_id in _PLATFORM_RUNTIME_IDS
         or element_id == _CANONICAL_POSITIONS_ID
+        or element_id in _CREATIVE_PAYLOAD_SCRIPT_IDS
         or (tag.lower() == "script" and _attr_value(attrs, "data-sol-prc-standalone-frame-fit") is not None)
     )
 

@@ -154,3 +154,18 @@ def test_normalizer_removes_sanofi_engine_without_breaking_banner_hydration():
     ):
         assert leftover not in normalized
     assert_no_legacy_annotations(normalized)
+
+
+def test_normalizer_preserves_banner_payload_that_mentions_legacy_tokens():
+    # Banner creative lives in this script, not srcdoc. Tokens inside the JSON
+    # assignment are ad HTML, not leftover engine chrome.
+    payload = (
+        '<script id="sol-prc-banner-template-data">'
+        'window.__BANNER_TEMPLATE_SRCDOC__ = '
+        '"<div class=\\"callout-box\\">layoutStage prc-callout-gutter prc-connector-svg</div>";'
+        'window.__BANNER_TEMPLATE_EXPANDED_SRCDOC__ = "<html>isi</html>";'
+        "</script>"
+    )
+    source = _contract_base("banner", payload)
+
+    assert normalize_legacy_annotations(source, "banner") == source
