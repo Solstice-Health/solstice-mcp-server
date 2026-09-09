@@ -771,7 +771,10 @@ def _compose_supplied_prc_proof(
     )
 
     try:
-        validate_prc_proof(supplied_proof, content_type)
+        # A structurally baked proof may still carry template-owned annotation
+        # chrome. Composition removes recognized legacy engines and performs a
+        # strict final validation before this write path can persist the result.
+        validate_prc_proof(supplied_proof, content_type, allow_legacy_annotations=True)
         return compose_prc_proof(supplied_proof, creative, content_type)
     except InvalidPrcProofError as exc:
         raise ToolError(

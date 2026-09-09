@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from sqlalchemy.orm import Session
 from test_server import rpc, tool_payload
 
 import solstice_mcp.operations as operations
+from solstice_mcp import prc_proof_composer
 from solstice_mcp.brands import Brand
 from solstice_mcp.operations import (
     CgOperation,
@@ -29,7 +31,12 @@ from solstice_mcp.operations import (
     PrcTemplateVersion,
     _prc_bake_unresolved_fonts,
 )
-from solstice_mcp.prc_proof_composer import InvalidPrcProofError, compose_prc_proof, validate_prc_proof
+from solstice_mcp.prc_proof_composer import (
+    InvalidPrcProofError,
+    _parse_structure,
+    compose_prc_proof,
+    validate_prc_proof,
+)
 
 PINNED_EMAIL = "00000000-0000-0000-0000-000000000701"
 OPERATION_EMAIL = "00000000-0000-0000-0000-000000000702"
@@ -99,6 +106,26 @@ def test_compose_prc_proof_normalizes_fleet_templates_and_preserves_edits(
     assert "KEEP EDIT" in proof
 
 
+def test_compose_prc_proof_keeps_banner_payload_when_creative_mentions_legacy_tokens():
+    creative = (
+        '<!doctype html><html><body>'
+        '<div class="callout-box">layoutStage prc-callout-gutter prc-connector-svg</div>'
+        "</body></html>"
+    )
+
+    proof = compose_prc_proof(BANNER_TEMPLATE, creative, "banner")
+
+    payload = re.search(
+        r'<script id="sol-prc-banner-template-data">(.*?)</script>',
+        proof,
+        re.DOTALL,
+    )
+    assert payload
+    assignment = payload.group(1).split("__BANNER_TEMPLATE_SRCDOC__", 1)[1]
+    value, _ = json.JSONDecoder().raw_decode(assignment.split("=", 1)[1].lstrip())
+    assert value == creative
+
+
 def test_compose_prc_proof_injects_every_duplicate_social_slot():
     template = SOCIAL_TEMPLATE.replace(
         '<iframe data-sol-prc-creative="social" srcdoc="old"></iframe>',
@@ -125,16 +152,372 @@ def test_validate_prc_proof_rejects_empty_duplicate_social_slot():
         validate_prc_proof(proof, "social")
 
 
-def test_compose_prc_proof_preserves_distinct_banner_scene_frames():
+def test_validate_prc_proof_rejects_page_outside_pages_container():
+    proof = compose_prc_proof(EMAIL_TEMPLATE, CREATIVE, "email")
+    proof = proof.replace("<main data-sol-prc-pages>", "<main>", 1)
+    proof = proof.replace("</body>", '<div data-sol-prc-pages></div></body>', 1)
+
+    with pytest.raises(InvalidPrcProofError, match="baked contract v2"):
+        validate_prc_proof(proof, "email")
+
+
+def test_validate_prc_proof_accepts_social_page_inside_template():
+    proof = compose_prc_proof(SOCIAL_TEMPLATE, CREATIVE, "social")
+    page = re.search(r"(<section data-sol-prc-page=.*?</section>)", proof, re.DOTALL)
+    assert page
+    proof = proof.replace(page.group(1), f"<template>{page.group(1)}</template>", 1)
+
+    validate_prc_proof(proof, "social")
+
+
+def test_validate_prc_proof_rejects_social_pages_container_only_inside_template():
+    proof = compose_prc_proof(SOCIAL_TEMPLATE, CREATIVE, "social")
+    proof = proof.replace("<main data-sol-prc-pages>", "<main>", 1)
+    proof = proof.replace(
+        "</main>",
+        '<template><div data-sol-prc-pages><section data-sol-prc-page="templated"></section></div></template>'
+        "</main>",
+        1,
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="baked contract v2"):
+        validate_prc_proof(proof, "social")
+
+
+def test_validate_prc_proof_rejects_slot_only_inside_isi_region():
+    proof = compose_prc_proof(EMAIL_TEMPLATE, CREATIVE, "email")
+    proof = proof.replace(
+        '<iframe data-sol-prc-creative="desktop"',
+        '<div class="isi-region"><iframe data-sol-prc-creative="desktop"',
+        1,
+    ).replace("</iframe>", "</iframe></div>", 1)
+
+    with pytest.raises(InvalidPrcProofError, match="missing creative slots"):
+        validate_prc_proof(proof, "email")
+
+
+def test_validate_prc_proof_rejects_incomplete_email_cover():
+    proof = compose_prc_proof(EMAIL_TEMPLATE, CREATIVE, "email")
+    proof = proof.replace(
+        "<main data-sol-prc-pages>",
+        '<main data-sol-prc-pages><section data-sol-prc-page="cover" '
+        'data-sol-prc-page-type="cover"><div id="prc-filename"></div></section>',
+        1,
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="cover page"):
+        validate_prc_proof(proof, "email")
+
+
+def test_validate_prc_proof_accepts_complete_email_cover():
+    proof = compose_prc_proof(EMAIL_TEMPLATE, CREATIVE, "email")
+    hosts = "".join(f'<div id="{host}"></div>' for host in ("prc-filename", "prc-to", "prc-from", "prc-options"))
+    proof = proof.replace(
+        "<main data-sol-prc-pages>",
+        '<main data-sol-prc-pages><section data-sol-prc-page="cover" '
+        f'data-sol-prc-page-type="cover">{hosts}</section>',
+        1,
+    )
+
+    validate_prc_proof(proof, "email")
+
+
+def test_validate_prc_proof_does_not_count_template_content_as_email_cover_hosts():
+    proof = compose_prc_proof(EMAIL_TEMPLATE, CREATIVE, "email")
+    hosts = "".join(f'<div id="{host}"></div>' for host in ("prc-filename", "prc-to", "prc-from", "prc-options"))
+    proof = proof.replace(
+        "<main data-sol-prc-pages>",
+        '<main data-sol-prc-pages><section data-sol-prc-page="cover" '
+        f'data-sol-prc-page-type="cover"><template>{hosts}</template></section>',
+        1,
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="cover page"):
+        validate_prc_proof(proof, "email")
+
+
+def test_validate_prc_proof_rejects_cover_outside_pages_for_social():
+    proof = compose_prc_proof(SOCIAL_TEMPLATE, CREATIVE, "social")
+    proof = proof.replace(
+        "</body>",
+        '<section data-sol-prc-page="cover" data-sol-prc-page-type="cover"></section></body>',
+        1,
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="cover page"):
+        validate_prc_proof(proof, "social")
+
+
+def test_compose_prc_proof_leaves_banner_prototype_bare():
+    # Reference banner templates label the prototype themselves; composition
+    # clears its stale document and leaves that labelling alone.
     template = BANNER_TEMPLATE.replace(
         '<iframe class="banner-frame" srcdoc="old"></iframe>',
-        '<iframe class="banner-frame" srcdoc="scene one"></iframe>'
-        '<iframe class="banner-frame" srcdoc="scene two"></iframe>',
+        '<iframe class="banner-frame" data-sol-prc-creative="banner" srcdoc="old"></iframe>',
+        1,
+    ).replace(
+        "</main>",
+        '<template id="isi-region-template">'
+        '<iframe class="banner-frame" data-sol-prc-creative="banner" srcdoc="stale"></iframe>'
+        "</template></main>",
+    )
+    proof = compose_prc_proof(template, CREATIVE, "banner")
+
+    for template_id in ("frame-template", "isi-region-template"):
+        prototype = re.search(
+            rf'<template\b[^>]*id=["\']{template_id}["\'][^>]*>(.*?)</template\s*>',
+            proof,
+            re.DOTALL | re.IGNORECASE,
+        )
+        assert prototype
+        assert 'data-sol-prc-creative="banner"' in prototype.group(1)
+        assert "srcdoc=" not in prototype.group(1)
+    payload = re.search(
+        r'<script id="sol-prc-banner-template-data">(.*?)</script>',
+        proof,
+        re.DOTALL,
+    )
+    assert payload
+    assignment = payload.group(1).split("__BANNER_TEMPLATE_SRCDOC__", 1)[1]
+    value, _ = json.JSONDecoder().raw_decode(assignment.split("=", 1)[1].lstrip())
+    assert value == CREATIVE
+
+
+def test_parse_structure_offsets_address_the_original_source():
+    source = (
+        "<html>\n<head>\n"
+        "<style>\n  .page {\n    width: 10px;\n  }\n</style>\n"
+        "</head>\n<body>\n"
+        '<iframe class="banner-frame" data-sol-prc-creative="banner"></iframe>\n'
+        "</body>\n</html>"
+    )
+
+    frames = _parse_structure(source).iframes
+
+    assert len(frames) == 1
+    assert source[frames[0].start : frames[0].end] == frames[0].opening
+
+
+def test_validate_prc_proof_rejects_markup_spliced_into_a_stylesheet():
+    proof = compose_prc_proof(BANNER_TEMPLATE, CREATIVE, "banner")
+    corrupted = proof.replace(
+        '<style id="sol-prc-export-style">',
+        '<style id="sol-prc-export-style">.page { wi<iframe class="banner-frame">dth: 10px; }',
+        1,
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="stylesheet"):
+        validate_prc_proof(corrupted, "banner")
+
+
+def test_compose_prc_proof_refuses_a_seed_with_a_corrupted_stylesheet():
+    # A corrupted proof must not be carried forward: composition seeds from the
+    # previous bake, so propagating it would make the damage permanent.
+    seed = BANNER_TEMPLATE.replace(
+        '<style id="sol-prc-export-style"></style>',
+        '<style id="sol-prc-export-style">.page { wi<iframe class="banner-frame">dth: 10px; }</style>',
+        1,
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="stylesheet"):
+        compose_prc_proof(seed, CREATIVE, "banner")
+
+
+def test_prepare_banner_slots_refuses_offsets_that_do_not_address_their_tag(monkeypatch):
+    template = BANNER_TEMPLATE.replace(
+        '<iframe class="banner-frame" srcdoc="old"></iframe>',
+        '<iframe class="banner-frame" data-sol-prc-creative="banner" srcdoc="old"></iframe>',
+        1,
+    )
+    real_parse = prc_proof_composer._parse_structure
+
+    def drifted(source: str):
+        parsed = real_parse(source)
+        parsed.iframes = [
+            replace(frame, start=frame.start - 7, end=frame.end - 7) for frame in parsed.iframes
+        ]
+        return parsed
+
+    monkeypatch.setattr(prc_proof_composer, "_parse_structure", drifted)
+
+    with pytest.raises(InvalidPrcProofError, match="offset"):
+        compose_prc_proof(template, CREATIVE, "banner")
+
+
+def test_compose_prc_proof_keeps_stylesheet_when_style_block_spans_lines():
+    # Raw-text masking blanks script/style bodies, turning their newlines into
+    # spaces. Tag offsets must resolve against that masked feed; resolving them
+    # against the unmasked source drifts by every swallowed newline and splices
+    # iframes into the stylesheet.
+    css = "\n".join(
+        (
+            "  [data-banner-section] {",
+            "    width: 100%;",
+            "    max-width: var(--page-width);",
+            "  }",
+            "  .page {",
+            "    position: relative;",
+            "    width: var(--page-width);",
+            "  }",
+        )
+    )
+    template = (
+        BANNER_TEMPLATE.replace(
+            '<iframe class="banner-frame" srcdoc="old"></iframe>',
+            '<iframe class="banner-frame" data-sol-prc-creative="banner" srcdoc="old"></iframe>',
+            1,
+        )
+        .replace(
+            '<style id="sol-prc-export-style"></style>',
+            f'<style id="sol-prc-export-style">\n{css}\n</style>',
+            1,
+        )
+        # Real proofs are pretty-printed: newlines exist outside the raw-text
+        # blocks too, so the drifted line index resolves to a bogus offset.
+        .replace("><", ">\n<")
     )
 
     proof = compose_prc_proof(template, CREATIVE, "banner")
 
-    assert 'srcdoc="scene one"' not in proof
+    style = re.search(r"<style id=\"sol-prc-export-style\">(.*?)</style>", proof, re.DOTALL)
+    assert style
+    assert "width: var(--page-width);" in style.group(1)
+    assert "max-width: var(--page-width);" in style.group(1)
+    assert "<iframe" not in style.group(1)
+
+
+def test_compose_prc_proof_does_not_relabel_a_non_creative_prototype():
+    # The ISI prototype is hydrated from __BANNER_TEMPLATE_EXPANDED_SRCDOC__, not
+    # from the banner creative. Tagging it as a banner slot makes the runtime
+    # stamp the wrong document into it.
+    template = BANNER_TEMPLATE.replace(
+        '<iframe class="banner-frame" srcdoc="old"></iframe>',
+        '<iframe class="banner-frame" data-sol-prc-creative="banner" srcdoc="old"></iframe>',
+        1,
+    ).replace(
+        "</main>",
+        '<template id="isi-region-template">'
+        '<iframe class="banner-frame" title="Expanded ISI"></iframe>'
+        "</template></main>",
+    )
+
+    proof = compose_prc_proof(template, CREATIVE, "banner")
+
+    isi = re.search(
+        r'<template\b[^>]*id=["\']isi-region-template["\'][^>]*>(.*?)</template\s*>',
+        proof,
+        re.DOTALL | re.IGNORECASE,
+    )
+    assert isi
+    assert "data-sol-prc-creative" not in isi.group(1)
+    assert "srcdoc=" not in isi.group(1)
+
+
+def test_validate_prc_proof_rejects_empty_live_banner_slot():
+    proof = compose_prc_proof(BANNER_TEMPLATE, CREATIVE, "banner")
+    proof = proof.replace(
+        "</main>",
+        '<iframe data-sol-prc-creative="banner"></iframe></main>',
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="empty creative slot"):
+        validate_prc_proof(proof, "banner")
+
+
+def test_validate_prc_proof_rejects_comment_only_field():
+    proof = compose_prc_proof(EMAIL_TEMPLATE, CREATIVE, "email")
+    proof = proof.replace(
+        '<div data-sol-prc-field="file_name">KEEP EDIT</div>',
+        '<!-- data-sol-prc-field="file_name" -->',
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="baked contract v2"):
+        validate_prc_proof(proof, "email")
+
+
+def test_validate_prc_proof_rejects_legacy_annotation_residue():
+    proof = compose_prc_proof(EMAIL_TEMPLATE, CREATIVE, "email").replace(
+        "</body>",
+        '<div class="callout-overlay"></div></body>',
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="legacy annotation DOM"):
+        validate_prc_proof(proof, "email")
+
+
+def test_compose_prc_proof_stamps_field_when_only_comment_mentions_it():
+    template = (
+        EMAIL_TEMPLATE.replace(
+            '<div data-sol-prc-field="file_name">KEEP EDIT</div>',
+            '<!-- data-sol-prc-field="file_name" -->',
+        )
+        .replace(
+            '<script id="sol-prc-config" type="application/json">',
+            '<script id="prc-cover-data" type="application/json" data-sol-prc-config>',
+        )
+        .replace(
+            '<meta name="sol-prc-contract" content="v2" data-profile="email">',
+            "",
+        )
+    )
+
+    proof = compose_prc_proof(template, CREATIVE, "email")
+
+    assert '<span hidden data-sol-prc-field="file_name"></span>' in proof
+
+
+@pytest.mark.parametrize(
+    ("content_type", "template"),
+    [
+        ("email", EMAIL_TEMPLATE),
+        ("banner", BANNER_TEMPLATE),
+        ("social", SOCIAL_TEMPLATE),
+    ],
+)
+def test_compose_prc_proof_removes_legacy_annotation_format(
+    content_type: str,
+    template: str,
+):
+    creative = '<!doctype html><html><body><a href="https://example.test/landing">CTA</a></body></html>'
+    legacy = (
+        '<div class="callout-overlay"><div class="callout-box">old</div></div>'
+        "<style>.callout-line{stroke:red}.layout-kept{display:block}</style>"
+        "<script>function layoutStage(){};"
+        'document.querySelector(".prc-callout-gutter");'
+        'document.querySelector(".prc-connector-svg");</script>'
+        "<script>window.__prc_annotation_positions = {old:{x:1}};</script>"
+    )
+
+    proof = compose_prc_proof(template.replace("</body>", f"{legacy}</body>"), creative, content_type)
+
+    assert "https://example.test/landing" in proof
+    assert ".layout-kept{display:block}" in proof
+    for leftover in (
+        "callout-overlay",
+        "callout-box",
+        "callout-line",
+        "layoutStage",
+        "prc-callout-gutter",
+        "prc-connector-svg",
+        "__prc_annotation_positions",
+    ):
+        assert leftover not in proof
+
+
+def test_compose_prc_proof_preserves_distinct_banner_scene_frames():
+    template = BANNER_TEMPLATE.replace(
+        '<iframe class="banner-frame" srcdoc="old"></iframe>',
+        '<iframe class="banner-frame"></iframe>',
+    ).replace(
+        "</template>",
+        '</template><iframe data-sol-prc-creative="banner" srcdoc="scene one"></iframe>'
+        '<iframe data-sol-prc-creative="banner" srcdoc="scene two"></iframe>',
+        1,
+    )
+
+    proof = compose_prc_proof(template, CREATIVE, "banner")
+
+    assert 'srcdoc="scene one"' in proof
     assert 'srcdoc="scene two"' in proof
 
 
@@ -1241,6 +1624,28 @@ def test_create_prc_template_bakes_a_draft_operation_version(
         # is created_at then id, so the pair cannot share a timestamp.
         assert feedback.created_at < row.created_at
         assert feedback.message_metadata["kind"] == "user_feedback"
+
+
+def test_supplied_operation_bake_normalizes_legacy_annotations_before_strict_validation():
+    supplied = OPERATION_BAKE_EMAIL.replace(
+        "</body>",
+        '<div class="callout-overlay"></div>'
+        "<script>function layoutStage(){};"
+        'document.querySelector(".prc-callout-gutter");'
+        'document.querySelector(".prc-connector-svg");</script>'
+        "</body>",
+    )
+
+    proof = operations._compose_supplied_prc_proof(
+        supplied,
+        "<html><body>current creative</body></html>",
+        "email",
+    )
+
+    assert "current creative" in proof
+    assert "callout-overlay" not in proof
+    assert "layoutStage" not in proof
+    validate_prc_proof(proof, "email")
 
 
 def test_operation_bake_carries_metadata_from_exact_current_head(
