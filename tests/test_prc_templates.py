@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from sqlalchemy.orm import Session
 from test_server import rpc, tool_payload
 
 import solstice_mcp.operations as operations
+from solstice_mcp import prc_proof_composer
 from solstice_mcp.brands import Brand
 from solstice_mcp.operations import (
     CgOperation,
@@ -172,6 +174,52 @@ def test_parse_structure_offsets_address_the_original_source():
 
     assert len(frames) == 1
     assert source[frames[0].start : frames[0].end] == frames[0].opening
+
+
+def test_validate_prc_proof_rejects_markup_spliced_into_a_stylesheet():
+    proof = compose_prc_proof(BANNER_TEMPLATE, CREATIVE, "banner")
+    corrupted = proof.replace(
+        '<style id="sol-prc-export-style">',
+        '<style id="sol-prc-export-style">.page { wi<iframe class="banner-frame">dth: 10px; }',
+        1,
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="stylesheet"):
+        validate_prc_proof(corrupted, "banner")
+
+
+def test_compose_prc_proof_refuses_a_seed_with_a_corrupted_stylesheet():
+    # A corrupted proof must not be carried forward: composition seeds from the
+    # previous bake, so propagating it would make the damage permanent.
+    seed = BANNER_TEMPLATE.replace(
+        '<style id="sol-prc-export-style"></style>',
+        '<style id="sol-prc-export-style">.page { wi<iframe class="banner-frame">dth: 10px; }</style>',
+        1,
+    )
+
+    with pytest.raises(InvalidPrcProofError, match="stylesheet"):
+        compose_prc_proof(seed, CREATIVE, "banner")
+
+
+def test_prepare_banner_slots_refuses_offsets_that_do_not_address_their_tag(monkeypatch):
+    template = BANNER_TEMPLATE.replace(
+        '<iframe class="banner-frame" srcdoc="old"></iframe>',
+        '<iframe class="banner-frame" data-sol-prc-creative="banner" srcdoc="old"></iframe>',
+        1,
+    )
+    real_parse = prc_proof_composer._parse_structure
+
+    def drifted(source: str):
+        parsed = real_parse(source)
+        parsed.iframes = [
+            replace(frame, start=frame.start - 7, end=frame.end - 7) for frame in parsed.iframes
+        ]
+        return parsed
+
+    monkeypatch.setattr(prc_proof_composer, "_parse_structure", drifted)
+
+    with pytest.raises(InvalidPrcProofError, match="offset"):
+        compose_prc_proof(template, CREATIVE, "banner")
 
 
 def test_compose_prc_proof_keeps_stylesheet_when_style_block_spans_lines():

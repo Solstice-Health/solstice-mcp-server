@@ -188,6 +188,7 @@ def _is_legacy_seed(source: str, content_type: str) -> bool:
 def _validate_base(source: str, content_type: str) -> None:
     if content_type not in _SLOTS:
         raise InvalidPrcProofError(f"Unsupported PRC content type: {content_type}")
+    _assert_intact_stylesheets(source)
     structure = _parse_structure(source)
     strict = all(
         (
@@ -284,6 +285,11 @@ def _prepare_banner_slots(source: str, creative_html: str) -> str:
             "data-sol-prc-creative",
             "banner",
         )
+        # Splicing by offset silently rewrites whatever occupies that span, so
+        # refuse unless it is still the tag we parsed. A drifted offset lands in
+        # a stylesheet or script and destroys it without any later check noticing.
+        if updated[frame.start : frame.end] != frame.opening:
+            raise InvalidPrcProofError("PRC banner slot offset does not address its iframe")
         updated = f"{updated[: frame.start]}{opening}{updated[frame.end :]}"
     if prototype_frames:
         return updated
@@ -562,6 +568,18 @@ def _set_banner_srcdoc_payload(source: str, creative_html: str) -> str:
     return re.sub(r"</head\s*>", lambda match: f"{script}{match.group(0)}", source, count=1, flags=re.I)
 
 
+def _assert_intact_stylesheets(source: str) -> None:
+    """Reject a proof whose stylesheet holds spliced markup.
+
+    A browser treats such text as inert CSS, so the damage is invisible to every
+    other contract check while the affected rules simply stop applying. Failing
+    here also stops a corrupted bake from seeding the next version.
+    """
+    for match in _RAW_TEXT_BLOCK.finditer(source):
+        if match.group("tag").lower() == "style" and "<iframe" in match.group(3).lower():
+            raise InvalidPrcProofError("PRC proof has markup spliced into a stylesheet")
+
+
 def validate_prc_proof(
     source: str,
     content_type: str,
@@ -571,6 +589,7 @@ def validate_prc_proof(
     slots = _SLOTS.get(content_type)
     if slots is None:
         raise InvalidPrcProofError(f"Unsupported PRC content type: {content_type}")
+    _assert_intact_stylesheets(source)
     structure = _parse_structure(source)
     body = _tag_with_attrs(source, "body", **{"data-sol-prc-proof": content_type})
     config = _tag_with_attrs(source, "script", type="application/json", id="sol-prc-config")
