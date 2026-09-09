@@ -8,9 +8,10 @@ Production is dual-pointed by host:
 
 - Cursor / Claude Code: `https://api.solsticehealth.co/mcp` (ECS direct)
 - Codex (and AgentCore fallback): `https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp`
-- Staging: `https://api-staging.solsticehealth.co/mcp`
 - Platform testing: `https://api-platform-testing.solsticehealth.co/mcp`
 - Dev: `https://api-dev.solsticehealth.co/mcp`
+
+There is no `api-staging` MCP service. Both non-prod servers run on the shared dev ECS cluster and call their matching Backend, but they serve the same full tenant list as prod — the environment picks which Backend and which deployed code you get, not which tenants you can see. The AgentCore gateway fronts prod only, so non-prod clients always use the ECS-direct round trip.
 
 Each MCP URL is also its Auth0 audience. The issuer is `https://login-solstice.us.auth0.com/`. Clients request `mcp:connect openid email`.
 

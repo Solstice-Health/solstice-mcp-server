@@ -1,10 +1,12 @@
 name: CI
 
-# push is scoped to main so PR branches run once (via pull_request), not twice.
+# push is scoped to the integration branches so PR branches run once (via
+# pull_request), not twice. dev is included because it is the merge target for
+# feature work and mypy runs nowhere else.
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [dev, main]
 
 permissions:
   contents: read

@@ -1,0 +1,315 @@
+name: Deploy Dev
+
+# Mirrors Backend-Server deploy-dev.yml: pushes to dev deploy the dev ECS
+# service on the shared solstice-dev-cluster. v* tags deploy prod
+# (deploy-prod.yml); there is no separate platform-testing MCP tier.
+# No AgentCore gateway sync here — the gateway fronts prod only.
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch: # manual redeploy of current dev
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: solstice-mcp-dev
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      AWS_REGION: us-east-1
+      ECS_CLUSTER: solstice-dev-cluster
+      ECS_SERVICE: solstice-dev-mcp-server
+      BACKEND_ECS_SERVICE: solstice-dev-backend-server
+      ECR_REPOSITORY: solstice-dev-mcp
+      RESOURCE_URL: https://api-dev.solsticehealth.co/mcp
+      BACKEND_BASE_URL: https://api-dev.solsticehealth.co
+      # Dev Backend validates the same shared agent-memory M2M audience as prod
+      # (Backend-Server terraform/environments/dev sets AUTH0_M2M_MEMORY_AUDIENCE
+      # to the prod identifier), so only the base URL differs.
+      BACKEND_AUTH0_CLIENT_ID: P65vxcrfpTUR9HV3NHXM1ISMupr41I3b
+      BACKEND_AUTH0_AUDIENCE: https://api.solsticehealth.co/agent-memory
+      BACKEND_AUTH0_SCOPE: memory:invoke
+      # Auth0 token endpoint for the login-solstice tenant (the authorization
+      # server advertised by /.well-known/oauth-protected-resource/mcp). Used to
+      # mint a short-lived CI token for the tools/list registration asserts.
+      MCP_CI_AUTH0_TOKEN_URL: https://login-solstice.us.auth0.com/oauth/token
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Verify
+        run: |
+          pip install -r requirements-dev.txt
+          ruff check .
+          pytest
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64
+
+      - name: Mint MCP CI token
+        id: mcp_token
+        env:
+          MCP_CI_AUTH0_CLIENT_ID: ${{ secrets.MCP_CI_AUTH0_CLIENT_ID }}
+          MCP_CI_AUTH0_CLIENT_SECRET: ${{ secrets.MCP_CI_AUTH0_CLIENT_SECRET }}
+          MCP_CI_AUTH0_TOKEN_URL: ${{ env.MCP_CI_AUTH0_TOKEN_URL }}
+          MCP_AUDIENCE: ${{ env.RESOURCE_URL }}
+        run: |
+          # The ECS smoke tools/list assert needs a bearer token with scope
+          # mcp:connect for audience $MCP_AUDIENCE. Mint a short-lived M2M token
+          # via client-credentials instead of storing a static (expiring) token.
+          # Minted BEFORE build/register/deploy on purpose: a mint failure
+          # (missing secrets, Auth0 4xx, empty access_token) must abort the run
+          # before any new task definition goes live, so there is nothing
+          # unverified left running to roll back (fail-closed).
+          if [ -z "$MCP_CI_AUTH0_CLIENT_ID" ] || [ -z "$MCP_CI_AUTH0_CLIENT_SECRET" ]; then
+            echo "MCP_CI_AUTH0_CLIENT_ID/SECRET not set; cannot mint token for tools/list assert" >&2
+            exit 1
+          fi
+          TOKEN=$(curl --fail --silent --show-error -X POST "$MCP_CI_AUTH0_TOKEN_URL" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -nc \
+              --arg id "$MCP_CI_AUTH0_CLIENT_ID" \
+              --arg secret "$MCP_CI_AUTH0_CLIENT_SECRET" \
+              --arg aud "$MCP_AUDIENCE" \
+              '{client_id:$id, client_secret:$secret, audience:$aud, grant_type:"client_credentials", scope:"mcp:connect"}')" \
+            | jq -r '.access_token // empty')
+          if [ -z "$TOKEN" ]; then
+            echo "Auth0 client-credentials grant returned no access_token" >&2
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        id: image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:${GITHUB_SHA::12}-${GITHUB_RUN_ATTEMPT}"
+          docker build --tag "$IMAGE" .
+          docker push "$IMAGE"
+          echo "uri=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Register task definition
+        id: task
+        env:
+          IMAGE: ${{ steps.image.outputs.uri }}
+        run: |
+          TASK_DEFINITION=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+          echo "previous_arn=$TASK_DEFINITION" >> "$GITHUB_OUTPUT"
+          aws ecs describe-task-definition \
+            --task-definition "$TASK_DEFINITION" \
+            --query taskDefinition > task-definition.json
+          BACKEND_TASK_DEFINITION=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$BACKEND_ECS_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+          aws ecs describe-task-definition \
+            --task-definition "$BACKEND_TASK_DEFINITION" \
+            --query taskDefinition > backend-task-definition.json
+          BACKEND_AUTH0_SECRET_ARN=$(jq -r '
+            .containerDefinitions[]
+            | .secrets // []
+            | map(select(.name == "AUTH0_CLIENT_SECRET"))
+            | .[0].valueFrom // empty
+          ' backend-task-definition.json)
+          CENTRAL_AUTH_DB_ARN=$(jq -r '
+            .containerDefinitions[]
+            | .secrets // []
+            | map(select(.name == "CENTRAL_AUTH_DB"))
+            | .[0].valueFrom // empty
+          ' backend-task-definition.json)
+          if [ -z "$BACKEND_AUTH0_SECRET_ARN" ]; then
+            echo "Dev Backend task does not expose AUTH0_CLIENT_SECRET through ECS secrets"
+            exit 1
+          fi
+          if [ -z "$CENTRAL_AUTH_DB_ARN" ]; then
+            echo "Dev Backend task does not expose CENTRAL_AUTH_DB through ECS secrets"
+            exit 1
+          fi
+          # Memory tools: SOLSTICE_BACKEND_* + M2M secret.
+          # User-admin tools: AUTH0_CLIENT_ID (mgmt app) + AUTH0_CLIENT_SECRET + CENTRAL_AUTH_DB.
+          # Drop the Terraform stub AUTH0_CLIENT_SECRET=unused from env when promoting the real secret.
+          jq \
+            --arg image "$IMAGE" \
+            --arg backend_base_url "$BACKEND_BASE_URL" \
+            --arg backend_client_id "$BACKEND_AUTH0_CLIENT_ID" \
+            --arg backend_audience "$BACKEND_AUTH0_AUDIENCE" \
+            --arg backend_scope "$BACKEND_AUTH0_SCOPE" \
+            --arg backend_secret_arn "$BACKEND_AUTH0_SECRET_ARN" \
+            --arg central_auth_db_arn "$CENTRAL_AUTH_DB_ARN" \
+            '
+            (.containerDefinitions[] | select(.name == "mcp-server")) |= (
+              .image = $image
+              | .environment = (
+                  ((.environment // []) | map(select(
+                    .name != "SOLSTICE_BACKEND_BASE_URL"
+                    and .name != "SOLSTICE_BACKEND_AUTH0_CLIENT_ID"
+                    and .name != "SOLSTICE_BACKEND_AUTH0_AUDIENCE"
+                    and .name != "SOLSTICE_BACKEND_AUTH0_SCOPE"
+                    and .name != "AUTH0_CLIENT_ID"
+                    and .name != "AUTH0_CLIENT_SECRET"
+                  )))
+                  + [
+                      {name: "AUTH0_CLIENT_ID", value: $backend_client_id},
+                      {name: "SOLSTICE_BACKEND_BASE_URL", value: $backend_base_url},
+                      {name: "SOLSTICE_BACKEND_AUTH0_CLIENT_ID", value: $backend_client_id},
+                      {name: "SOLSTICE_BACKEND_AUTH0_AUDIENCE", value: $backend_audience},
+                      {name: "SOLSTICE_BACKEND_AUTH0_SCOPE", value: $backend_scope}
+                    ]
+                )
+              | .secrets = (
+                  ((.secrets // []) | map(select(
+                    .name != "SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET"
+                    and .name != "AUTH0_CLIENT_SECRET"
+                    and .name != "CENTRAL_AUTH_DB"
+                  )))
+                  + [
+                      {name: "SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET", valueFrom: $backend_secret_arn},
+                      {name: "AUTH0_CLIENT_SECRET", valueFrom: $backend_secret_arn},
+                      {name: "CENTRAL_AUTH_DB", valueFrom: $central_auth_db_arn}
+                    ]
+                )
+            )
+            | del(
+                .taskDefinitionArn,
+                .revision,
+                .status,
+                .requiresAttributes,
+                .compatibilities,
+                .registeredAt,
+                .registeredBy
+              )
+          ' task-definition.json > next-task-definition.json
+          jq -e --arg image "$IMAGE" --arg backend_client_id "$BACKEND_AUTH0_CLIENT_ID" \
+            '.containerDefinitions | any(
+              .name == "mcp-server"
+              and .image == $image
+              and (.environment | any(.name == "SOLSTICE_BACKEND_BASE_URL"))
+              and (.environment | any(.name == "AUTH0_CLIENT_ID" and .value == $backend_client_id))
+              and (.environment | all(.name != "AUTH0_CLIENT_SECRET"))
+              and (.secrets | any(.name == "SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET"))
+              and (.secrets | any(.name == "AUTH0_CLIENT_SECRET"))
+              and (.secrets | any(.name == "CENTRAL_AUTH_DB"))
+            )' \
+            next-task-definition.json > /dev/null
+          TASK_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://next-task-definition.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy ECS service
+        env:
+          TASK_ARN: ${{ steps.task.outputs.arn }}
+        run: |
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "$TASK_ARN" \
+            --force-new-deployment
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+
+      - name: Diagnose failed deployment
+        if: failure()
+        run: |
+          aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].events[:10].[createdAt,message]' \
+            --output table
+          TASKS=$(aws ecs list-tasks \
+            --cluster "$ECS_CLUSTER" \
+            --service-name "$ECS_SERVICE" \
+            --desired-status STOPPED \
+            --max-items 10 \
+            --query 'taskArns' \
+            --output text)
+          if [ -n "$TASKS" ] && [ "$TASKS" != "None" ]; then
+            aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --tasks $TASKS \
+              --query 'tasks[].{task:taskArn,reason:stoppedReason,containers:containers[].{name:name,reason:reason,exitCode:exitCode}}' \
+              --output json
+          fi
+
+      - name: Smoke test
+        id: smoke
+        env:
+          RESOURCE_URL: ${{ env.RESOURCE_URL }}
+          MCP_CI_ACCESS_TOKEN: ${{ steps.mcp_token.outputs.token }}
+        run: |
+          ORIGIN="${RESOURCE_URL%/mcp}"
+          # Public ALB routes only /mcp* to this service — ORIGIN/health is the
+          # Backend. /mcp/health is lean liveness (no tool inventory).
+          HEALTH=$(curl --fail --silent --show-error "$ORIGIN/mcp/health")
+          echo "$HEALTH" | jq -e '.status == "ok" and .service == "solstice-mcp"'
+          echo "$HEALTH" | jq -e '(.tools | not) and (.tool_count | not)'
+          # Readiness is informational in smoke (ALB stays on /health). Fail soft
+          # with a warning so a cold tenant probe does not roll back a healthy task.
+          READY_CODE=$(curl --silent --output /tmp/mcp-ready.json --write-out "%{http_code}" "$ORIGIN/mcp/ready" || true)
+          echo "mcp_ready_http=$READY_CODE body=$(cat /tmp/mcp-ready.json 2>/dev/null || true)"
+          curl --fail --silent --show-error \
+            "$ORIGIN/.well-known/oauth-protected-resource/mcp" \
+            | jq -e --arg resource "$RESOURCE_URL" \
+              '.resource == $resource and (.scopes_supported | index("mcp:connect"))'
+          STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" "$RESOURCE_URL")
+          test "$STATUS" = "401"
+          # Tool registration: authenticated tools/list (avoids leaking inventory
+          # on public health). Fail closed — the token is minted in the prior
+          # step, so an empty value here means the mint step regressed.
+          if [ -z "$MCP_CI_ACCESS_TOKEN" ]; then
+            echo "Minted MCP CI token missing; cannot assert tools/list registration" >&2
+            exit 1
+          fi
+          RESP=$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $MCP_CI_ACCESS_TOKEN" \
+            -H "Accept: application/json, text/event-stream" \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+            "$RESOURCE_URL")
+          echo "$RESP" | jq -e '
+            ([.result.tools[].name] | index("solstice_whoami"))
+            and ([.result.tools[].name] | index("solstice_reset_password"))
+            and ([.result.tools[].name] | index("solstice_change_brand_role"))
+            and ([.result.tools[].name] | index("solstice_add_user"))
+            and ([.result.tools[].name] | index("solstice_memory_recall"))
+            and ([.result.tools[].name] | index("solstice_memory_observe"))
+            and ([.result.tools[].name] | index("solstice_memory_remember"))
+            and ([.result.tools[].name] | index("solstice_memory_replace"))
+            and ([.result.tools[].name] | index("solstice_memory_forget"))
+          '
+          echo "$RESP" | jq -r '"registered_tools=\(.result.tools | length): \([.result.tools[].name] | join(", "))"'
+
+      - name: Roll back on smoke failure
+        if: failure() && steps.smoke.outcome == 'failure' && steps.task.outputs.previous_arn != ''
+        env:
+          PREVIOUS_ARN: ${{ steps.task.outputs.previous_arn }}
+        run: |
+          echo "Smoke test failed; rolling back to $PREVIOUS_ARN"
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "$PREVIOUS_ARN" \
+            --force-new-deployment
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
