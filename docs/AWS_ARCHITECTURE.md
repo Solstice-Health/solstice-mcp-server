@@ -93,9 +93,12 @@ flowchart TB
     class dns,auth0,ecr,control,alb,rds extNode
 ```
 
-Dev, staging, and platform-testing use the existing dev ECS cluster, ALB, RDS
-instance, and `solstice-dev-mcp` ECR repository. Production uses the existing
-prod equivalents and `solstice-prod-mcp`. Each ECS task runs in private
+Dev and platform-testing use the existing dev ECS cluster, ALB, and the
+`solstice-dev-mcp` ECR repository, and each calls its matching Backend;
+`api-staging` is not deployed. Production uses the prod equivalents and
+`solstice-prod-mcp`. Every task reads tenant databases on both the dev and prod
+RDS instances, because tenant discovery scans every configured tenant
+regardless of the task's own environment. Each ECS task runs in private
 `solstice-private-*` subnets across three availability zones. Those subnets
 egress through the existing NAT gateway for Auth0 JWKS and ECR access. The ALB
 is internet-facing across three public subnets. MCP tasks have no public IP;
