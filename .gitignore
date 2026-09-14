@@ -11,3 +11,8 @@ htmlcov/
 docs/solstice-mcp-ui-lab.html
 docs/solstice-cel-playbooks.html
 .codegraph/
+
+# Codex local setup (machine-specific, do not commit)
+.codex/
+.agents/skills/
+AGENTS.md
