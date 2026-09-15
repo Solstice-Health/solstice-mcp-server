@@ -247,6 +247,40 @@ def _slot_present(source: str, slot: str) -> bool:
     return any(frame.attrs.get("data-sol-prc-creative") == slot for frame in _parse_structure(source).iframes)
 
 
+class _TextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.chunks: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.chunks.append(data)
+
+
+def _words(fragment: str) -> str:
+    """Visible text only: script/style bodies masked, whitespace collapsed."""
+    parser = _TextParser()
+    parser.feed(_mask_raw_text(fragment))
+    parser.close()
+    return " ".join("".join(parser.chunks).split())
+
+
+def _slots_restyle_creative(source: str, creative_html: str, content_type: str) -> bool:
+    """Every slot says exactly what the creative says; only markup differs."""
+    # Text equality, not bytes. Email toppers and template-wrapped social clones
+    # reword the creative, so those fall back to reinjection.
+    slots = _SLOTS[content_type]
+    frames = [
+        frame
+        for frame in _parse_structure(source).iframes
+        if frame.attrs.get("data-sol-prc-creative") in slots and not frame.in_isi_region
+    ]
+    target = _words(creative_html)
+    return bool(frames) and all(
+        (frame.attrs.get("srcdoc") or "").strip() and _words(frame.attrs.get("srcdoc") or "") == target
+        for frame in frames
+    )
+
+
 def _required_slots(source: str, content_type: str) -> bool:
     slots = _SLOTS.get(content_type)
     if slots is None:
@@ -760,7 +794,13 @@ def validate_prc_proof(
                 raise InvalidPrcProofError("PRC proof has an empty creative slot")
 
 
-def compose_prc_proof(base_html: str, creative_html: str, content_type: str) -> str:
+def compose_prc_proof(
+    base_html: str,
+    creative_html: str,
+    content_type: str,
+    *,
+    keep_restyled_slots: bool = False,
+) -> str:
     if not isinstance(base_html, str) or not base_html.strip():
         raise InvalidPrcProofError("PRC proof HTML is required")
     if not isinstance(creative_html, str) or not creative_html.strip():
@@ -769,6 +809,12 @@ def compose_prc_proof(base_html: str, creative_html: str, content_type: str) -> 
     proof = _stamp_contract(base_html, content_type)
     if content_type == "banner" and not _required_slots(base_html, content_type):
         proof = _adapt_legacy_banner(proof)
+    elif (
+        keep_restyled_slots
+        and content_type != "banner"
+        and _slots_restyle_creative(base_html, creative_html, content_type)
+    ):
+        pass  # same words, restyled markup: the client's slot creative stands
     else:
         for slot in _SLOTS[content_type]:
             if _slot_present(base_html, slot):
