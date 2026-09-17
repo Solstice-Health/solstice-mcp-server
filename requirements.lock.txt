@@ -19,6 +19,8 @@ botocore==1.43.54
     # via
     #   boto3
     #   s3transfer
+bytecode==0.19.0
+    # via ddtrace
 certifi==2026.7.22
     # via
     #   httpcore
@@ -31,6 +33,12 @@ colorama==0.4.6 ; sys_platform == 'win32'
     # via click
 cryptography==49.0.0
     # via pyjwt
+ddtrace==4.15.0
+    # via -r requirements.txt
+ddtrace-internal==0.1.0
+    # via ddtrace
+envier==0.6.1
+    # via ddtrace
 greenlet==3.5.4 ; platform_machine == 'AMD64' or platform_machine == 'WIN32' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'ppc64le' or platform_machine == 'win32' or platform_machine == 'x86_64'
     # via sqlalchemy
 gunicorn==23.0.0
@@ -44,7 +52,9 @@ h11==0.16.0
 httpcore==1.0.9
     # via httpx
 httpx==0.28.1
-    # via mcp
+    # via
+    #   -r requirements.txt
+    #   mcp
 httpx-sse==0.4.3
     # via mcp
 idna==3.18
@@ -61,6 +71,10 @@ jsonschema-specifications==2025.9.1
     # via jsonschema
 mcp==1.28.1
     # via -r requirements.txt
+openfeature-sdk==0.9.0
+    # via -r requirements.txt
+opentelemetry-api==1.44.0
+    # via ddtrace
 packaging==26.2
     # via gunicorn
 psycopg2-binary==2.9.12
@@ -111,6 +125,7 @@ typing-extensions==4.16.0
     # via
     #   anyio
     #   mcp
+    #   opentelemetry-api
     #   pydantic
     #   pydantic-core
     #   referencing
@@ -131,3 +146,5 @@ uvicorn==0.51.0
     #   uvicorn-worker
 uvicorn-worker==0.4.0
     # via -r requirements.txt
+wrapt==2.4.1
+    # via ddtrace
