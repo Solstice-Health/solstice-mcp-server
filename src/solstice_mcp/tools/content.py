@@ -504,6 +504,36 @@ def register_content_tools(
         ``solstice_prc_template_rules``, preview it, and retry only after approval.
         Requires SOLSTICE_STAFF on the selected brand.
         """
+        baker = None
+        if via_backend(tenant_slug, brand_id):
+
+            def baker(*, operation_id: str, content_type: str, operation_bake_s3_key: str) -> dict[str, Any]:
+                """Bake through the Backend as a proof commit.
+
+                An operation bake IS a proof edit: the proof is supplied, and
+                the creative it wraps is the one the operation already holds.
+                """
+                committed = _backend_call(
+                    backend().commit_version,
+                    tenant_slug=tenant_slug,
+                    actor_sub=require_subject(),
+                    operation_id=operation_id,
+                    body={"kind": "proof", "proof": {"s3_key": operation_bake_s3_key}},
+                )
+                head = str(committed.get("head_message_id") or "")
+                return {
+                    "operation_id": operation_id,
+                    "intent": committed.get("intent"),
+                    "message_id": _row_id_from_key(operation_bake_s3_key),
+                    "id": head,
+                    "s3_key": committed.get("content"),
+                    "prc_template_s3_key": committed.get("prc_template_s3_key"),
+                    # Not reported by the Backend, which stores the proof
+                    # rather than measuring it. Zero rather than a guess.
+                    "html_size_bytes": 0,
+                    "asset_url": committed.get("asset_url"),
+                }
+
         template = create_prc_template_version(
             require_subject(),
             tenant_slug,
@@ -521,6 +551,7 @@ def register_content_tools(
             status=status,
             publish_target=publish_target,
             operation_id=operation_id,
+            operation_baker=baker,
             max_inline_bytes=max_inline_bytes,
             registry=registry,
             session_factory=session_factory,

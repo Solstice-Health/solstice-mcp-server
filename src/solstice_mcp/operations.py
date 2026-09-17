@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from html import unescape
@@ -84,6 +84,7 @@ def _clamp_list_limit(limit: int) -> int:
 
 def _clamp_list_offset(offset: int) -> int:
     return max(0, int(offset))
+
 
 # Document rows carry a version; text/blueprint rows never do. Same set as the
 # Backend's ``_DOCUMENT_ROW_TYPES`` (message_table_repository).
@@ -266,16 +267,12 @@ def _validate_prc_template_bake_s3_key(key: str, operation_id: str) -> str:
         )
     row_id = key[len(prefix) : -len(".html")]
     if _normalized_uuid(row_id) is None:
-        raise ToolError(
-            "invalid_request: operation_bake_s3_key row_id must be a UUID"
-        )
+        raise ToolError("invalid_request: operation_bake_s3_key row_id must be a UUID")
     return row_id
 
 
 def _too_large_error(kind: str, size_bytes: int, max_inline_bytes: int) -> ToolError:
-    return ToolError(
-        f"too_large: {kind} is {size_bytes} bytes; inline limit is {max_inline_bytes}"
-    )
+    return ToolError(f"too_large: {kind} is {size_bytes} bytes; inline limit is {max_inline_bytes}")
 
 
 def _ensure_inline_size(kind: str, html: str, max_inline_bytes: int) -> None:
@@ -296,18 +293,14 @@ def _load_uploaded_operation_bake(
     row_id = _validate_prc_template_bake_s3_key(operation_bake_s3_key, operation_id)
     size = s3.head(bucket, operation_bake_s3_key)
     if size is None:
-        raise ToolError(
-            "not_found: object not uploaded - PUT the bake HTML to upload_url first"
-        )
+        raise ToolError("not_found: object not uploaded - PUT the bake HTML to upload_url first")
     if size > max_inline_bytes:
         raise _too_large_error("operation bake html", size, max_inline_bytes)
     try:
         # ponytail: loads bake into MCP memory; stream-parse if process OOM
         html = s3.download(bucket, operation_bake_s3_key, max_inline_bytes).decode("utf-8")
     except S3ObjectMissing:
-        raise ToolError(
-            "not_found: object not uploaded - PUT the bake HTML to upload_url first"
-        ) from None
+        raise ToolError("not_found: object not uploaded - PUT the bake HTML to upload_url first") from None
     except S3ObjectTooLarge:
         raise _too_large_error("operation bake html", size, max_inline_bytes) from None
     except S3Error as exc:
@@ -358,9 +351,7 @@ class CgOperation(Base):
     # does not affect INSERTs, and any explicit attribute access still lazy-
     # loads within the session.
     prompt: Mapped[str | None] = mapped_column(String, nullable=True, deferred=True)
-    filtered_clinical_claims_picker: Mapped[Any | None] = mapped_column(
-        JSON, nullable=True, deferred=True
-    )
+    filtered_clinical_claims_picker: Mapped[Any | None] = mapped_column(JSON, nullable=True, deferred=True)
     page: Mapped[int | None] = mapped_column(nullable=True)
     status: Mapped[str | None] = mapped_column(String, nullable=True)
     chat_title: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -420,9 +411,7 @@ class CgOperationMessage(Base):
     # The DB column ``metadata`` (jsonb in prod) is mapped to ``message_metadata``
     # and loaded deferred by default. Timeline reads explicitly undefer it for
     # the legacy versionIntent fallback; write paths also access it in-session.
-    message_metadata: Mapped[Any | None] = mapped_column(
-        "metadata", JSON, nullable=True, deferred=True
-    )
+    message_metadata: Mapped[Any | None] = mapped_column("metadata", JSON, nullable=True, deferred=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Server-owned S3 key for the baked proof HTML (not the creative body).
@@ -633,10 +622,7 @@ def _prc_explicitly_disabled(metadata: Any, content_type: str) -> bool:
 
 def _prc_writer_explicitly_disabled(metadata: Any, content_type: str) -> bool:
     """Writer behavior treats every explicit enabled=false as keyless."""
-    return any(
-        config.get("enabled") is False
-        for config in _prc_template_configs(metadata, content_type)
-    )
+    return any(config.get("enabled") is False for config in _prc_template_configs(metadata, content_type))
 
 
 def _template_by_id(session, template_id: str | None) -> PrcTemplateVersion | None:
@@ -780,9 +766,7 @@ def _compose_supplied_prc_proof(
         validate_prc_proof(supplied_proof, content_type, allow_legacy_annotations=True)
         return compose_prc_proof(supplied_proof, creative, content_type, keep_restyled_slots=True)
     except InvalidPrcProofError as exc:
-        raise ToolError(
-            f"invalid_request: operation bake must satisfy baked contract v2: {exc}"
-        ) from exc
+        raise ToolError(f"invalid_request: operation bake must satisfy baked contract v2: {exc}") from exc
 
 
 def _raise_if_unresolved_prc_fonts(
@@ -790,11 +774,7 @@ def _raise_if_unresolved_prc_fonts(
     grandfathered: set[str] | None = None,
 ) -> None:
     allowed = grandfathered or set()
-    unresolved = [
-        family
-        for family in _prc_bake_unresolved_fonts(proof)
-        if family not in allowed
-    ]
+    unresolved = [family for family in _prc_bake_unresolved_fonts(proof) if family not in allowed]
     if unresolved:
         raise ToolError(
             "invalid_request: operation_bake_html names fonts it never faces, so the "
@@ -921,9 +901,7 @@ def _prc_template_payload(
     html = template.html_template
     size_bytes = len(html.encode("utf-8"))
     if size_bytes > max_inline_bytes:
-        raise ToolError(
-            f"too_large: PRC template is {size_bytes} bytes; inline limit is {max_inline_bytes}"
-        )
+        raise ToolError(f"too_large: PRC template is {size_bytes} bytes; inline limit is {max_inline_bytes}")
     return {**payload, "html_template": html, "html_size_bytes": size_bytes}
 
 
@@ -944,14 +922,15 @@ def resolve_prc_template_for_brand(
     if not normalized_content_type:
         raise ToolError("invalid_request: content_type is required")
     require_brand_role(
-        subject, tenant_slug, brand_id,
+        subject,
+        tenant_slug,
+        brand_id,
         min_role=UserRole.MEMBER,
-        registry=registry, session_factory=session_factory,
+        registry=registry,
+        session_factory=session_factory,
     )
     with tenant_session(tenant_slug, session_factory) as session:
-        brand = session.scalar(
-            select(Brand).where(Brand.id == brand_id, Brand.deleted_at.is_(None))
-        )
+        brand = session.scalar(select(Brand).where(Brand.id == brand_id, Brand.deleted_at.is_(None)))
         if brand is None:
             return None
         metadata = brand.brand_metadata if isinstance(brand.brand_metadata, dict) else {}
@@ -985,9 +964,7 @@ def resolve_prc_template_for_brand(
                 template = None
 
         if template is None:
-            template = _template_by_id(
-                session, _pinned_template_id(metadata, normalized_content_type)
-            )
+            template = _template_by_id(session, _pinned_template_id(metadata, normalized_content_type))
             if template is not None and template.content_type == normalized_content_type:
                 tier = "brand"
             else:
@@ -1056,9 +1033,7 @@ _MESSAGE_ORDER_NEWEST_FIRST = (
 
 def _latest_message(session, *where: Any) -> CgOperationMessage | None:
     """Head live row: last in Backend ``(created_at NULLS FIRST, id)`` order."""
-    return session.scalar(
-        select(CgOperationMessage).where(*where).order_by(*_MESSAGE_ORDER_NEWEST_FIRST).limit(1)
-    )
+    return session.scalar(select(CgOperationMessage).where(*where).order_by(*_MESSAGE_ORDER_NEWEST_FIRST).limit(1))
 
 
 def _latest_operation_bake(session, operation_id: str) -> dict[str, Any] | None:
@@ -1100,9 +1075,7 @@ def _head_document(session, operation_id: str) -> CgOperationMessage | None:
     )
 
 
-def _visible_head_document(
-    session, operation_id: str, *, staff: bool
-) -> CgOperationMessage | None:
+def _visible_head_document(session, operation_id: str, *, staff: bool) -> CgOperationMessage | None:
     """The current document version as THIS caller sees it.
 
     Mirrors the read filter in ``list_operation_messages``: staff see every
@@ -1136,9 +1109,7 @@ def _identifies(row: CgOperationMessage, candidate: str) -> bool:
     }
 
 
-def _find_message(
-    session, operation_id: str, candidate: str, *, lock: bool = False
-) -> CgOperationMessage | None:
+def _find_message(session, operation_id: str, candidate: str, *, lock: bool = False) -> CgOperationMessage | None:
     """Resolve one live message on this operation by row id, else ``message_id``.
 
     Reads publish the row ``id`` as ``head_message_id``. The ``message_id``
@@ -1198,16 +1169,12 @@ def prepare_prc_template_bake(
         raise ToolError(f"invalid_request: content_type must be one of {allowed}")
     with tenant_session(tenant_slug, session_factory) as session:
         op = session.scalar(
-            select(CgOperation).where(
-                CgOperation.id == parsed_operation_id, CgOperation.deleted_at.is_(None)
-            )
+            select(CgOperation).where(CgOperation.id == parsed_operation_id, CgOperation.deleted_at.is_(None))
         )
         if op is None or op.brand_id != brand_id:
             raise ToolError("not_authorized: unknown operation")
         if (op.content_type or "").lower() != normalized_content_type:
-            raise ToolError(
-                "invalid_request: operation content_type does not match the proof template"
-            )
+            raise ToolError("invalid_request: operation content_type does not match the proof template")
     require_brand_role(
         subject,
         tenant_slug,
@@ -1272,21 +1239,17 @@ def bake_prc_template_to_operation(
 
     with tenant_session(tenant_slug, session_factory) as session:
         locked = session.scalar(
-            select(CgOperation).where(
-                CgOperation.id == parsed_operation_id, CgOperation.deleted_at.is_(None)
-            ).with_for_update()
+            select(CgOperation)
+            .where(CgOperation.id == parsed_operation_id, CgOperation.deleted_at.is_(None))
+            .with_for_update()
         )
         if locked is None or locked.brand_id != brand_id:
             raise ToolError("not_authorized: unknown operation")
         if (locked.content_type or "").lower() != content_type:
-            raise ToolError(
-                "invalid_request: operation content_type does not match the proof template"
-            )
+            raise ToolError("invalid_request: operation content_type does not match the proof template")
         head = _latest_html_creative(session, parsed_operation_id)
         if head is None:
-            raise ToolError(
-                "invalid_state: operation has no html document to attach a proof bake to"
-            )
+            raise ToolError("invalid_state: operation has no html document to attach a proof bake to")
         head_content = head.content or ""
         if _looks_like_s3_key(head_content):
             creative_html = _download_html(
@@ -1301,9 +1264,7 @@ def bake_prc_template_to_operation(
             if not creative_html.encode("utf-8").strip():
                 raise ToolError("invalid_state: current html document is empty")
             _ensure_inline_size("current html", creative_html, max_inline_bytes)
-        supplied_proof = _compose_supplied_prc_proof(
-            supplied_proof, creative_html, content_type
-        )
+        supplied_proof = _compose_supplied_prc_proof(supplied_proof, creative_html, content_type)
         _ensure_inline_size("operation bake html", supplied_proof, max_inline_bytes)
         _raise_if_unresolved_prc_fonts(supplied_proof)
         message_id = str(uuid4())
@@ -1413,6 +1374,9 @@ def create_prc_template_version(
     default_field_values: dict[str, Any] | None = None,
     status: str = "published",
     publish_target: str = "library",
+    # Supplied when the operation bake belongs to the Backend. The library half
+    # never composes, so it stays here either way.
+    operation_baker: Callable[..., dict[str, Any]] | None = None,
     operation_id: str | None = None,
     *,
     max_inline_bytes: int,
@@ -1473,26 +1437,18 @@ def create_prc_template_version(
             raise ToolError("invalid_request: html_template is required for library publishing")
         html_size_bytes = len(catalog_html.encode("utf-8"))
         if html_size_bytes > max_inline_bytes:
-            raise ToolError(
-                f"too_large: PRC template is {html_size_bytes} bytes; inline limit is {max_inline_bytes}"
-            )
+            raise ToolError(f"too_large: PRC template is {html_size_bytes} bytes; inline limit is {max_inline_bytes}")
     else:
         html_size_bytes = 0
     if wants_operation and not operation_id:
-        raise ToolError(
-            "invalid_request: operation_id is required when publish_target is "
-            "operation or both"
-        )
+        raise ToolError("invalid_request: operation_id is required when publish_target is operation or both")
     if wants_operation and operation_bake_html:
         raise ToolError(
             "invalid_request: operation bakes must use solstice_prepare_prc_template_bake, "
             "PUT to upload_url, then operation_bake_s3_key"
         )
     if wants_operation and not operation_bake_s3_key:
-        raise ToolError(
-            "invalid_request: operation_bake_s3_key is required when publish_target is "
-            "operation or both"
-        )
+        raise ToolError("invalid_request: operation_bake_s3_key is required when publish_target is operation or both")
 
     # ponytail: bake before library. A later library conflict still leaves the
     # bake; one txn across S3 + two tables is the upgrade if retries double-publish.
@@ -1500,27 +1456,32 @@ def create_prc_template_version(
     if wants_operation:
         if s3 is None:
             raise ToolError("not_configured: s3 is required to bake a proof onto an operation")
-        operation_bake = bake_prc_template_to_operation(
-            identity=identity,
-            tenant_slug=tenant_slug,
-            brand_id=brand_id,
-            operation_id=operation_id or "",
-            content_type=normalized_content_type,
-            operation_bake_s3_key=operation_bake_s3_key or "",
-            registry=registry,
-            session_factory=session_factory,
-            s3=s3,
-            max_inline_bytes=max_inline_bytes,
-        )
+        if operation_baker is not None:
+            operation_bake = operation_baker(
+                operation_id=operation_id or "",
+                content_type=normalized_content_type,
+                operation_bake_s3_key=operation_bake_s3_key or "",
+            )
+        else:
+            operation_bake = bake_prc_template_to_operation(
+                identity=identity,
+                tenant_slug=tenant_slug,
+                brand_id=brand_id,
+                operation_id=operation_id or "",
+                content_type=normalized_content_type,
+                operation_bake_s3_key=operation_bake_s3_key or "",
+                registry=registry,
+                session_factory=session_factory,
+                s3=s3,
+                max_inline_bytes=max_inline_bytes,
+            )
 
     library: dict[str, Any] | None = None
     now = datetime.now(UTC)
     if wants_library:
         with tenant_session(tenant_slug, session_factory) as session:
             brand = session.scalar(
-                select(Brand)
-                .where(Brand.id == brand_id, Brand.deleted_at.is_(None))
-                .with_for_update()
+                select(Brand).where(Brand.id == brand_id, Brand.deleted_at.is_(None)).with_for_update()
             )
             if brand is None:
                 raise ToolError("not_authorized: unknown brand")
@@ -1552,8 +1513,7 @@ def create_prc_template_version(
             except IntegrityError as exc:
                 session.rollback()
                 raise ToolError(
-                    "conflict: another PRC template version was created concurrently; "
-                    "retry to append the next version"
+                    "conflict: another PRC template version was created concurrently; retry to append the next version"
                 ) from exc
         library = {
             "id": template.id,
@@ -1586,18 +1546,12 @@ def create_prc_template_version(
 
 
 def _brand_id_for_project(session, project_id: str) -> str | None:
-    row = session.scalar(
-        select(Project).where(Project.id == project_id, Project.deleted_at.is_(None))
-    )
+    row = session.scalar(select(Project).where(Project.id == project_id, Project.deleted_at.is_(None)))
     return row.brand_id if row is not None else None
 
 
 def _brand_id_for_operation(session, operation_id: str) -> str | None:
-    row = session.scalar(
-        select(CgOperation).where(
-            CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-        )
-    )
+    row = session.scalar(select(CgOperation).where(CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)))
     return row.brand_id if row is not None else None
 
 
@@ -1619,15 +1573,20 @@ def list_projects_for_brand(
     limit = _clamp_list_limit(limit)
     offset = _clamp_list_offset(offset)
     require_brand_role(
-        subject, tenant_slug, brand_id,
+        subject,
+        tenant_slug,
+        brand_id,
         min_role=UserRole.MEMBER,
-        registry=registry, session_factory=session_factory,
+        registry=registry,
+        session_factory=session_factory,
     )
     with tenant_session(tenant_slug, session_factory) as session:
         rows = session.scalars(
-            select(Project).where(
-                Project.brand_id == brand_id, Project.deleted_at.is_(None)
-            ).order_by(Project.name, Project.id).offset(offset).limit(limit + 1)
+            select(Project)
+            .where(Project.brand_id == brand_id, Project.deleted_at.is_(None))
+            .order_by(Project.name, Project.id)
+            .offset(offset)
+            .limit(limit + 1)
         ).all()
     has_more = len(rows) > limit
     page = rows[:limit]
@@ -1651,20 +1610,19 @@ def get_project_info(
 ) -> dict[str, Any] | None:
     """Return one project's dir_map tree. Gated at MEMBER on the project's brand."""
     with tenant_session(tenant_slug, session_factory) as session:
-        project = session.scalar(
-            select(Project).where(
-                Project.id == project_id, Project.deleted_at.is_(None)
-            )
-        )
+        project = session.scalar(select(Project).where(Project.id == project_id, Project.deleted_at.is_(None)))
         if project is None:
             return None
         brand_id = project.brand_id
     # Re-validate membership on the brand that owns the project. brand_id is
     # derived from the row, never from a caller argument.
     require_brand_role(
-        subject, tenant_slug, brand_id,
+        subject,
+        tenant_slug,
+        brand_id,
         min_role=UserRole.MEMBER,
-        registry=registry, session_factory=session_factory,
+        registry=registry,
+        session_factory=session_factory,
     )
     return {
         "id": project.id,
@@ -1730,11 +1688,7 @@ def create_operation(
     ``commit_operation_version``.
     """
     with tenant_session(tenant_slug, session_factory) as session:
-        project = session.scalar(
-            select(Project).where(
-                Project.id == project_id, Project.deleted_at.is_(None)
-            )
-        )
+        project = session.scalar(select(Project).where(Project.id == project_id, Project.deleted_at.is_(None)))
         if project is None:
             # Uniform deny (existence oracle): same message as the membership
             # gate so a caller cannot probe which project ids exist.
@@ -1742,17 +1696,18 @@ def create_operation(
         brand_id = project.brand_id
     # brand_id is derived from the project row, never a caller argument.
     identity = require_brand_role(
-        subject, tenant_slug, brand_id,
+        subject,
+        tenant_slug,
+        brand_id,
         min_role=UserRole.MEMBER,
-        registry=registry, session_factory=session_factory,
+        registry=registry,
+        session_factory=session_factory,
     )
     operation_id = str(uuid4())
     now = datetime.now(UTC)
     with tenant_session(tenant_slug, session_factory) as session:
         locked = session.scalar(
-            select(Project).where(
-                Project.id == project_id, Project.deleted_at.is_(None)
-            ).with_for_update()
+            select(Project).where(Project.id == project_id, Project.deleted_at.is_(None)).with_for_update()
         )
         if locked is None:
             # Project vanished between the auth read and the locked re-read;
@@ -1872,15 +1827,20 @@ def list_operations_for_brand(
     limit = _clamp_list_limit(limit)
     offset = _clamp_list_offset(offset)
     require_brand_role(
-        subject, tenant_slug, brand_id,
+        subject,
+        tenant_slug,
+        brand_id,
         min_role=UserRole.MEMBER,
-        registry=registry, session_factory=session_factory,
+        registry=registry,
+        session_factory=session_factory,
     )
     with tenant_session(tenant_slug, session_factory) as session:
         rows = session.scalars(
-            select(CgOperation).where(
-                CgOperation.brand_id == brand_id, CgOperation.deleted_at.is_(None)
-            ).order_by(CgOperation.created_at, CgOperation.id).offset(offset).limit(limit + 1)
+            select(CgOperation)
+            .where(CgOperation.brand_id == brand_id, CgOperation.deleted_at.is_(None))
+            .order_by(CgOperation.created_at, CgOperation.id)
+            .offset(offset)
+            .limit(limit + 1)
         ).all()
     has_more = len(rows) > limit
     page = rows[:limit]
@@ -1904,18 +1864,17 @@ def get_operation_info(
 ) -> dict[str, Any] | None:
     """Return one operation's metadata (no messages). Gated at MEMBER on the op's brand."""
     with tenant_session(tenant_slug, session_factory) as session:
-        op = session.scalar(
-            select(CgOperation).where(
-                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-            )
-        )
+        op = session.scalar(select(CgOperation).where(CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)))
         if op is None:
             return None
         brand_id = op.brand_id
     require_brand_role(
-        subject, tenant_slug, brand_id,
+        subject,
+        tenant_slug,
+        brand_id,
         min_role=UserRole.MEMBER,
-        registry=registry, session_factory=session_factory,
+        registry=registry,
+        session_factory=session_factory,
     )
     return _operation_summary(op)
 
@@ -1943,18 +1902,17 @@ def list_operation_messages(
     member's head can be an older row than a staff caller's.
     """
     with tenant_session(tenant_slug, session_factory) as session:
-        op = session.scalar(
-            select(CgOperation).where(
-                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-            )
-        )
+        op = session.scalar(select(CgOperation).where(CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)))
         if op is None:
             raise ToolError("not_authorized: unknown operation")
         brand_id = op.brand_id
     identity = require_brand_role(
-        subject, tenant_slug, brand_id,
+        subject,
+        tenant_slug,
+        brand_id,
         min_role=UserRole.MEMBER,
-        registry=registry, session_factory=session_factory,
+        registry=registry,
+        session_factory=session_factory,
     )
     staff = role_satisfies(identity.role, UserRole.SOLSTICE_STAFF)
     with tenant_session(tenant_slug, session_factory) as session:
@@ -2007,20 +1965,19 @@ def get_operation_html(
       capability. Only SOLSTICE_STAFF sees drafts; MEMBER/ADMIN see final only.
     """
     with tenant_session(tenant_slug, session_factory) as session:
-        op = session.scalar(
-            select(CgOperation).where(
-                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-            )
-        )
+        op = session.scalar(select(CgOperation).where(CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)))
         if op is None:
             raise ToolError("not_authorized: unknown operation")
         brand_id = op.brand_id
     # Authorize BEFORE the message lookup so an unauthorized caller cannot
     # learn whether a message exists on an operation they can't access.
     identity = require_brand_role(
-        subject, tenant_slug, brand_id,
+        subject,
+        tenant_slug,
+        brand_id,
         min_role=UserRole.MEMBER,
-        registry=registry, session_factory=session_factory,
+        registry=registry,
+        session_factory=session_factory,
     )
     staff = role_satisfies(identity.role, UserRole.SOLSTICE_STAFF)
     with tenant_session(tenant_slug, session_factory) as session:
@@ -2115,18 +2072,17 @@ def update_operation(
     if name is None and content_type is None and new_owner_user_id is None:
         raise ToolError("invalid_arguments: provide at least one of name, content_type, new_owner_user_id")
     with tenant_session(tenant_slug, session_factory) as session:
-        op = session.scalar(
-            select(CgOperation).where(
-                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-            )
-        )
+        op = session.scalar(select(CgOperation).where(CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)))
         if op is None:
             raise ToolError("not_authorized: unknown operation")
         brand_id = op.brand_id
     require_brand_role(
-        subject, tenant_slug, brand_id,
+        subject,
+        tenant_slug,
+        brand_id,
         min_role=UserRole.SOLSTICE_STAFF,
-        registry=registry, session_factory=session_factory,
+        registry=registry,
+        session_factory=session_factory,
     )
     normalized_type = content_type.strip().upper() if content_type else None
     if content_type is not None and not normalized_type:
@@ -2136,9 +2092,9 @@ def update_operation(
     changed: list[str] = []
     with tenant_session(tenant_slug, session_factory) as session:
         locked = session.scalar(
-            select(CgOperation).where(
-                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-            ).with_for_update()
+            select(CgOperation)
+            .where(CgOperation.id == operation_id, CgOperation.deleted_at.is_(None))
+            .with_for_update()
         )
         if locked is None:
             raise ToolError("not_authorized: unknown operation")
@@ -2151,9 +2107,7 @@ def update_operation(
                 )
             )
             if member is None:
-                raise ToolError(
-                    "invalid_arguments: new_owner_user_id is not a live team member of this brand"
-                )
+                raise ToolError("invalid_arguments: new_owner_user_id is not a live team member of this brand")
             locked.user_id = new_owner_user_id
             changed.append("user_id")
         if name is not None:
@@ -2163,9 +2117,7 @@ def update_operation(
             locked.content_type = normalized_type
             # content_type_for_fe in operation_metadata is the FE source of
             # truth; reassign the dict so the JSON change is tracked.
-            metadata = dict(locked.operation_metadata) if isinstance(
-                locked.operation_metadata, dict
-            ) else {}
+            metadata = dict(locked.operation_metadata) if isinstance(locked.operation_metadata, dict) else {}
             metadata["content_type_for_fe"] = normalized_type
             locked.operation_metadata = metadata
             changed.append("content_type")
@@ -2173,9 +2125,7 @@ def update_operation(
         # project view reflects the change.
         if locked.project_id and (name is not None or normalized_type is not None):
             project = session.scalar(
-                select(Project).where(
-                    Project.id == locked.project_id, Project.deleted_at.is_(None)
-                ).with_for_update()
+                select(Project).where(Project.id == locked.project_id, Project.deleted_at.is_(None)).with_for_update()
             )
             if project is not None:
                 new_map = deepcopy(project.dir_map) or {"items": []}
@@ -2251,27 +2201,24 @@ def approve_operation_version(
     Gated at SOLSTICE_STAFF on the operation's brand (resolved from the row).
     """
     with tenant_session(tenant_slug, session_factory) as session:
-        op = session.scalar(
-            select(CgOperation).where(
-                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-            )
-        )
+        op = session.scalar(select(CgOperation).where(CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)))
         if op is None:
             raise ToolError("not_authorized: unknown operation")
         brand_id = op.brand_id
     identity = require_brand_role(
-        subject, tenant_slug, brand_id,
+        subject,
+        tenant_slug,
+        brand_id,
         min_role=UserRole.SOLSTICE_STAFF,
-        registry=registry, session_factory=session_factory,
+        registry=registry,
+        session_factory=session_factory,
     )
     with tenant_session(tenant_slug, session_factory) as session:
         msg = _find_message(session, operation_id, message_id, lock=True)
         if msg is None:
             raise ToolError("not_found: unknown message")
         if msg.type not in _DOCUMENT_ROW_TYPES:
-            raise ToolError(
-                f"invalid_message: type {msg.type!r} is not a document (html/pdf) version"
-            )
+            raise ToolError(f"invalid_message: type {msg.type!r} is not a document (html/pdf) version")
         resolved_intent = _resolved_message_intent(msg)
         if resolved_intent == "final":
             return {
@@ -2285,24 +2232,20 @@ def approve_operation_version(
                 "asset_url": build_asset_url(tenant_slug, operation_id),
             }
         if resolved_intent != "draft":
-            raise ToolError(
-                f"invalid_message: intent {resolved_intent!r} is not a draft version"
-            )
+            raise ToolError(f"invalid_message: intent {resolved_intent!r} is not a draft version")
         msg.intent = "final"
         if isinstance(msg.message_metadata, dict):
             msg_metadata = dict(msg.message_metadata)
             msg_metadata["versionIntent"] = "final"
             msg.message_metadata = msg_metadata
         locked_op = session.scalar(
-            select(CgOperation).where(
-                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-            ).with_for_update()
+            select(CgOperation)
+            .where(CgOperation.id == operation_id, CgOperation.deleted_at.is_(None))
+            .with_for_update()
         )
         if locked_op is None:
             raise ToolError("not_authorized: unknown operation")
-        op_metadata = dict(locked_op.operation_metadata) if isinstance(
-            locked_op.operation_metadata, dict
-        ) else {}
+        op_metadata = dict(locked_op.operation_metadata) if isinstance(locked_op.operation_metadata, dict) else {}
         resolved = _close_pending_change_requests(op_metadata)
         locked_op.operation_metadata = op_metadata
         # Audit column mirrors Backend Publish: the message ROW id, not the
@@ -2349,9 +2292,7 @@ def _require_upload_kind(kind: str) -> None:
         raise ToolError(f"invalid_arguments: type must be one of {', '.join(_UPLOAD_KINDS)}")
 
 
-def _version_s3_key(
-    kind: str, operation_id: str, message_id: str, file_name: str | None
-) -> str:
+def _version_s3_key(kind: str, operation_id: str, message_id: str, file_name: str | None) -> str:
     """Storage key for one document version, keyed by the row's own id.
 
     No version number in the path. The old ``v{n}`` segment came from a mutable
@@ -2381,16 +2322,12 @@ def _validate_version_key(kind: str, s3_key: str, operation_id: str) -> str:
         prefix = f"cg_operation_msg_html/{operation_id}/"
         suffix = ".html"
         if not (s3_key.startswith(prefix) and s3_key.endswith(suffix)):
-            raise ToolError(
-                "invalid_key: not a prepared html version key for this operation"
-            )
+            raise ToolError("invalid_key: not a prepared html version key for this operation")
         message_id = s3_key[len(prefix) : -len(suffix)]
     elif kind == "pdf":
         prefix = f"approved_pdfs/{operation_id}/"
         if not s3_key.startswith(prefix):
-            raise ToolError(
-                "invalid_key: not a prepared pdf version key for this operation"
-            )
+            raise ToolError("invalid_key: not a prepared pdf version key for this operation")
         # `{message_id}_{file name}` — the id is a UUID, so it has no underscore.
         message_id = s3_key[len(prefix) :].split("_", 1)[0]
     else:
@@ -2510,19 +2447,18 @@ def prepare_operation_version(
     """
     _require_upload_kind(kind)
     with tenant_session(tenant_slug, session_factory) as session:
-        op = session.scalar(
-            select(CgOperation).where(
-                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-            )
-        )
+        op = session.scalar(select(CgOperation).where(CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)))
         if op is None:
             raise ToolError("not_authorized: unknown operation")
         brand_id = op.brand_id
         operation_category = op.operation_category
     require_brand_role(
-        subject, tenant_slug, brand_id,
+        subject,
+        tenant_slug,
+        brand_id,
         min_role=UserRole.MEMBER,
-        registry=registry, session_factory=session_factory,
+        registry=registry,
+        session_factory=session_factory,
     )
     tenant_config = registry.get(tenant_slug)
     bucket = tenant_config.s3_bucket if tenant_config is not None else ""
@@ -2532,9 +2468,7 @@ def prepare_operation_version(
         # Fail fast at prepare so the caller does not upload bytes it can
         # never commit. Same rule is re-checked at commit under the lock.
         if operation_category not in _EDIT_CATEGORIES:
-            raise ToolError(
-                "invalid_state: source files attach to edit operations (EDIT_HTML/EDIT_PDF) only"
-            )
+            raise ToolError("invalid_state: source files attach to edit operations (EDIT_HTML/EDIT_PDF) only")
         safe_name = _sanitize_file_name(file_name)
         if not safe_name:
             raise ToolError("invalid_arguments: file_name is required for source uploads")
@@ -2628,22 +2562,19 @@ def commit_operation_version(
     """
     _require_upload_kind(kind)
     if show_source_on_ui and kind != "source":
-        raise ToolError(
-            "invalid_argument: show_source_on_ui applies to type='source' commits only"
-        )
+        raise ToolError("invalid_argument: show_source_on_ui applies to type='source' commits only")
     with tenant_session(tenant_slug, session_factory) as session:
-        op = session.scalar(
-            select(CgOperation).where(
-                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-            )
-        )
+        op = session.scalar(select(CgOperation).where(CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)))
         if op is None:
             raise ToolError("not_authorized: unknown operation")
         brand_id = op.brand_id
     identity = require_brand_role(
-        subject, tenant_slug, brand_id,
+        subject,
+        tenant_slug,
+        brand_id,
         min_role=UserRole.MEMBER,
-        registry=registry, session_factory=session_factory,
+        registry=registry,
+        session_factory=session_factory,
     )
     intent = "draft" if identity.role == UserRole.SOLSTICE_STAFF else "final"
     # Same predicate the read path uses, so "what this caller can see" means the
@@ -2659,29 +2590,22 @@ def commit_operation_version(
             # Only HTML sources render in the FE's PDF↔Source toggle; mirror
             # the Backend's extension gate rather than stamping a flag the
             # viewer can never honor.
-            raise ToolError(
-                "invalid_argument: show_source_on_ui requires an HTML source "
-                "file (.html/.htm)"
-            )
+            raise ToolError("invalid_argument: show_source_on_ui requires an HTML source file (.html/.htm)")
         size = s3.head(bucket, s3_key)
         if size is None:
             raise ToolError("not_found: object not uploaded - PUT to the upload_url first")
         bound_message_id: str | None = None
         with tenant_session(tenant_slug, session_factory) as session:
             locked = session.scalar(
-                select(CgOperation).where(
-                    CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-                ).with_for_update()
+                select(CgOperation)
+                .where(CgOperation.id == operation_id, CgOperation.deleted_at.is_(None))
+                .with_for_update()
             )
             if locked is None:
                 raise ToolError("not_authorized: unknown operation")
             if locked.operation_category not in _EDIT_CATEGORIES:
-                raise ToolError(
-                    "invalid_state: source files attach to edit operations (EDIT_HTML/EDIT_PDF) only"
-                )
-            metadata = dict(locked.operation_metadata) if isinstance(
-                locked.operation_metadata, dict
-            ) else {}
+                raise ToolError("invalid_state: source files attach to edit operations (EDIT_HTML/EDIT_PDF) only")
+            metadata = dict(locked.operation_metadata) if isinstance(locked.operation_metadata, dict) else {}
             metadata["sourcefile_s3_key"] = s3_key
             # Reassign so SQLAlchemy tracks the JSON change (in-place mutation
             # is not tracked). Mirrors update_operation / create_operation.
@@ -2698,17 +2622,14 @@ def commit_operation_version(
                     CgOperationMessage.type.in_(_DOCUMENT_ROW_TYPES),
                     CgOperationMessage.deleted_at.is_(None),
                 )
-                target = _latest_message(
-                    session, *docs, _final_document_visibility_clause()
-                ) or _latest_message(session, *docs)
+                target = _latest_message(session, *docs, _final_document_visibility_clause()) or _latest_message(
+                    session, *docs
+                )
                 if target is None:
                     raise ToolError(
-                        "invalid_state: no document version to bind the source to - "
-                        "commit the pdf/html version first"
+                        "invalid_state: no document version to bind the source to - commit the pdf/html version first"
                     )
-                message_metadata = dict(target.message_metadata) if isinstance(
-                    target.message_metadata, dict
-                ) else {}
+                message_metadata = dict(target.message_metadata) if isinstance(target.message_metadata, dict) else {}
                 message_metadata["source_html_s3_key"] = s3_key
                 message_metadata["show_source_on_ui"] = True
                 target.message_metadata = message_metadata
@@ -2726,9 +2647,9 @@ def commit_operation_version(
         }
     with tenant_session(tenant_slug, session_factory) as session:
         locked = session.scalar(
-            select(CgOperation).where(
-                CgOperation.id == operation_id, CgOperation.deleted_at.is_(None)
-            ).with_for_update()
+            select(CgOperation)
+            .where(CgOperation.id == operation_id, CgOperation.deleted_at.is_(None))
+            .with_for_update()
         )
         if locked is None:
             raise ToolError("not_authorized: unknown operation")
@@ -2742,8 +2663,7 @@ def commit_operation_version(
             # version, or every document is a draft they cannot read.
             if base_message_id:
                 raise ToolError(
-                    "invalid_request: you have no readable document version on this "
-                    "operation - omit base_message_id"
+                    "invalid_request: you have no readable document version on this operation - omit base_message_id"
                 )
         elif not base_message_id:
             raise ToolError(
@@ -2768,9 +2688,7 @@ def commit_operation_version(
         # The caller's base IS their visible head, but a newer row exists that
         # they cannot read — so re-reading would hand them the same stale base
         # and a retry would loop. Only an explicit user decision gets past this.
-        if not confirmed and true_head is not None and (
-            visible_head is None or true_head.id != visible_head.id
-        ):
+        if not confirmed and true_head is not None and (visible_head is None or true_head.id != visible_head.id):
             # Wording is deliberately generic: it must warn that the edit is not
             # based on the latest version, without telling a non-staff caller
             # that the newer row is specifically an unapproved draft. That the
@@ -2867,9 +2785,7 @@ def commit_operation_version(
             # Pointer is always written (backend sets it before the as_draft
             # branch); the status flip is final-intent only, mirroring
             # admin_approve_cg_operation_with_pdf_only's as_draft behavior.
-            metadata = dict(locked.operation_metadata) if isinstance(
-                locked.operation_metadata, dict
-            ) else {}
+            metadata = dict(locked.operation_metadata) if isinstance(locked.operation_metadata, dict) else {}
             metadata["approved_pdf_s3_key"] = s3_key
             locked.operation_metadata = metadata
             if intent == "final":
