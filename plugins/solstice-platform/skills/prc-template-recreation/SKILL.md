@@ -53,9 +53,9 @@ creative into one document.
    proof layout, and injection points. The creative owns the actual email,
    banner, social, or website content. The host injects the creative through
    `srcdoc`.
-8. **Preserve Contract v2 selectors verbatim.** Follow
-   [the renderer contract](references/renderer-contract.md) and call
-   `solstice_prc_template_rules` for the selected profile. Do not rename,
+8. **Preserve Contract v2 selectors verbatim.** Call
+   `solstice_prc_template_rules` for the selected profile — it is the contract,
+   served by the Backend that enforces it. Do not rename,
    approximate, or invent IDs, field IDs, `data-sol-prc-*` attributes,
    behavior seams, or template slots. Mark every visible value exposed to field
    editing with exactly one normalized field/mirror/derived role, and reuse the

@@ -53,6 +53,8 @@ def _tool_message(status: int, code: str | None, detail: str) -> str:
         return f"invalid_state: {detail}"
     if code == "stale_proof":
         return f"invalid_state: {detail}"
+    if code == "contract_error":
+        return f"contract_error: {detail}"
     if code == "invalid_proof":
         return f"invalid_request: operation bake must satisfy baked contract v2: {detail}"
     if code == "invalid_request":
@@ -110,17 +112,21 @@ class PrcBackendClient:
         method: str,
         path: str,
         *,
-        tenant_slug: str,
-        actor_sub: str,
+        tenant_slug: str | None = None,
+        actor_sub: str | None = None,
         json_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         headers = {
             "Authorization": f"Bearer {self._token_acquirer.get_token()}",
             "Accept": "application/json",
-            # TenantMiddleware requires this on every Backend API request.
-            "X-Tenant-Slug": tenant_slug,
-            "X-Actor-Sub": actor_sub,
         }
+        # Omitted only by the reads that are tenant-independent and act for
+        # nobody; the Backend exempts those paths from TenantMiddleware, and
+        # sending a slug it will not use would invite one to be invented.
+        if tenant_slug is not None:
+            headers["X-Tenant-Slug"] = tenant_slug
+        if actor_sub is not None:
+            headers["X-Actor-Sub"] = actor_sub
         data: bytes | None = None
         if json_body is not None:
             data = json.dumps(json_body, separators=(",", ":")).encode("utf-8")
@@ -147,6 +153,11 @@ class PrcBackendClient:
                 code=code,
             )
         return json.loads(response.content or b"{}")
+
+    # -- reads ----------------------------------------------------------------
+
+    def template_rules(self, *, profile: str) -> dict[str, Any]:
+        return self._request("GET", f"/api/v2/prc-template-rules?profile={profile}")
 
     # -- writes ---------------------------------------------------------------
 

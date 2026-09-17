@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -59,73 +58,6 @@ UPDATE_IN_PLACE = ToolAnnotations(
 )
 
 PRC_TEMPLATE_PROFILES = ("email", "banner", "social", "website")
-PRC_TEMPLATE_CONTRACT_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "plugins/solstice-platform/skills/prc-template-recreation/references/renderer-contract.md"
-)
-PRC_RULES_START = "<!-- PRC_RULES_START -->"
-PRC_RULES_END = "<!-- PRC_RULES_END -->"
-
-
-def _load_prc_template_rules(profile: str) -> dict[str, Any]:
-    """Parse one profile's rules from the shipped renderer contract."""
-    normalized_profile = profile.strip().lower()
-    if normalized_profile not in PRC_TEMPLATE_PROFILES:
-        allowed = ", ".join(PRC_TEMPLATE_PROFILES)
-        raise ToolError(f"invalid_argument: profile must be one of {allowed}")
-
-    try:
-        contract = PRC_TEMPLATE_CONTRACT_PATH.read_text(encoding="utf-8")
-    except OSError as exc:
-        # The contract ships as a plugin file (Dockerfile COPY), so a deployment
-        # that drops it must fail loudly here rather than serve stale rules.
-        raise ToolError("contract_error: renderer contract is not readable") from exc
-    version_line = next(
-        (line for line in contract.splitlines() if line.startswith("Contract version: `")),
-        "",
-    )
-    contract_version = version_line.removeprefix("Contract version: `").removesuffix("`")
-    rules_block = contract.partition(PRC_RULES_START)[2].partition(PRC_RULES_END)[0]
-    if not contract_version or not rules_block:
-        raise ToolError("contract_error: renderer contract is missing its version or rules block")
-
-    parsed: dict[str, dict[str, list[dict[str, str]]]] = {}
-    scope = ""
-    rule_type = ""
-    rule_headings = {"MUST": "must", "SHOULD": "should", "MUST NOT": "must_not"}
-
-    for line in rules_block.splitlines():
-        if line.startswith("### "):
-            scope = line.removeprefix("### ").strip().lower()
-            parsed.setdefault(scope, {key: [] for key in rule_headings.values()})
-            rule_type = ""
-        elif line.startswith("#### "):
-            rule_type = rule_headings.get(line.removeprefix("#### ").strip(), "")
-        elif line.startswith("- `") and scope and rule_type:
-            rule_id, separator, text = line.removeprefix("- `").partition("`: ")
-            if not separator or not rule_id or not text:
-                raise ToolError("contract_error: malformed rule bullet in renderer contract")
-            parsed[scope][rule_type].append({"id": rule_id, "text": text})
-
-    scopes = ("all profiles", normalized_profile)
-    if any(scope_name not in parsed for scope_name in scopes):
-        raise ToolError(f"contract_error: renderer contract has no rules for {normalized_profile}")
-
-    rules = {
-        rule_type: [rule for scope_name in scopes for rule in parsed[scope_name][rule_type]]
-        for rule_type in rule_headings.values()
-    }
-    if any(not entries for entries in rules.values()):
-        raise ToolError(f"contract_error: incomplete renderer contract rules for {normalized_profile}")
-
-    return {
-        "contract_version": contract_version,
-        "profile": normalized_profile,
-        "rules": rules,
-        "source": "prc-template-recreation/references/renderer-contract.md",
-    }
-
-
 def _backend_call(fn: Callable[..., dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
     """Run a Backend call and re-raise its failure as the tool-facing error.
 
@@ -340,11 +272,17 @@ def register_content_tools(
     def solstice_prc_template_rules(profile: str) -> dict[str, Any]:
         """Return Contract v2 authoring rules for email, banner, social, or website.
 
-        The payload is parsed from the shipped renderer-contract.md on every
-        call, so this tool cannot drift from the contract document. Read-only;
-        pass exactly one profile.
+        Served by the Backend that enforces them, so the rules and the checks
+        that reject a save cannot drift. Each rule carries ``enforcement``:
+        ``backend`` rules are rejected on write, ``engine`` rules are flagged in
+        the editor, ``advisory`` rules are guidance. Read-only; pass exactly one
+        profile.
         """
-        return {"status": "ok", **_load_prc_template_rules(profile)}
+        normalized = profile.strip().lower()
+        if normalized not in PRC_TEMPLATE_PROFILES:
+            allowed = ", ".join(PRC_TEMPLATE_PROFILES)
+            raise ToolError(f"invalid_argument: profile must be one of {allowed}")
+        return {"status": "ok", **_backend_call(backend().template_rules, profile=normalized)}
 
     @read_only_tool
     def solstice_prc_template(

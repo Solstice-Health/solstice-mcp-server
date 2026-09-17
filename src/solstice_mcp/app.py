@@ -203,6 +203,7 @@ def build_mcp_app(
     jwks_cache: JWKSCache | None = None,
     s3: S3Reader | None = None,
     backend_memory: BackendMemoryClient | None = None,
+    prc_backend: PrcBackendClient | None = None,
     user_admin_auth0: Auth0UserAdmin | None = None,
     central_session_factory: CentralSessionFactory | None = None,
 ) -> FastMCP:
@@ -282,8 +283,7 @@ def build_mcp_app(
     # PRC writes go through the Backend when the flag says so for the tenant.
     # Absent credentials means the local path stays in use — the flag alone
     # cannot route a write somewhere the task cannot reach.
-    prc_backend: PrcBackendClient | None = None
-    if runtime_settings.prc_backend_configured:
+    if prc_backend is None and runtime_settings.prc_backend_configured:
         prc_backend = PrcBackendClient(
             base_url=runtime_settings.SOLSTICE_BACKEND_BASE_URL,
             token_acquirer=Auth0ClientCredentials(

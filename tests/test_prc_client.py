@@ -124,3 +124,28 @@ def test_an_unparseable_body_still_produces_a_tool_message(client):
         client.commit_version(tenant_slug="acme", actor_sub="a", operation_id="op", body={})
 
     assert str(exc.value).startswith("not_available:")
+
+
+def test_the_rules_read_sends_neither_tenant_nor_actor(client):
+    """It acts for nobody and the payload is the same for every tenant. Sending
+    a slug the Backend will not use would mean inventing one."""
+    _respond(client, 200, {"contract_version": "v2", "profile": "email", "rules": {}, "source": "doc"})
+
+    result = client.template_rules(profile="email")
+
+    assert result["profile"] == "email"
+    assert client.sent["url"].endswith("/api/v2/prc-template-rules?profile=email")
+    assert "X-Tenant-Slug" not in client.sent["headers"]
+    assert "X-Actor-Sub" not in client.sent["headers"]
+    assert client.sent["headers"]["Authorization"] == "Bearer m2m-token"
+
+
+def test_an_unreadable_contract_keeps_its_own_wording(client):
+    """The tool raised `contract_error:` from its own image before the move; a
+    deployment that drops the document must still say so in those words."""
+    _respond(client, 500, {"detail": {"code": "contract_error", "message": "renderer contract is not readable"}})
+
+    with pytest.raises(PrcBackendError) as raised:
+        client.template_rules(profile="email")
+
+    assert str(raised.value) == "contract_error: renderer contract is not readable"
