@@ -188,27 +188,3 @@ class PrcBackendClient:
             tenant_slug=tenant_slug,
             actor_sub=actor_sub,
         )
-
-    # -- validation -----------------------------------------------------------
-
-    def validate_proof(
-        self, *, tenant_slug: str, actor_sub: str, operation_id: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
-        return self._request(
-            "POST",
-            f"/api/v2/operations/{operation_id}/versions/validate",
-            tenant_slug=tenant_slug,
-            actor_sub=actor_sub,
-            json_body={"proof": payload},
-        )
-
-    def validate_template(
-        self, *, tenant_slug: str, actor_sub: str, brand_id: str, html_template: str, content_type: str
-    ) -> dict[str, Any]:
-        return self._request(
-            "POST",
-            f"/api/v2/brands/{brand_id}/prc-templates/validate",
-            tenant_slug=tenant_slug,
-            actor_sub=actor_sub,
-            json_body={"html_template": html_template, "content_type": content_type},
-        )
