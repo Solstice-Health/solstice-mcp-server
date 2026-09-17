@@ -989,7 +989,7 @@ def register_content_tools(
         instead of handing the user the operation UUID.
         """
         if via_backend(tenant_slug):
-            _backend_call(
+            published = _backend_call(
                 backend().publish_version,
                 tenant_slug=tenant_slug,
                 actor_sub=require_subject(),
@@ -1002,6 +1002,8 @@ def register_content_tools(
                 "message_id": message_id,
                 "intent": "final",
                 "already_final": False,
+                "change_requests_resolved": published.get("change_requests_resolved", 0),
+                "requests_completed": published.get("requests_completed", 0),
                 "asset_url": build_asset_url(tenant_slug, operation_id),
             }
         return approve_operation_version(
