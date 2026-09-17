@@ -180,7 +180,11 @@ class PrcBackendClient:
         """
         return self._request(
             "POST",
-            f"/api/v2/operations/{operation_id}/versions/{message_id}/publish?qc_override=true",
+            # unlock_for_viewers closes the change requests and tracker rows that
+            # would otherwise leave the asset reading "being prepared" to the
+            # people it was approved for. The app closes those through the
+            # notification surface, which also emails; agents never have.
+            f"/api/v2/operations/{operation_id}/versions/{message_id}/publish?qc_override=true&unlock_for_viewers=true",
             tenant_slug=tenant_slug,
             actor_sub=actor_sub,
         )
