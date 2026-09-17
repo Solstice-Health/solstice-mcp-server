@@ -11,10 +11,6 @@ to the ``ToolError`` strings the tool descriptions already name. That mapping is
 part of the tool contract: an agent told to re-read on ``not_latest_document``
 will retry blindly instead if a conflict arrives as something else.
 
-Approve is deliberately absent. It composes nothing, so it does not hold the
-forked composer here, and the Backend serves it from a router gated for people
-only — moving it would mean widening that gate for the whole application to
-reach one tool. It stays on the local path with the PDF and source writes.
 """
 
 from __future__ import annotations
@@ -172,6 +168,21 @@ class PrcBackendClient:
             tenant_slug=tenant_slug,
             actor_sub=actor_sub,
             json_body=body,
+        )
+
+    def publish_version(
+        self, *, tenant_slug: str, actor_sub: str, operation_id: str, message_id: str
+    ) -> dict[str, Any]:
+        """Mark a version final.
+
+        ``qc_override`` keeps the behaviour agents have today: the QC gate is a
+        reviewer workflow, and an agent approval has no reviewer behind it.
+        """
+        return self._request(
+            "POST",
+            f"/api/v2/operations/{operation_id}/versions/{message_id}/publish?qc_override=true",
+            tenant_slug=tenant_slug,
+            actor_sub=actor_sub,
         )
 
     # -- validation -----------------------------------------------------------
