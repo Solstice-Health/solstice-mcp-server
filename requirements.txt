@@ -8,3 +8,9 @@ boto3>=1.35,<2
 gunicorn>=23,<24
 uvicorn>=0.34.2,<1
 uvicorn-worker>=0.3,<1
+# Feature flags: DataDogProvider ships inside ddtrace (not a separate package)
+# and receives flag config through the agent's Remote Configuration — the same
+# sidecar this task already sends metrics to. openfeature-sdk is pinned <0.10
+# for ddtrace compatibility, matching Backend-Server.
+ddtrace>=4.8.2,<5.0.0
+openfeature-sdk>=0.7.5,<0.10.0
