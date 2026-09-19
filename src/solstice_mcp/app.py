@@ -290,7 +290,7 @@ def build_mcp_app(
                 token_endpoint=f"{issuer.rstrip('/')}/oauth/token",
                 client_id=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_ID,
                 client_secret=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET,
-                audience=runtime_settings.SOLSTICE_BACKEND_AUTH0_PRC_AUDIENCE,
+                audience=runtime_settings.SOLSTICE_BACKEND_AUTH0_AUDIENCE,
                 scope=runtime_settings.SOLSTICE_BACKEND_AUTH0_PRC_SCOPE,
                 timeout=float(runtime_settings.SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS),
             ),

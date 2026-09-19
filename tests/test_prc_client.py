@@ -57,14 +57,17 @@ def _respond(client, status, payload):
 
 
 def test_a_successful_call_carries_tenant_and_actor(client):
+    """Tenant travels in a header, the actor in the body — matching the
+    agent-memory plane rather than inventing a second convention."""
     _respond(client, 200, {"artifact": "proof", "s3_key": "k", "upload_url": "u", "expires_in": 600})
 
     result = client.prepare_upload(tenant_slug="acme", actor_sub="auth0|person", operation_id="op-1", artifact="proof")
 
     assert result["s3_key"] == "k"
     assert client.sent["headers"]["X-Tenant-Slug"] == "acme"
-    assert client.sent["headers"]["X-Actor-Sub"] == "auth0|person"
     assert client.sent["headers"]["Authorization"] == "Bearer m2m-token"
+    assert "X-Actor-Sub" not in client.sent["headers"]
+    assert json.loads(client.sent["content"]) == {"artifact": "proof", "actor_sub": "auth0|person"}
 
 
 @pytest.mark.parametrize(
@@ -149,3 +152,14 @@ def test_an_unreadable_contract_keeps_its_own_wording(client):
         client.template_rules(profile="email")
 
     assert str(raised.value) == "contract_error: renderer contract is not readable"
+
+
+def test_publish_carries_a_body_only_to_name_its_actor(client):
+    """Publish took no body before this; it has one so the actor can travel the
+    same way it does on every other write."""
+    _respond(client, 200, {"operation_id": "op-1", "message_id": "m-1", "intent": "final"})
+
+    client.publish_version(tenant_slug="acme", actor_sub="auth0|person", operation_id="op-1", message_id="m-1")
+
+    assert json.loads(client.sent["content"]) == {"actor_sub": "auth0|person"}
+    assert "qc_override=true" in client.sent["url"]

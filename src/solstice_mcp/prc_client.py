@@ -120,13 +120,15 @@ class PrcBackendClient:
             "Authorization": f"Bearer {self._token_acquirer.get_token()}",
             "Accept": "application/json",
         }
-        # Omitted only by the reads that are tenant-independent and act for
-        # nobody; the Backend exempts those paths from TenantMiddleware, and
-        # sending a slug it will not use would invite one to be invented.
+        # Omitted only by the reads that are tenant-independent; the Backend
+        # exempts those paths from TenantMiddleware, and sending a slug it will
+        # not use would invite one to be invented.
         if tenant_slug is not None:
             headers["X-Tenant-Slug"] = tenant_slug
+        # The person this call acts for travels in the body, as it does on the
+        # agent-memory plane. The Backend revalidates it; it grants nothing.
         if actor_sub is not None:
-            headers["X-Actor-Sub"] = actor_sub
+            json_body = {**(json_body or {}), "actor_sub": actor_sub}
         data: bytes | None = None
         if json_body is not None:
             data = json.dumps(json_body, separators=(",", ":")).encode("utf-8")
@@ -198,4 +200,5 @@ class PrcBackendClient:
             f"/api/v2/operations/{operation_id}/versions/{message_id}/publish?qc_override=true&unlock_for_viewers=true",
             tenant_slug=tenant_slug,
             actor_sub=actor_sub,
+            json_body={},
         )

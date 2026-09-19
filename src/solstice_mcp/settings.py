@@ -47,10 +47,10 @@ class Settings:
     SOLSTICE_BACKEND_AUTH0_AUDIENCE: str = ""
     SOLSTICE_BACKEND_AUTH0_SCOPE: str = "memory:invoke"
     SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS: int = 5
-    # PRC write plane. Same client-credentials shape as the memory audience
-    # above, with its own audience so a leak is bounded to these routes. Empty
-    # audience disables the backend write path, which is the safe default.
-    SOLSTICE_BACKEND_AUTH0_PRC_AUDIENCE: str = ""
+    # PRC write plane. Shares the audience above — one machine plane, one
+    # resource server — and is separated from memory by its own scope. Kept as
+    # a second acquirer rather than one token carrying both scopes so the live
+    # memory path is untouched by this change.
     SOLSTICE_BACKEND_AUTH0_PRC_SCOPE: str = "prc:write"
     # Uploading a large proof takes longer than a memory write.
     SOLSTICE_BACKEND_PRC_TIMEOUT_SECONDS: int = 30
@@ -82,7 +82,7 @@ class Settings:
             self.SOLSTICE_BACKEND_BASE_URL.strip()
             and _env_configured(self.SOLSTICE_BACKEND_AUTH0_CLIENT_ID)
             and _env_configured(self.SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET)
-            and _env_configured(self.SOLSTICE_BACKEND_AUTH0_PRC_AUDIENCE)
+            and _env_configured(self.SOLSTICE_BACKEND_AUTH0_AUDIENCE)
         )
 
     @property
