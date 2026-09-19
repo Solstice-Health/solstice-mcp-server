@@ -219,7 +219,7 @@ visuals. Instead:
 
 1. Save the fetched exemplar to a local file without reading it.
 2. Dispatch one small subagent (quick/medium exploration) with the file path,
-   the renderer-contract profile for the content type, and this return
+   the `solstice_prc_template_rules` profile for the content type, and this return
    contract:
    - skeleton: required IDs, template-element ids, `data-slot` names,
      `data-sol-prc-*` attributes, cover-field IDs, and the script section map
@@ -237,7 +237,7 @@ The same applies to validating an authored template: hand the file pair to a
 subagent to check the skeleton list instead of re-reading full documents.
 3. If no row resolves, use a user-provided same-type template, then the current
    canonical same-type seed when available locally, then the structural
-   contract in `renderer-contract.md`.
+   contract from `solstice_prc_template_rules`.
 
 When the input itself is a reusable proof shell, it remains the visual target;
 use the resolved Solstice template to verify renderer seams and behavior.
@@ -287,8 +287,8 @@ URL. Do not leave expiring Figma download URLs in the final HTML.
 
 ## 6. Recreate the PRC template
 
-Produce `prc-template.html` from the matching profile in
-`renderer-contract.md`.
+Produce `prc-template.html` from the matching profile returned by
+`solstice_prc_template_rules`.
 
 - For an existing operation whose bake is pre-v2 or incomplete, treat the
   fetched proof as migration input. Repair it as `operation-bake.html` until it

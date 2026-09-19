@@ -22,6 +22,7 @@ from starlette.responses import JSONResponse, Response
 from solstice_mcp.auth import JWKSCache, MCPAccessTokenVerifier
 from solstice_mcp.gate import SolsticeAccessGate
 from solstice_mcp.memory_client import Auth0ClientCredentials, BackendMemoryClient
+from solstice_mcp.prc_client import PrcBackendClient
 from solstice_mcp.settings import Settings, settings
 from solstice_mcp.sibling_mcps import SiblingMCPRegistry
 from solstice_mcp.storage import S3Reader, TenantS3
@@ -202,6 +203,7 @@ def build_mcp_app(
     jwks_cache: JWKSCache | None = None,
     s3: S3Reader | None = None,
     backend_memory: BackendMemoryClient | None = None,
+    prc_backend: PrcBackendClient | None = None,
     user_admin_auth0: Auth0UserAdmin | None = None,
     central_session_factory: CentralSessionFactory | None = None,
 ) -> FastMCP:
@@ -278,6 +280,23 @@ def build_mcp_app(
         access_gate=access_gate,
         sibling_registry=sibling_registry,
     )
+    # PRC writes go through the Backend when the flag says so for the tenant.
+    # Absent credentials means the local path stays in use — the flag alone
+    # cannot route a write somewhere the task cannot reach.
+    if prc_backend is None and runtime_settings.prc_backend_configured:
+        prc_backend = PrcBackendClient(
+            base_url=runtime_settings.SOLSTICE_BACKEND_BASE_URL,
+            token_acquirer=Auth0ClientCredentials(
+                token_endpoint=f"{issuer.rstrip('/')}/oauth/token",
+                client_id=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_ID,
+                client_secret=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET,
+                audience=runtime_settings.SOLSTICE_BACKEND_AUTH0_AUDIENCE,
+                scope=runtime_settings.SOLSTICE_BACKEND_AUTH0_PRC_SCOPE,
+                timeout=float(runtime_settings.SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS),
+            ),
+            timeout=float(runtime_settings.SOLSTICE_BACKEND_PRC_TIMEOUT_SECONDS),
+        )
+
     register_content_tools(
         mcp,
         require_subject=require_subject,
@@ -287,6 +306,7 @@ def build_mcp_app(
         s3=s3_reader,
         presign_expiry=runtime_settings.S3_PRESIGN_EXPIRY_SECONDS,
         max_inline_bytes=runtime_settings.S3_MAX_INLINE_BYTES,
+        prc_backend=prc_backend,
     )
     register_brand_context_tools(
         mcp,

@@ -161,6 +161,44 @@ class AppHarness:
     token_acquirer: FakeM2MTokenAcquirer
     auth0_opener: FakeBackendOpener
     central_session_factory: Callable[[], Session]
+    prc_backend: FakePrcBackend
+
+
+class FakePrcBackend:
+    """Stands in for the Backend's PRC routes.
+
+    Only the reads the tools reach with the cutover flag off are implemented;
+    a write arriving here should fail loudly rather than be quietly recorded.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self.rules: dict[str, dict] = {}
+        self.raises: Exception | None = None
+
+    def template_rules(self, *, profile: str) -> dict:
+        self.calls.append(("template_rules", {"profile": profile}))
+        if self.raises is not None:
+            raise self.raises
+        return self.rules.get(profile, _default_rules_payload(profile))
+
+
+def _default_rules_payload(profile: str) -> dict:
+    return {
+        "contract_version": "v2",
+        "profile": profile,
+        "rules": {
+            "must": [
+                {"id": "common.declaration", "text": "Declare the contract.", "enforcement": "backend"},
+                {"id": f"{profile}.profile", "text": "Name the profile.", "enforcement": "backend"},
+            ],
+            "should": [
+                {"id": f"{profile}.cover_not_required", "text": "A cover is optional.", "enforcement": "advisory"}
+            ],
+            "must_not": [{"id": "common.callout_chrome", "text": "Do not draw callouts.", "enforcement": "advisory"}],
+        },
+        "source": "prc-template-recreation/references/renderer-contract.md",
+    }
 
 
 class FakeM2MTokenAcquirer:
@@ -652,6 +690,7 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
         token_acquirer=FakeM2MTokenAcquirer("mgmt-bearer"),
     )
 
+    prc_backend = FakePrcBackend()
     mcp = build_mcp_app(
         runtime_settings=settings,
         registry=registry,
@@ -660,6 +699,7 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
         jwks_cache=JWKSCache(f"{TEST_ISSUER}.well-known/jwks.json", initial=jwks),
         s3=fake_s3,
         backend_memory=backend_client,
+        prc_backend=prc_backend,
         user_admin_auth0=user_admin_auth0,
         central_session_factory=open_central_session,
     )
@@ -667,6 +707,7 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
         yield AppHarness(
             client, registry, open_session, calls, fake_s3, backend_client,
             backend_opener, token_acquirer, auth0_opener, open_central_session,
+            prc_backend,
         )
 
 
