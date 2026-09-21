@@ -25,6 +25,7 @@ from solstice_mcp.gate import SolsticeAccessGate
 from solstice_mcp.repositories.solstice_backend.memory import MemoryRepository
 from solstice_mcp.repositories.solstice_backend.prc import PrcRepository
 from solstice_mcp.repositories.solstice_backend.session import BackendSession
+from solstice_mcp.services.memory import MemoryService
 from solstice_mcp.services.prc import PrcService
 from solstice_mcp.settings import Settings, settings
 from solstice_mcp.sibling_mcps import SiblingMCPRegistry
@@ -339,9 +340,9 @@ def build_mcp_app(
             mcp,
             require_subject=require_subject,
             require_access_token=require_access_token,
-            registry=tenant_registry,
-            session_factory=open_session,
-            backend=backend_memory,
+            memory=MemoryService(
+                backend_memory, registry=tenant_registry, session_factory=open_session
+            ),
         )
     elif runtime_settings.backend_m2m_configured:
         token_acquirer = Auth0ClientCredentials(
@@ -363,9 +364,9 @@ def build_mcp_app(
             mcp,
             require_subject=require_subject,
             require_access_token=require_access_token,
-            registry=tenant_registry,
-            session_factory=open_session,
-            backend=backend_client,
+            memory=MemoryService(
+                backend_client, registry=tenant_registry, session_factory=open_session
+            ),
         )
 
     # User-admin tools need Auth0 Management credentials and the central auth

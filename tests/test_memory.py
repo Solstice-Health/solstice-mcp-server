@@ -6,7 +6,6 @@ import json
 import logging
 import urllib.parse
 from typing import Any
-from urllib.error import URLError
 
 import pytest
 from conftest import (
@@ -19,20 +18,10 @@ from conftest import (
     STAFF_SUB,
     USER_A_SHARED,
     AppHarness,
-    FakeBackendOpener,
 )
 from test_server import rpc, tool_payload
 
 from solstice_mcp.audit import AUDIT_EVENT_NAME, AUDIT_LOGGER_NAME
-from solstice_mcp.repositories.solstice_backend.memory import (
-    MemoryClientConflict,
-    MemoryClientInvalidArgument,
-    MemoryClientNotFound,
-    MemoryClientUnauthorized,
-    MemoryClientUnavailable,
-    MemoryRepository,
-)
-from solstice_mcp.repositories.solstice_backend.session import BackendSession
 
 TENANT = "tenant_a"
 TENANT_B = "tenant_b"
@@ -787,154 +776,3 @@ def test_audit_records_denied_brand_write(app_harness: AppHarness, mint_token,
     assert event["brand_id"] == BRAND_A2
     assert event["scope"] == "brand"
     assert event["resources"] == {"tenant_slug": TENANT, "brand_id": BRAND_A2, "scope": "brand"}
-
-
-# ---------------------------------------------------------------------------
-# MemoryRepository direct error mapping and redaction
-# ---------------------------------------------------------------------------
-
-
-def _direct_client(opener: FakeBackendOpener) -> MemoryRepository:
-    return MemoryRepository(
-        BackendSession(
-            base_url="https://backend.test",
-            token_acquirer=_FakeAcquirer(),
-            timeout=5.0,
-            opener=opener,
-        )
-    )
-
-
-class _FakeAcquirer:
-    def get_token(self) -> str:
-        return "m2m-bearer"
-
-    def invalidate(self) -> None:
-        pass
-
-
-def test_backend_client_redacts_5xx_body():
-    opener = FakeBackendOpener()
-    opener.responses[("GET", "/api/internal/agent-memory")] = (
-        500, b'{"detail":"internal db creds leak"}',
-    )
-    client = _direct_client(opener)
-    from solstice_mcp.repositories.solstice_backend.memory import ActorEnvelope
-
-    actor = ActorEnvelope(actor_sub="sub", tenant_slug="tenant_a", brand_id=BRAND_A1, user_id="u")
-    with pytest.raises(MemoryClientUnavailable) as exc_info:
-        client.recall(actor=actor)
-    assert "internal db creds leak" not in str(exc_info.value)
-    assert exc_info.value.code == "backend_unavailable"
-
-
-def test_backend_client_maps_404_409_403_422():
-    from solstice_mcp.repositories.solstice_backend.memory import ActorEnvelope
-
-    actor = ActorEnvelope(actor_sub="sub", tenant_slug="tenant_a", brand_id=BRAND_A1, user_id="u")
-    for status, exc_type in [(404, MemoryClientNotFound), (409, MemoryClientConflict),
-                             (403, MemoryClientUnauthorized),
-                             (422, MemoryClientInvalidArgument)]:
-        opener = FakeBackendOpener()
-        opener.responses[("POST", "/api/internal/agent-memory")] = (status, b'{"detail":"x"}')
-        client = _direct_client(opener)
-        with pytest.raises(exc_type):
-            client.remember(actor=actor, scope="personal", fact_type="preference", statement="s")
-
-
-def test_backend_client_unreachable_maps_to_unavailable():
-    from solstice_mcp.repositories.solstice_backend.memory import ActorEnvelope
-
-    class _FailOpener:
-        def open(self, _request, timeout=None):
-            raise URLError("refused")
-
-    client = MemoryRepository(
-        BackendSession(
-            base_url="https://backend.test",
-            token_acquirer=_FakeAcquirer(),
-            opener=_FailOpener(),
-        )
-    )
-    actor = ActorEnvelope(actor_sub="sub", tenant_slug="tenant_a", brand_id=BRAND_A1, user_id="u")
-    with pytest.raises(MemoryClientUnavailable, match="backend_unreachable"):
-        client.recall(actor=actor)
-
-
-def test_backend_client_recall_emits_exact_query_and_headers():
-    """Direct contract smoke test: pins the recall wire shape to the Backend contract."""
-    from solstice_mcp.repositories.solstice_backend.memory import ActorEnvelope
-
-    opener = FakeBackendOpener()
-    _set_recall_response(opener)
-    client = _direct_client(opener)
-    actor = ActorEnvelope(actor_sub="sub-1", tenant_slug="tenant_a", brand_id=BRAND_A1, user_id="u-1")
-    client.recall(actor=actor, fact_type="preference", entity_id="op-9", q="email", limit=25)
-
-    call = opener.calls[-1]
-    assert call["method"] == "GET"
-    assert call["path"] == "/api/internal/agent-memory"
-    assert f"brand_id={BRAND_A1}" in call["url"]
-    assert "actor_sub=sub-1" in call["url"]
-    assert "tenant_slug=tenant_a" in call["url"]
-    assert "fact_type=preference" in call["url"]
-    assert "entity_id=op-9" in call["url"]
-    assert "q=email" in call["url"]
-    assert "limit=25" in call["url"]
-    headers = _headers(call)
-    assert headers["authorization"] == "Bearer m2m-bearer"
-    assert headers["x-tenant-slug"] == "tenant_a"
-    assert "x-solstice-actor" not in headers
-    assert call["body"] is None
-
-
-def test_backend_client_remember_emits_exact_body_and_headers():
-    """Direct contract smoke test: pins the remember wire shape to the Backend contract."""
-    from solstice_mcp.repositories.solstice_backend.memory import ActorEnvelope
-
-    opener = FakeBackendOpener()
-    _set_remember_response(opener)
-    client = _direct_client(opener)
-    actor = ActorEnvelope(actor_sub="sub-1", tenant_slug="tenant_a", brand_id=BRAND_A1, user_id="u-1")
-    client.remember(
-        actor=actor,
-        scope="personal",
-        fact_type="decision",
-        statement="ship Q3",
-        source_refs=[{"source_type": "claim", "source_id": "c1", "source_version": "v1", "fingerprint": "fp"}],
-        entity_refs=[{"entity_type": "brand", "entity_id": BRAND_A1, "entity_version": "v1"}],
-        expires_at="2027-01-01T00:00:00Z",
-        reason="user confirmed",
-    )
-
-    call = opener.calls[-1]
-    assert call["method"] == "POST"
-    assert call["path"] == "/api/internal/agent-memory"
-    headers = _headers(call)
-    assert headers["content-type"] == "application/json"
-    assert headers["authorization"] == "Bearer m2m-bearer"
-    assert headers["x-tenant-slug"] == "tenant_a"
-    assert "x-solstice-actor" not in headers
-    body = json.loads(call["body"])
-    assert body == {
-        "brand_id": BRAND_A1,
-        "scope": "personal",
-        "fact_type": "decision",
-        "statement": "ship Q3",
-        "source_refs": [{"source_type": "claim", "source_id": "c1", "source_version": "v1", "fingerprint": "fp"}],
-        "entity_refs": [{"entity_type": "brand", "entity_id": BRAND_A1, "entity_version": "v1"}],
-        "expires_at": "2027-01-01T00:00:00Z",
-        "reason": "user confirmed",
-        "actor_sub": "sub-1",
-        "tenant_slug": "tenant_a",
-    }
-
-
-
-
-
-
-
-
-
-

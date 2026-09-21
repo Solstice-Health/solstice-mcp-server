@@ -7,26 +7,14 @@ Postgres store; Backend is the sole trust root for memory writes.
 
 The actor fields in the request query/body are revalidated against the tenant
 DB; they never grant access on their own. Caller-supplied roles are never sent.
-Backend error bodies may carry internal detail, so failures here are mapped to
-a fixed set of codes and the body is never surfaced.
 """
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import Any
 
-from solstice_mcp.repositories.solstice_backend.errors import (
-    BackendError,
-    BackendInvalidResponse,
-    BackendStatusError,
-    BackendUnauthenticated,
-    BackendUnreachable,
-)
 from solstice_mcp.repositories.solstice_backend.session import BackendSession
-
-logger = logging.getLogger(__name__)
 
 MEMORY_SCOPE_PERSONAL = "personal"
 MEMORY_SCOPE_TENANT_PERSONAL = "tenant_personal"
@@ -36,35 +24,6 @@ MEMORY_SCOPES = (
     MEMORY_SCOPE_PERSONAL,
     MEMORY_SCOPE_BRAND,
 )
-
-
-class MemoryClientError(Exception):
-    """Redacted Backend error. Carries a stable code; never embeds response bodies."""
-
-    def __init__(self, code: str, *, status: int | None = None) -> None:
-        super().__init__(code)
-        self.code = code
-        self.status = status
-
-
-class MemoryClientUnauthorized(MemoryClientError):
-    """Backend rejected the M2M token or actor envelope."""
-
-
-class MemoryClientNotFound(MemoryClientError):
-    """Backend reported the memory_id is unknown for this partition."""
-
-
-class MemoryClientConflict(MemoryClientError):
-    """Backend reported a partition or version conflict (e.g. supersession)."""
-
-
-class MemoryClientInvalidArgument(MemoryClientError):
-    """Backend rejected the payload shape (422). Bodies are never surfaced."""
-
-
-class MemoryClientUnavailable(MemoryClientError):
-    """Backend returned 5xx or could not be reached."""
 
 
 @dataclass(frozen=True)
@@ -110,7 +69,7 @@ class MemoryRepository:
             params["q"] = q
         if limit is not None:
             params["limit"] = str(limit)
-        return self._request(
+        return self._session.request(
             "GET",
             "/api/internal/agent-memory",
             tenant_slug=actor.tenant_slug,
@@ -139,7 +98,7 @@ class MemoryRepository:
             expires_at=expires_at,
             reason=reason,
         )
-        return self._request(
+        return self._session.request(
             "POST",
             "/api/internal/agent-memory",
             tenant_slug=actor.tenant_slug,
@@ -169,7 +128,7 @@ class MemoryRepository:
             expires_at=expires_at,
             reason=reason,
         )
-        return self._request(
+        return self._session.request(
             "POST",
             f"/api/internal/agent-memory/{memory_id}/supersede",
             tenant_slug=actor.tenant_slug,
@@ -192,7 +151,7 @@ class MemoryRepository:
         }
         if reason is not None:
             body["reason"] = reason
-        return self._request(
+        return self._session.request(
             "POST",
             f"/api/internal/agent-memory/{memory_id}/forget",
             tenant_slug=actor.tenant_slug,
@@ -229,28 +188,12 @@ class MemoryRepository:
             body["brand_id"] = brand_id
         if host_correlation_id is not None:
             body["host_correlation_id"] = host_correlation_id
-        return self._request(
+        return self._session.request(
             "POST",
             "/api/internal/agent-memory/observations",
             tenant_slug=tenant_slug,
             json_body=body,
         )
-
-    def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        tenant_slug: str,
-        params: dict[str, str] | None = None,
-        json_body: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        try:
-            return self._session.request(
-                method, path, tenant_slug=tenant_slug, params=params, json_body=json_body
-            )
-        except BackendError as exc:
-            raise _redacted(exc) from exc
 
 
 def _mutation_body(
@@ -287,42 +230,11 @@ def _brand_id_for_scope(actor: ActorEnvelope, scope: str) -> str | None:
     return None if scope == MEMORY_SCOPE_TENANT_PERSONAL else actor.brand_id
 
 
-def _redacted(exc: BackendError) -> MemoryClientError:
-    """A Backend failure as a stable code. Response bodies never travel."""
-    if isinstance(exc, BackendUnreachable):
-        return MemoryClientUnavailable("backend_unreachable")
-    if isinstance(exc, BackendUnauthenticated):
-        return MemoryClientUnauthorized(exc.code)
-    if isinstance(exc, BackendInvalidResponse):
-        return MemoryClientUnavailable(exc.code)
-    if not isinstance(exc, BackendStatusError):
-        return MemoryClientError("backend_unexpected_status")
-    status = exc.status
-    logger.debug("backend memory error", extra={"status": status})
-    if status in (401, 403):
-        return MemoryClientUnauthorized("backend_unauthorized", status=status)
-    if status == 404:
-        return MemoryClientNotFound("backend_not_found", status=status)
-    if status == 409:
-        return MemoryClientConflict("backend_conflict", status=status)
-    if status == 422:
-        return MemoryClientInvalidArgument("backend_invalid_argument", status=status)
-    if 500 <= status < 600:
-        return MemoryClientUnavailable("backend_unavailable", status=status)
-    return MemoryClientError("backend_unexpected_status", status=status)
-
-
 __all__ = [
     "MEMORY_SCOPES",
     "MEMORY_SCOPE_BRAND",
     "MEMORY_SCOPE_PERSONAL",
     "MEMORY_SCOPE_TENANT_PERSONAL",
     "ActorEnvelope",
-    "MemoryClientConflict",
-    "MemoryClientError",
-    "MemoryClientInvalidArgument",
-    "MemoryClientNotFound",
-    "MemoryClientUnauthorized",
-    "MemoryClientUnavailable",
     "MemoryRepository",
 ]
