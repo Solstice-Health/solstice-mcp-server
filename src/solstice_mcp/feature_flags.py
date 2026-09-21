@@ -1,4 +1,7 @@
-"""Feature flags for the MCP, with the same interface the Backend uses.
+"""Feature flag plumbing for the MCP, with the same interface the Backend uses.
+
+Flag names, their defaults, and the targeting context each one needs belong to
+the service that reads them; this module only knows how to ask.
 
 Flag values arrive through the Datadog agent's Remote Configuration — the same
 sidecar this task already sends metrics to — evaluated by OpenFeature. Every
@@ -80,15 +83,3 @@ def get_flag(name: str, *, default: bool, context: dict[str, Any] | None = None)
     except Exception as exc:
         logger.debug("flag %r evaluation failed; returning %s: %s", name, default, exc)
         return default
-
-
-# The MCP writes PRC documents through the Backend instead of its own database
-# and S3 path. Off until a tenant is opted in.
-PRC_WRITES_VIA_BACKEND = "prc_writes_via_backend"
-
-
-def prc_writes_via_backend(*, tenant_slug: str, brand_id: str | None = None) -> bool:
-    context: dict[str, Any] = {"tenant_slug": tenant_slug}
-    if brand_id:
-        context["brand_id"] = brand_id
-    return get_flag(PRC_WRITES_VIA_BACKEND, default=False, context=context)

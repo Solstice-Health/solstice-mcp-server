@@ -35,7 +35,7 @@ def _service(repository=None) -> PrcService:
 
 @pytest.fixture
 def via_backend(monkeypatch):
-    monkeypatch.setattr("solstice_mcp.feature_flags.prc_writes_via_backend", lambda **_: True)
+    monkeypatch.setenv("MCP_FLAG_PRC_WRITES_VIA_BACKEND", "true")
 
 
 def _commit(service):
@@ -147,9 +147,7 @@ def test_an_unknown_profile_never_reaches_the_backend():
 
 def test_the_local_path_stays_in_use_without_credentials(monkeypatch):
     """The flag alone cannot route a write somewhere this task cannot reach."""
-    monkeypatch.setattr(
-        "solstice_mcp.feature_flags.prc_writes_via_backend", lambda **_: True
-    )
+    monkeypatch.setenv("MCP_FLAG_PRC_WRITES_VIA_BACKEND", "true")
 
     assert _service(None)._handles("acme") is False
     assert _service(_Repo())._handles("acme") is True
@@ -329,3 +327,17 @@ def test_without_credentials_the_bake_is_offered_no_baker(via_backend, local):
     )
 
     assert local["create_prc_template_version"]["operation_baker"] is None
+
+
+def test_the_kill_switch_reaches_the_dispatch(monkeypatch, local):
+    """The env override is what works when Remote Configuration is what has
+    gone wrong, so it must win at the point the plane is chosen."""
+    monkeypatch.setenv("MCP_FLAG_PRC_WRITES_VIA_BACKEND", "off")
+    repo = _Repo()
+
+    _service(repo).publish_version(
+        subject="a", tenant_slug="acme", operation_id="op", message_id="m"
+    )
+
+    assert "approve_operation_version" in local
+    assert repo.calls == []

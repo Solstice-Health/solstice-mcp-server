@@ -61,6 +61,10 @@ _CODE_PREFIXES = {
     "bake_unavailable": "not_available",
 }
 
+# The MCP writes PRC documents through the Backend instead of its own database
+# and S3 path. Off until a tenant is opted in.
+_PRC_WRITES_VIA_BACKEND = "prc_writes_via_backend"
+
 _STATUS_PREFIXES = {
     401: "not_authorized",
     403: "not_authorized",
@@ -178,7 +182,10 @@ class PrcService:
         """
         if self._repository is None:
             return False
-        return feature_flags.prc_writes_via_backend(tenant_slug=tenant_slug, brand_id=brand_id)
+        context: dict[str, Any] = {"tenant_slug": tenant_slug}
+        if brand_id:
+            context["brand_id"] = brand_id
+        return feature_flags.get_flag(_PRC_WRITES_VIA_BACKEND, default=False, context=context)
 
     def template_rules(self, profile: str) -> TemplateRulesResponse:
         parsed = _profile(profile)
