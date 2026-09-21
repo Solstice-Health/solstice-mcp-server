@@ -10,9 +10,22 @@ from model output.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from solstice_mcp.repositories.solstice_backend.session import BackendSession
+
+
+@dataclass(frozen=True)
+class PrcActor:
+    """The tenant a write lands in and the person it is made for.
+
+    One value because the two are only ever meaningful together, and because
+    an on-behalf-of token would replace both at once.
+    """
+
+    tenant_slug: str
+    actor_sub: str
 
 
 class PrcRepository:
@@ -29,27 +42,27 @@ class PrcRepository:
     # -- writes ---------------------------------------------------------------
 
     def prepare_upload(
-        self, *, tenant_slug: str, actor_sub: str, operation_id: str, artifact: str
+        self, *, actor: PrcActor, operation_id: str, artifact: str
     ) -> dict[str, Any]:
         return self._session.request(
             "POST",
             f"/api/v2/operations/{operation_id}/versions/prepare",
-            tenant_slug=tenant_slug,
-            json_body={"artifact": artifact, "actor_sub": actor_sub},
+            tenant_slug=actor.tenant_slug,
+            json_body={"artifact": artifact, "actor_sub": actor.actor_sub},
         )
 
     def commit_version(
-        self, *, tenant_slug: str, actor_sub: str, operation_id: str, body: dict[str, Any]
+        self, *, actor: PrcActor, operation_id: str, body: dict[str, Any]
     ) -> dict[str, Any]:
         return self._session.request(
             "POST",
             f"/api/v2/operations/{operation_id}/versions",
-            tenant_slug=tenant_slug,
-            json_body={**body, "actor_sub": actor_sub},
+            tenant_slug=actor.tenant_slug,
+            json_body={**body, "actor_sub": actor.actor_sub},
         )
 
     def publish_version(
-        self, *, tenant_slug: str, actor_sub: str, operation_id: str, message_id: str
+        self, *, actor: PrcActor, operation_id: str, message_id: str
     ) -> dict[str, Any]:
         """Mark a version final.
 
@@ -63,7 +76,7 @@ class PrcRepository:
         return self._session.request(
             "POST",
             f"/api/v2/operations/{operation_id}/versions/{message_id}/publish",
-            tenant_slug=tenant_slug,
+            tenant_slug=actor.tenant_slug,
             params={"qc_override": "true", "unlock_for_viewers": "true"},
-            json_body={"actor_sub": actor_sub},
+            json_body={"actor_sub": actor.actor_sub},
         )

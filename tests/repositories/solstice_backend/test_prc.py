@@ -10,7 +10,7 @@ import json
 import pytest
 
 from solstice_mcp.repositories.solstice_backend.errors import BackendStatusError, BackendUnreachable
-from solstice_mcp.repositories.solstice_backend.prc import PrcRepository
+from solstice_mcp.repositories.solstice_backend.prc import PrcActor, PrcRepository
 from solstice_mcp.repositories.solstice_backend.session import BackendSession
 
 
@@ -50,7 +50,7 @@ def test_a_write_carries_tenant_in_a_header_and_the_actor_in_the_body(repo):
     _respond(repo, 200, {"s3_key": "k", "upload_url": "u", "expires_in": 600})
 
     result = repo.prepare_upload(
-        tenant_slug="acme", actor_sub="auth0|person", operation_id="op-1", artifact="proof"
+        actor=PrcActor("acme", "auth0|person"), operation_id="op-1", artifact="proof"
     )
 
     assert result["s3_key"] == "k"
@@ -79,7 +79,7 @@ def test_publish_carries_a_body_only_to_name_its_actor(repo):
     _respond(repo, 200, {"operation_id": "op-1", "intent": "final"})
 
     repo.publish_version(
-        tenant_slug="acme", actor_sub="auth0|person", operation_id="op-1", message_id="m-1"
+        actor=PrcActor("acme", "auth0|person"), operation_id="op-1", message_id="m-1"
     )
 
     assert json.loads(repo.sent["content"]) == {"actor_sub": "auth0|person"}
@@ -91,7 +91,7 @@ def test_a_refusal_keeps_the_backend_code_and_message_unjudged(repo):
     _respond(repo, 409, {"detail": {"code": "content_conflict", "message": "head moved"}})
 
     with pytest.raises(BackendStatusError) as raised:
-        repo.commit_version(tenant_slug="acme", actor_sub="a", operation_id="op", body={})
+        repo.commit_version(actor=PrcActor("acme", "a"), operation_id="op", body={})
 
     assert (raised.value.status, raised.value.code, raised.value.detail) == (
         409,
@@ -104,7 +104,7 @@ def test_an_unparseable_error_body_still_yields_a_status(repo):
     _respond(repo, 500, None)
 
     with pytest.raises(BackendStatusError) as raised:
-        repo.commit_version(tenant_slug="acme", actor_sub="a", operation_id="op", body={})
+        repo.commit_version(actor=PrcActor("acme", "a"), operation_id="op", body={})
 
     assert raised.value.status == 500
     assert raised.value.code is None

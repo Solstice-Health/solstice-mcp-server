@@ -24,7 +24,7 @@ from solstice_mcp.repositories.solstice_backend.errors import (
     BackendStatusError,
     BackendUnreachable,
 )
-from solstice_mcp.repositories.solstice_backend.prc import PrcRepository
+from solstice_mcp.repositories.solstice_backend.prc import PrcActor, PrcRepository
 
 PRC_TEMPLATE_PROFILES = ("email", "banner", "social", "website")
 
@@ -77,8 +77,7 @@ class PrcService:
     def prepare_version(self, *, tenant_slug: str, actor_sub: str, operation_id: str) -> dict[str, Any]:
         prepared = self._call(
             self._backend().prepare_upload,
-            tenant_slug=tenant_slug,
-            actor_sub=actor_sub,
+            actor=PrcActor(tenant_slug, actor_sub),
             operation_id=operation_id,
             artifact="creative",
         )
@@ -96,8 +95,7 @@ class PrcService:
     def prepare_bake(self, *, tenant_slug: str, actor_sub: str, operation_id: str) -> dict[str, Any]:
         prepared = self._call(
             self._backend().prepare_upload,
-            tenant_slug=tenant_slug,
-            actor_sub=actor_sub,
+            actor=PrcActor(tenant_slug, actor_sub),
             operation_id=operation_id,
             artifact="proof",
         )
@@ -115,8 +113,7 @@ class PrcService:
         creative it wraps is the one the operation already holds."""
         committed = self._call(
             self._backend().commit_version,
-            tenant_slug=tenant_slug,
-            actor_sub=actor_sub,
+            actor=PrcActor(tenant_slug, actor_sub),
             operation_id=operation_id,
             body={"kind": "proof", "proof": {"s3_key": proof_s3_key}},
         )
@@ -152,8 +149,7 @@ class PrcService:
             body["base_message_id"] = base_message_id
         committed = self._call(
             self._backend().commit_version,
-            tenant_slug=tenant_slug,
-            actor_sub=actor_sub,
+            actor=PrcActor(tenant_slug, actor_sub),
             operation_id=operation_id,
             body=body,
         )
@@ -169,8 +165,7 @@ class PrcService:
     ) -> dict[str, Any]:
         published = self._call(
             self._backend().publish_version,
-            tenant_slug=tenant_slug,
-            actor_sub=actor_sub,
+            actor=PrcActor(tenant_slug, actor_sub),
             operation_id=operation_id,
             message_id=message_id,
         )
