@@ -3,6 +3,9 @@ work when the provider is what has gone wrong."""
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import pytest
 
 from solstice_mcp import feature_flags
@@ -46,3 +49,17 @@ def test_an_unset_override_falls_through(monkeypatch):
 
 def test_init_is_safe_without_the_agent():
     feature_flags.init_feature_flags()
+
+
+def test_the_entry_point_registers_the_provider():
+    """Nothing else does, and an unregistered provider fails silently: every
+    flag keeps reading its code default and the rollout has no dial."""
+    entry_point = Path(__file__).resolve().parents[1] / "mcp_main.py"
+    assert entry_point.exists(), entry_point
+
+    called = {
+        node.func.id
+        for node in ast.walk(ast.parse(entry_point.read_text()))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "init_feature_flags" in called
