@@ -14,9 +14,10 @@ Backend and must survive the cutover unchanged.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal, TypeVar
 
 from mcp.server.fastmcp.exceptions import ToolError
+from pydantic import BaseModel, ConfigDict
 
 from solstice_mcp import feature_flags
 from solstice_mcp.repositories.solstice_backend.errors import (
@@ -24,7 +25,13 @@ from solstice_mcp.repositories.solstice_backend.errors import (
     BackendStatusError,
     BackendUnreachable,
 )
-from solstice_mcp.repositories.solstice_backend.prc import PrcActor, PrcProfile, PrcRepository
+from solstice_mcp.repositories.solstice_backend.prc import (
+    CommittedVersion,
+    PrcActor,
+    PrcProfile,
+    PrcRepository,
+    RuleSet,
+)
 
 # Backend code -> the string the tool descriptions teach the model to act on.
 # `content_conflict` is the Backend's name for what the tools call
@@ -49,6 +56,86 @@ _STATUS_PREFIXES = {
 }
 
 
+class ToolResponse(BaseModel):
+    """A tool result. Field names are the agent contract — tool descriptions
+    instruct the model by them — so the shapes are pinned here rather than
+    assembled ad hoc, and nothing extra leaks into one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class TemplateRulesResponse(ToolResponse):
+    status: Literal["ok"] = "ok"
+    contract_version: str
+    profile: PrcProfile
+    rules: RuleSet
+    document: str
+
+
+class PreparedVersionResponse(ToolResponse):
+    operation_id: str
+    type: Literal["html"] = "html"
+    # The row id the Backend minted is embedded in the key it returned; the
+    # tool has always published it as message_id.
+    message_id: str
+    s3_key: str
+    upload_url: str
+    expires_in: int
+
+
+class PreparedBakeResponse(ToolResponse):
+    operation_id: str
+    prc_template_s3_key: str
+    upload_url: str
+    expires_in: int
+
+
+class CommittedVersionResponse(ToolResponse):
+    """The tool's long-standing response shape, from the Backend's envelope.
+
+    The Backend answers with what it durably knows; everything else here the
+    caller already supplied or the prepare step already returned, so the tool
+    contract holds without the Backend echoing it back.
+    """
+
+    operation_id: str
+    type: Literal["html"] = "html"
+    intent: str | None
+    # `id` and `head_message_id` are the same row: a caller passes the value
+    # back as `base_message_id`, and the two diverging would break the
+    # compare-and-swap silently.
+    id: str
+    head_message_id: str
+    message_id: str
+    s3_key: str
+    prc_template_s3_key: str | None
+    asset_url: str
+
+
+class CommittedBakeResponse(ToolResponse):
+    operation_id: str
+    intent: str | None
+    message_id: str
+    id: str
+    s3_key: str | None
+    prc_template_s3_key: str | None
+    # Not reported by the Backend, which stores the proof rather than measuring
+    # it. Zero rather than a guess.
+    html_size_bytes: int = 0
+    asset_url: str
+
+
+class PublishedVersionResponse(ToolResponse):
+    operation_id: str
+    id: str
+    message_id: str
+    intent: Literal["final"] = "final"
+    already_final: Literal[False] = False
+    change_requests_resolved: int
+    requests_completed: int
+    asset_url: str
+
+
 class PrcService:
     def __init__(self, repository: PrcRepository | None) -> None:
         self._repository = repository
@@ -64,46 +151,52 @@ class PrcService:
             return False
         return feature_flags.prc_writes_via_backend(tenant_slug=tenant_slug, brand_id=brand_id)
 
-    def template_rules(self, profile: str) -> dict[str, Any]:
+    def template_rules(self, profile: str) -> TemplateRulesResponse:
         parsed = _profile(profile)
         rules = self._call(self._backend().template_rules, profile=parsed)
-        return {"status": "ok", **rules}
+        return TemplateRulesResponse(
+            contract_version=rules.contract_version,
+            profile=rules.profile,
+            rules=rules.rules,
+            document=rules.document,
+        )
 
-    def prepare_version(self, *, tenant_slug: str, actor_sub: str, operation_id: str) -> dict[str, Any]:
+    def prepare_version(
+        self, *, tenant_slug: str, actor_sub: str, operation_id: str
+    ) -> PreparedVersionResponse:
         prepared = self._call(
             self._backend().prepare_upload,
             actor=PrcActor(tenant_slug, actor_sub),
             operation_id=operation_id,
             artifact="creative",
         )
-        return {
-            "operation_id": operation_id,
-            "type": "html",
-            # The row id the Backend minted is embedded in the key it returned;
-            # the tool has always published it as message_id.
-            "message_id": row_id_from_key(prepared["s3_key"]),
-            "s3_key": prepared["s3_key"],
-            "upload_url": prepared["upload_url"],
-            "expires_in": prepared["expires_in"],
-        }
+        return PreparedVersionResponse(
+            operation_id=operation_id,
+            message_id=row_id_from_key(prepared.s3_key),
+            s3_key=prepared.s3_key,
+            upload_url=prepared.upload_url,
+            expires_in=prepared.expires_in,
+        )
 
-    def prepare_bake(self, *, tenant_slug: str, actor_sub: str, operation_id: str) -> dict[str, Any]:
+    def prepare_bake(
+        self, *, tenant_slug: str, actor_sub: str, operation_id: str
+    ) -> PreparedBakeResponse:
         prepared = self._call(
             self._backend().prepare_upload,
             actor=PrcActor(tenant_slug, actor_sub),
             operation_id=operation_id,
             artifact="proof",
         )
-        return {
-            "operation_id": operation_id,
-            "prc_template_s3_key": prepared["s3_key"],
-            "upload_url": prepared["upload_url"],
-            "expires_in": prepared["expires_in"],
-        }
+        return PreparedBakeResponse(
+            operation_id=operation_id,
+            prc_template_s3_key=prepared.s3_key,
+            upload_url=prepared.upload_url,
+            expires_in=prepared.expires_in,
+        )
 
     def commit_bake(
         self, *, tenant_slug: str, actor_sub: str, operation_id: str, proof_s3_key: str
-    ) -> dict[str, Any]:
+    ) -> CommittedBakeResponse:
         """An operation bake IS a proof edit: the proof is supplied, and the
         creative it wraps is the one the operation already holds."""
         committed = self._call(
@@ -112,18 +205,15 @@ class PrcService:
             operation_id=operation_id,
             body={"kind": "proof", "proof": {"s3_key": proof_s3_key}},
         )
-        return {
-            "operation_id": operation_id,
-            "intent": committed.get("intent"),
-            "message_id": row_id_from_key(proof_s3_key),
-            "id": str(committed.get("head_message_id") or ""),
-            "s3_key": committed.get("content"),
-            "prc_template_s3_key": committed.get("prc_template_s3_key"),
-            # Not reported by the Backend, which stores the proof rather than
-            # measuring it. Zero rather than a guess.
-            "html_size_bytes": 0,
-            "asset_url": committed.get("asset_url"),
-        }
+        return CommittedBakeResponse(
+            operation_id=operation_id,
+            intent=committed.intent,
+            message_id=row_id_from_key(proof_s3_key),
+            id=committed.head_message_id,
+            s3_key=committed.creative_s3_key,
+            prc_template_s3_key=committed.prc_template_s3_key,
+            asset_url=committed.asset_url,
+        )
 
     def commit_version(
         self,
@@ -134,7 +224,7 @@ class PrcService:
         s3_key: str,
         base_message_id: str | None,
         confirmed: bool,
-    ) -> dict[str, Any]:
+    ) -> CommittedVersionResponse:
         body: dict[str, Any] = {
             "kind": "content",
             "creative": {"s3_key": s3_key},
@@ -157,26 +247,24 @@ class PrcService:
 
     def publish_version(
         self, *, tenant_slug: str, actor_sub: str, operation_id: str, message_id: str, asset_url: str
-    ) -> dict[str, Any]:
+    ) -> PublishedVersionResponse:
         published = self._call(
             self._backend().publish_version,
             actor=PrcActor(tenant_slug, actor_sub),
             operation_id=operation_id,
             message_id=message_id,
         )
-        return {
-            "operation_id": operation_id,
-            "id": message_id,
-            "message_id": message_id,
-            "intent": "final",
-            "already_final": False,
-            "change_requests_resolved": published.get("change_requests_resolved", 0),
-            "requests_completed": published.get("requests_completed", 0),
-            "asset_url": asset_url,
-        }
+        return PublishedVersionResponse(
+            operation_id=operation_id,
+            id=message_id,
+            message_id=message_id,
+            change_requests_resolved=published.change_requests_resolved,
+            requests_completed=published.requests_completed,
+            asset_url=asset_url,
+        )
 
     @staticmethod
-    def _call(fn: Callable[..., dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
+    def _call(fn: Callable[..., _Answer], **kwargs: Any) -> _Answer:
         try:
             return fn(**kwargs)
         except BackendError as exc:
@@ -186,6 +274,9 @@ class PrcService:
         if self._repository is None:  # pragma: no cover - guarded by handles()
             raise ToolError("not_configured: PRC backend client is unavailable")
         return self._repository
+
+
+_Answer = TypeVar("_Answer")
 
 
 def _profile(value: str) -> PrcProfile:
@@ -208,30 +299,22 @@ def row_id_from_key(s3_key: str) -> str:
 
 
 def committed_response(
-    committed: dict[str, Any],
+    committed: CommittedVersion,
     *,
     operation_id: str,
     s3_key: str,
     message_id: str,
-) -> dict[str, Any]:
-    """The tool's long-standing response shape, from the Backend's envelope.
-
-    The Backend answers with what it durably knows; everything else here the
-    caller already supplied or the prepare step already returned, so the tool
-    contract holds without the Backend echoing it back.
-    """
-    head = str(committed.get("head_message_id") or "")
-    return {
-        "operation_id": operation_id,
-        "type": "html",
-        "intent": committed.get("intent"),
-        "id": head,
-        "head_message_id": head,
-        "message_id": message_id,
-        "s3_key": s3_key,
-        "prc_template_s3_key": committed.get("prc_template_s3_key"),
-        "asset_url": committed.get("asset_url"),
-    }
+) -> CommittedVersionResponse:
+    return CommittedVersionResponse(
+        operation_id=operation_id,
+        intent=committed.intent,
+        id=committed.head_message_id,
+        head_message_id=committed.head_message_id,
+        message_id=message_id,
+        s3_key=s3_key,
+        prc_template_s3_key=committed.prc_template_s3_key,
+        asset_url=committed.asset_url,
+    )
 
 
 def tool_error(exc: BackendError) -> ToolError:

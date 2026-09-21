@@ -47,13 +47,13 @@ def _respond(repo, status, payload):
 
 def test_a_write_carries_tenant_in_a_header_and_the_actor_in_the_body(repo):
     """Matching the agent-memory plane rather than inventing a second convention."""
-    _respond(repo, 200, {"s3_key": "k", "upload_url": "u", "expires_in": 600})
+    _respond(repo, 200, {"artifact": "proof", "s3_key": "k", "upload_url": "u", "expires_in": 600})
 
     result = repo.prepare_upload(
         actor=PrcActor("acme", "auth0|person"), operation_id="op-1", artifact="proof"
     )
 
-    assert result["s3_key"] == "k"
+    assert result.s3_key == "k"
     assert repo.sent["headers"]["X-Tenant-Slug"] == "acme"
     assert repo.sent["headers"]["Authorization"] == "Bearer m2m-token"
     assert "X-Actor-Sub" not in repo.sent["headers"]
@@ -63,11 +63,20 @@ def test_a_write_carries_tenant_in_a_header_and_the_actor_in_the_body(repo):
 def test_the_rules_read_sends_neither_tenant_nor_actor(repo):
     """It acts for nobody and the payload is the same for every tenant. Sending
     a slug the Backend will not use would mean inventing one."""
-    _respond(repo, 200, {"contract_version": "v2", "profile": "email", "rules": {}, "document": "#"})
+    _respond(
+        repo,
+        200,
+        {
+            "contract_version": "v2",
+            "profile": "email",
+            "rules": {"must": [], "should": [], "must_not": []},
+            "document": "#",
+        },
+    )
 
     result = repo.template_rules(profile=PrcProfile.EMAIL)
 
-    assert result["profile"] == "email"
+    assert result.profile is PrcProfile.EMAIL
     assert repo.sent["url"].endswith("/api/v2/prc-template-rules?profile=email")
     assert "X-Tenant-Slug" not in repo.sent["headers"]
     assert repo.sent["content"] is None
@@ -76,7 +85,7 @@ def test_the_rules_read_sends_neither_tenant_nor_actor(repo):
 def test_publish_carries_a_body_only_to_name_its_actor(repo):
     """Publish took no body before the cutover; it has one so the actor can
     travel the same way it does on every other write."""
-    _respond(repo, 200, {"operation_id": "op-1", "intent": "final"})
+    _respond(repo, 200, {"operation_id": "op-1", "message_id": "m-1", "intent": "final"})
 
     repo.publish_version(
         actor=PrcActor("acme", "auth0|person"), operation_id="op-1", message_id="m-1"
@@ -129,7 +138,15 @@ def test_the_session_pools_one_httpx_client_across_calls(monkeypatch):
 
     def _once(method, url, *, headers, content, timeout, client):
         clients.append(client)
-        return _Response(200, {})
+        return _Response(
+            200,
+            {
+                "contract_version": "v2",
+                "profile": "email",
+                "rules": {"must": [], "should": [], "must_not": []},
+                "document": "#",
+            },
+        )
 
     monkeypatch.setattr(
         "solstice_mcp.repositories.solstice_backend.session.http_client._httpx_once", _once
@@ -137,7 +154,7 @@ def test_the_session_pools_one_httpx_client_across_calls(monkeypatch):
     repo = PrcRepository(BackendSession(base_url="https://backend.test", token_acquirer=_Token()))
 
     repo.template_rules(profile=PrcProfile.EMAIL)
-    repo.template_rules(profile=PrcProfile.BANNER)
+    repo.template_rules(profile=PrcProfile.EMAIL)
 
     assert clients[0] is not None
     assert clients[0] is clients[1]

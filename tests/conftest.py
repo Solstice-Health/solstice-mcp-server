@@ -28,6 +28,7 @@ from solstice_mcp.brands import Brand, BrandTeamMember
 from solstice_mcp.operations import CgOperation, CgOperationMessage, PrcTemplateVersion, Project
 from solstice_mcp.rate_limit import default_limiter
 from solstice_mcp.repositories.solstice_backend.memory import MemoryRepository
+from solstice_mcp.repositories.solstice_backend.prc import PrcProfile, TemplateRules
 from solstice_mcp.repositories.solstice_backend.session import BackendSession
 from solstice_mcp.requests import AdminRequest
 from solstice_mcp.settings import Settings
@@ -168,6 +169,9 @@ class AppHarness:
 class FakePrcBackend:
     """Stands in for the Backend's PRC routes.
 
+    Answers with the repository's own models, so a payload the real Backend
+    could not produce fails here rather than passing through to a tool.
+
     Only the reads the tools reach with the cutover flag off are implemented;
     a write arriving here should fail loudly rather than be quietly recorded.
     """
@@ -177,11 +181,13 @@ class FakePrcBackend:
         self.rules: dict[str, dict] = {}
         self.raises: Exception | None = None
 
-    def template_rules(self, *, profile: str) -> dict:
+    def template_rules(self, *, profile: PrcProfile) -> TemplateRules:
         self.calls.append(("template_rules", {"profile": profile}))
         if self.raises is not None:
             raise self.raises
-        return self.rules.get(profile, _default_rules_payload(profile))
+        return TemplateRules.model_validate(
+            self.rules.get(profile, _default_rules_payload(profile))
+        )
 
 
 def _default_rules_payload(profile: str) -> dict:

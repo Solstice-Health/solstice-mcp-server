@@ -18,6 +18,7 @@ from solstice_mcp.repositories.solstice_backend.errors import (
     BackendUnauthenticated,
     BackendUnreachable,
 )
+from solstice_mcp.repositories.solstice_backend.prc import CommittedVersion
 from solstice_mcp.services.prc import PrcService, committed_response, row_id_from_key
 
 
@@ -144,18 +145,19 @@ def test_the_row_id_is_read_from_the_key_both_artifacts_use(key):
 
 def test_commit_response_keeps_every_field_the_tool_has_always_published():
     committed = committed_response(
-        {
-            "head_message_id": "head-1",
-            "intent": "draft",
-            "prc_template_s3_key": "cg_operation_prc_template/op-1/head-1.html",
-            "asset_url": "https://app.test/assets/op-1",
-        },
+        CommittedVersion(
+            head_message_id="head-1",
+            intent="draft",
+            creative_s3_key="cg_operation_msg_html/op-1/row-1.html",
+            prc_template_s3_key="cg_operation_prc_template/op-1/head-1.html",
+            asset_url="https://app.test/assets/op-1",
+        ),
         operation_id="op-1",
         s3_key="cg_operation_msg_html/op-1/row-1.html",
         message_id="row-1",
     )
 
-    assert committed == {
+    assert committed.model_dump() == {
         "operation_id": "op-1",
         "type": "html",
         "intent": "draft",
@@ -172,10 +174,54 @@ def test_id_and_head_message_id_agree_so_the_next_commit_can_chain():
     """A caller passes `head_message_id` back as `base_message_id`; the two
     fields diverging would break the compare-and-swap silently."""
     committed = committed_response(
-        {"head_message_id": "head-9", "intent": "final", "prc_template_s3_key": None, "asset_url": "u"},
+        CommittedVersion(
+            head_message_id="head-9",
+            intent="final",
+            creative_s3_key=None,
+            prc_template_s3_key=None,
+            asset_url="u",
+        ),
         operation_id="op",
         s3_key="cg_operation_msg_html/op/row.html",
         message_id="row",
     )
 
-    assert committed["id"] == committed["head_message_id"] == "head-9"
+    assert committed.id == committed.head_message_id == "head-9"
+
+
+class _CommitRepo:
+    """Answers a commit the way the Backend does, with its own model."""
+
+    def __init__(self, committed: CommittedVersion) -> None:
+        self.committed = committed
+        self.bodies: list[dict] = []
+
+    def commit_version(self, *, actor, operation_id, body):
+        self.bodies.append(body)
+        return self.committed
+
+
+def test_a_bake_publishes_the_creative_the_proof_wraps():
+    """The local path answers with the operation's creative key, so the Backend
+    path must too — it was reading a field the commit response cannot carry."""
+    repo = _CommitRepo(
+        CommittedVersion(
+            head_message_id="head-1",
+            intent="draft",
+            creative_s3_key="cg_operation_msg_html/op-1/creative.html",
+            prc_template_s3_key="cg_operation_prc_template/op-1/head-1.html",
+            asset_url="https://app.test/assets/op-1",
+        )
+    )
+
+    baked = PrcService(repo).commit_bake(
+        tenant_slug="acme",
+        actor_sub="auth0|person",
+        operation_id="op-1",
+        proof_s3_key="cg_operation_prc_template/op-1/row-1.html",
+    )
+
+    assert baked.s3_key == "cg_operation_msg_html/op-1/creative.html"
+    assert baked.message_id == "row-1"
+    assert baked.id == "head-1"
+    assert repo.bodies == [{"kind": "proof", "proof": {"s3_key": "cg_operation_prc_template/op-1/row-1.html"}}]

@@ -210,7 +210,7 @@ def register_content_tools(
         markdown — the layer vocabulary, the reserved namespace, the bake stage
         — and is what to read before authoring. Read-only; pass one profile.
         """
-        return prc.template_rules(profile)
+        return prc.template_rules(profile).model_dump()
 
     @read_only_tool
     def solstice_prc_template(
@@ -310,7 +310,7 @@ def register_content_tools(
                     actor_sub=require_subject(),
                     operation_id=operation_id,
                     proof_s3_key=operation_bake_s3_key,
-                )
+                ).model_dump()
 
         template = create_prc_template_version(
             require_subject(),
@@ -509,7 +509,7 @@ def register_content_tools(
                 tenant_slug=tenant_slug,
                 actor_sub=require_subject(),
                 operation_id=operation_id,
-            )
+            ).model_dump()
         return prepare_operation_version(
             require_subject(),
             tenant_slug,
@@ -544,7 +544,7 @@ def register_content_tools(
                 tenant_slug=tenant_slug,
                 actor_sub=require_subject(),
                 operation_id=operation_id,
-            )
+            ).model_dump()
         return prepare_prc_template_bake(
             require_subject(),
             tenant_slug,
@@ -637,7 +637,7 @@ def register_content_tools(
                 s3_key=s3_key,
                 base_message_id=base_message_id,
                 confirmed=confirmed,
-            )
+            ).model_dump()
         return commit_operation_version(
             require_subject(),
             tenant_slug,
@@ -740,7 +740,7 @@ def register_content_tools(
                 operation_id=operation_id,
                 message_id=message_id,
                 asset_url=build_asset_url(tenant_slug, operation_id),
-            )
+            ).model_dump()
         return approve_operation_version(
             require_subject(),
             tenant_slug,
