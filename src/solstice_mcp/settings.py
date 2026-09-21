@@ -69,6 +69,18 @@ class Settings:
         return _env_configured(self.CENTRAL_AUTH_DB)
 
     @property
+    def backend_m2m_scope(self) -> str:
+        """Every scope the machine token must carry.
+
+        The planes keep separate scope names so the Backend can pin its own,
+        but one Auth0 client asking twice mints two tokens for one credential.
+        Deployments set the memory scope explicitly, so the two are joined here
+        rather than defaulted together.
+        """
+        requested = (self.SOLSTICE_BACKEND_AUTH0_SCOPE, self.SOLSTICE_BACKEND_AUTH0_PRC_SCOPE)
+        return " ".join(dict.fromkeys(scope for part in requested for scope in part.split()))
+
+    @property
     def backend_m2m_configured(self) -> bool:
         """True when this task can mint a machine token for the Backend.
 

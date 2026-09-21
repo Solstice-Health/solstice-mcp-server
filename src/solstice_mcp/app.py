@@ -284,24 +284,26 @@ def build_mcp_app(
         access_gate=access_gate,
         sibling_registry=sibling_registry,
     )
-    # PRC writes go through the Backend when the flag says so for the tenant.
-    # Absent credentials means the local path stays in use — the flag alone
+    # One machine credential, one token, one pooled connection: the planes
+    # differ only by the scope each pins, and both travel in the same token.
+    # Absent credentials means the local PRC path stays in use — the flag alone
     # cannot route a write somewhere the task cannot reach.
-    if prc_backend is None and runtime_settings.backend_m2m_configured:
-        prc_backend = PrcRepository(
-            BackendSession(
-                base_url=runtime_settings.SOLSTICE_BACKEND_BASE_URL,
-                token_acquirer=Auth0ClientCredentials(
-                    token_endpoint=f"{issuer.rstrip('/')}/oauth/token",
-                    client_id=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_ID,
-                    client_secret=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET,
-                    audience=runtime_settings.SOLSTICE_BACKEND_AUTH0_AUDIENCE,
-                    scope=runtime_settings.SOLSTICE_BACKEND_AUTH0_PRC_SCOPE,
-                    timeout=float(runtime_settings.SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS),
-                ),
-                timeout=float(runtime_settings.SOLSTICE_BACKEND_TIMEOUT_SECONDS),
-            )
+    backend_session = None
+    if runtime_settings.backend_m2m_configured:
+        backend_session = BackendSession(
+            base_url=runtime_settings.SOLSTICE_BACKEND_BASE_URL,
+            token_acquirer=Auth0ClientCredentials(
+                token_endpoint=f"{issuer.rstrip('/')}/oauth/token",
+                client_id=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_ID,
+                client_secret=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET,
+                audience=runtime_settings.SOLSTICE_BACKEND_AUTH0_AUDIENCE,
+                scope=runtime_settings.backend_m2m_scope,
+                timeout=float(runtime_settings.SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS),
+            ),
+            timeout=float(runtime_settings.SOLSTICE_BACKEND_TIMEOUT_SECONDS),
         )
+    if prc_backend is None and backend_session is not None:
+        prc_backend = PrcRepository(backend_session)
 
     register_content_tools(
         mcp,
@@ -331,10 +333,11 @@ def build_mcp_app(
         session_factory=open_session,
     )
 
-    # Memory tools are registered when an injected client is provided (tests) or
-    # when the Backend base URL and Auth0 client-credentials contract are
-    # configured. When absent (e.g. local dev without the M2M client), memory
-    # tools are simply not exposed.
+    # Memory tools are registered when an injected repository is provided
+    # (tests) or when the machine credential is configured. When absent (e.g.
+    # local dev without the M2M client), they are simply not exposed.
+    if backend_memory is None and backend_session is not None:
+        backend_memory = MemoryRepository(backend_session)
     if backend_memory is not None:
         register_memory_tools(
             mcp,
@@ -342,30 +345,6 @@ def build_mcp_app(
             require_access_token=require_access_token,
             memory=MemoryService(
                 backend_memory, registry=tenant_registry, session_factory=open_session
-            ),
-        )
-    elif runtime_settings.backend_m2m_configured:
-        token_acquirer = Auth0ClientCredentials(
-            token_endpoint=f"{issuer.rstrip('/')}/oauth/token",
-            client_id=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_ID,
-            client_secret=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET,
-            audience=runtime_settings.SOLSTICE_BACKEND_AUTH0_AUDIENCE,
-            scope=runtime_settings.SOLSTICE_BACKEND_AUTH0_SCOPE,
-            timeout=float(runtime_settings.SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS),
-        )
-        backend_client = MemoryRepository(
-            BackendSession(
-                base_url=runtime_settings.SOLSTICE_BACKEND_BASE_URL,
-                token_acquirer=token_acquirer,
-                timeout=float(runtime_settings.SOLSTICE_BACKEND_TIMEOUT_SECONDS),
-            )
-        )
-        register_memory_tools(
-            mcp,
-            require_subject=require_subject,
-            require_access_token=require_access_token,
-            memory=MemoryService(
-                backend_client, registry=tenant_registry, session_factory=open_session
             ),
         )
 

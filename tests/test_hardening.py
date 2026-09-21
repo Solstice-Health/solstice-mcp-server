@@ -15,6 +15,7 @@ from test_memory import TENANT, _call, _set_remember_response, _tool_error_text
 from solstice_mcp.audit import AUDIT_LOGGER_NAME, AUTH_DENY_EVENT_NAME
 from solstice_mcp.auth import JWKSCache, MCPAccessTokenVerifier
 from solstice_mcp.rate_limit import RateLimiter
+from solstice_mcp.settings import Settings
 
 
 def test_rate_limiter_blocks_after_budget():
@@ -113,3 +114,17 @@ def test_remember_rejects_secret_shaped_statement(app_harness, mint_token):
     assert "invalid_argument" in _tool_error_text(response)
     assert "credentials" in _tool_error_text(response)
     assert app_harness.backend_opener.calls == []
+
+
+def test_one_machine_token_carries_every_plane_scope():
+    """Deployments pin the memory scope explicitly, so a single default of
+    both would silently drop prc:write and 403 every PRC write."""
+    settings = Settings(SOLSTICE_BACKEND_AUTH0_SCOPE="memory:invoke")
+
+    assert settings.backend_m2m_scope.split() == ["memory:invoke", "prc:write"]
+
+
+def test_a_scope_named_twice_is_requested_once():
+    settings = Settings(SOLSTICE_BACKEND_AUTH0_SCOPE="memory:invoke prc:write")
+
+    assert settings.backend_m2m_scope.split() == ["memory:invoke", "prc:write"]
