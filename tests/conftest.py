@@ -28,7 +28,14 @@ from solstice_mcp.brands import Brand, BrandTeamMember
 from solstice_mcp.operations import CgOperation, CgOperationMessage, PrcTemplateVersion, Project
 from solstice_mcp.rate_limit import default_limiter
 from solstice_mcp.repositories.solstice_backend.memory import MemoryRepository
-from solstice_mcp.repositories.solstice_backend.prc import PrcProfile, TemplateRules
+from solstice_mcp.repositories.solstice_backend.prc import (
+    CommittedVersion,
+    PrcActor,
+    PrcProfile,
+    PreparedUpload,
+    PublishedVersion,
+    TemplateRules,
+)
 from solstice_mcp.repositories.solstice_backend.session import BackendSession
 from solstice_mcp.requests import AdminRequest
 from solstice_mcp.settings import Settings
@@ -170,10 +177,12 @@ class FakePrcBackend:
     """Stands in for the Backend's PRC routes.
 
     Answers with the repository's own models, so a payload the real Backend
-    could not produce fails here rather than passing through to a tool.
+    could not produce fails here rather than passing through to a tool. Every
+    method the cutover reaches is implemented: with the flag on, a tool call
+    that lands somewhere unimplemented is a hole in the cutover, not in this.
 
-    Only the reads the tools reach with the cutover flag off are implemented;
-    a write arriving here should fail loudly rather than be quietly recorded.
+    ``raises`` makes the next call fail, for the paths where what an agent
+    hears is the thing under test.
     """
 
     def __init__(self) -> None:
@@ -181,13 +190,56 @@ class FakePrcBackend:
         self.rules: dict[str, dict] = {}
         self.raises: Exception | None = None
 
-    def template_rules(self, *, profile: PrcProfile) -> TemplateRules:
-        self.calls.append(("template_rules", {"profile": profile}))
+    def _record(self, name: str, **kwargs: object) -> None:
+        self.calls.append((name, kwargs))
         if self.raises is not None:
             raise self.raises
+
+    def template_rules(self, *, profile: PrcProfile) -> TemplateRules:
+        self._record("template_rules", profile=profile)
         return TemplateRules.model_validate(
             self.rules.get(profile, _default_rules_payload(profile))
         )
+
+    def prepare_upload(
+        self, *, actor: PrcActor, operation_id: str, artifact: str
+    ) -> PreparedUpload:
+        self._record("prepare_upload", actor=actor, operation_id=operation_id, artifact=artifact)
+        prefix = "cg_operation_msg_html" if artifact == "creative" else "cg_operation_prc_template"
+        return PreparedUpload(
+            artifact=artifact,
+            s3_key=f"{prefix}/{operation_id}/{PREPARED_ROW_ID}.html",
+            upload_url=f"https://s3.test/{prefix}/{operation_id}?signed",
+            expires_in=600,
+        )
+
+    def commit_version(
+        self, *, actor: PrcActor, operation_id: str, body: dict
+    ) -> CommittedVersion:
+        self._record("commit_version", actor=actor, operation_id=operation_id, body=body)
+        return CommittedVersion(
+            head_message_id=COMMITTED_HEAD_ID,
+            intent="final",
+            creative_s3_key=f"cg_operation_msg_html/{operation_id}/{PREPARED_ROW_ID}.html",
+            prc_template_s3_key=f"cg_operation_prc_template/{operation_id}/{COMMITTED_HEAD_ID}.html",
+            asset_url=f"https://app.test/home/assets/{operation_id}",
+        )
+
+    def publish_version(
+        self, *, actor: PrcActor, operation_id: str, message_id: str
+    ) -> PublishedVersion:
+        self._record("publish_version", actor=actor, operation_id=operation_id, message_id=message_id)
+        return PublishedVersion(
+            operation_id=operation_id,
+            message_id=message_id,
+            intent="final",
+            change_requests_resolved=2,
+            requests_completed=1,
+        )
+
+
+PREPARED_ROW_ID = "11111111-2222-3333-4444-555555555555"
+COMMITTED_HEAD_ID = "99999999-8888-7777-6666-555555555555"
 
 
 def _default_rules_payload(profile: str) -> dict:
