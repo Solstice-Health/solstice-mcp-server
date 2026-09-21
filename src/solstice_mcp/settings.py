@@ -39,7 +39,8 @@ class Settings:
     AWS_REGION: str = "us-east-1"
     S3_PRESIGN_EXPIRY_SECONDS: int = 600
     S3_MAX_INLINE_BYTES: int = 2_000_000
-    # Backend-Server internal memory routes. Empty base URL disables memory tools.
+    # Backend-Server's machine plane (memory and PRC). Empty base URL or
+    # credentials disable both.
     SOLSTICE_BACKEND_BASE_URL: str = ""
     SOLSTICE_BACKEND_TIMEOUT_SECONDS: int = 10
     SOLSTICE_BACKEND_AUTH0_CLIENT_ID: str = ""
@@ -48,8 +49,6 @@ class Settings:
     SOLSTICE_BACKEND_AUTH0_SCOPE: str = "memory:invoke"
     SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS: int = 5
     SOLSTICE_BACKEND_AUTH0_PRC_SCOPE: str = "prc:write"
-    # Uploading a large proof takes longer than a memory write.
-    SOLSTICE_BACKEND_PRC_TIMEOUT_SECONDS: int = 30
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -59,8 +58,6 @@ class Settings:
         values["SOLSTICE_BACKEND_TIMEOUT_SECONDS"] = int(str(values["SOLSTICE_BACKEND_TIMEOUT_SECONDS"]))
         token_timeout_key = "SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS"
         values[token_timeout_key] = int(str(values[token_timeout_key]))
-        prc_timeout_key = "SOLSTICE_BACKEND_PRC_TIMEOUT_SECONDS"
-        values[prc_timeout_key] = int(str(values[prc_timeout_key]))
         return cls(**values)  # type: ignore[arg-type]
 
     @property
@@ -72,8 +69,12 @@ class Settings:
         return _env_configured(self.CENTRAL_AUTH_DB)
 
     @property
-    def prc_backend_configured(self) -> bool:
-        """True when PRC writes can reach the Backend at all."""
+    def backend_m2m_configured(self) -> bool:
+        """True when this task can mint a machine token for the Backend.
+
+        One credential serves every machine plane, so memory and PRC gate on
+        the same answer.
+        """
         return bool(
             self.SOLSTICE_BACKEND_BASE_URL.strip()
             and _env_configured(self.SOLSTICE_BACKEND_AUTH0_CLIENT_ID)

@@ -286,7 +286,7 @@ def build_mcp_app(
     # PRC writes go through the Backend when the flag says so for the tenant.
     # Absent credentials means the local path stays in use — the flag alone
     # cannot route a write somewhere the task cannot reach.
-    if prc_backend is None and runtime_settings.prc_backend_configured:
+    if prc_backend is None and runtime_settings.backend_m2m_configured:
         prc_backend = PrcRepository(
             BackendSession(
                 base_url=runtime_settings.SOLSTICE_BACKEND_BASE_URL,
@@ -298,7 +298,7 @@ def build_mcp_app(
                     scope=runtime_settings.SOLSTICE_BACKEND_AUTH0_PRC_SCOPE,
                     timeout=float(runtime_settings.SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS),
                 ),
-                timeout=float(runtime_settings.SOLSTICE_BACKEND_PRC_TIMEOUT_SECONDS),
+                timeout=float(runtime_settings.SOLSTICE_BACKEND_TIMEOUT_SECONDS),
             )
         )
 
@@ -343,7 +343,7 @@ def build_mcp_app(
             session_factory=open_session,
             backend=backend_memory,
         )
-    elif runtime_settings.SOLSTICE_BACKEND_BASE_URL and runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_ID:
+    elif runtime_settings.backend_m2m_configured:
         token_acquirer = Auth0ClientCredentials(
             token_endpoint=f"{issuer.rstrip('/')}/oauth/token",
             client_id=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_ID,
