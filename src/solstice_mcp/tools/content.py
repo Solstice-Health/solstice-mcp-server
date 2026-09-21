@@ -9,7 +9,6 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from solstice_mcp import feature_flags
 from solstice_mcp.audit import audited_tool
 from solstice_mcp.brands import list_brand_users
 from solstice_mcp.operations import (
@@ -30,7 +29,7 @@ from solstice_mcp.operations import (
     resolve_prc_template_for_brand,
     update_operation,
 )
-from solstice_mcp.prc_client import PrcBackendClient, PrcBackendError
+from solstice_mcp.services.prc import PrcService
 from solstice_mcp.storage import S3Reader
 from solstice_mcp.tenants import SessionFactory, TenantRegistry
 
@@ -57,57 +56,6 @@ UPDATE_IN_PLACE = ToolAnnotations(
     openWorldHint=False,
 )
 
-PRC_TEMPLATE_PROFILES = ("email", "banner", "social", "website")
-def _backend_call(fn: Callable[..., dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
-    """Run a Backend call and re-raise its failure as the tool-facing error.
-
-    The client has already mapped the Backend's code to the string the tool
-    descriptions name, so this only changes the exception type.
-    """
-    try:
-        return fn(**kwargs)
-    except PrcBackendError as exc:
-        raise ToolError(str(exc)) from exc
-
-
-def _row_id_from_key(s3_key: str) -> str:
-    """The row id the Backend embedded in an artifact key.
-
-    Both artifact prefixes end ``/{operation_id}/{row_id}.html``. The tool has
-    always published this as ``message_id``, and callers pass it back, so it is
-    read from the key rather than invented here.
-    """
-    return s3_key.rsplit("/", 1)[-1].removesuffix(".html")
-
-
-def _committed_response(
-    committed: dict[str, Any],
-    *,
-    operation_id: str,
-    kind: str,
-    s3_key: str,
-    message_id: str,
-) -> dict[str, Any]:
-    """The tool's long-standing response shape, from the Backend's envelope.
-
-    The Backend answers with what it durably knows; everything else here the
-    caller already supplied or the prepare step already returned, so the tool
-    contract holds without the Backend echoing it back.
-    """
-    head = str(committed.get("head_message_id") or "")
-    return {
-        "operation_id": operation_id,
-        "type": kind,
-        "intent": committed.get("intent"),
-        "id": head,
-        "head_message_id": head,
-        "message_id": message_id,
-        "s3_key": s3_key,
-        "prc_template_s3_key": committed.get("prc_template_s3_key"),
-        "asset_url": committed.get("asset_url"),
-    }
-
-
 def register_content_tools(
     mcp: FastMCP,
     *,
@@ -118,24 +66,8 @@ def register_content_tools(
     s3: S3Reader,
     presign_expiry: int,
     max_inline_bytes: int,
-    prc_backend: PrcBackendClient | None = None,
+    prc: PrcService,
 ) -> None:
-    def via_backend(tenant_slug: str, brand_id: str | None = None) -> bool:
-        """True when this tenant's PRC writes belong to the Backend.
-
-        Credentials gate the flag, not the other way round: a task without them
-        keeps the local path however the flag is set, so enabling a tenant
-        cannot route a write somewhere this process cannot reach.
-        """
-        if prc_backend is None:
-            return False
-        return feature_flags.prc_writes_via_backend(tenant_slug=tenant_slug, brand_id=brand_id)
-
-    def backend() -> PrcBackendClient:
-        if prc_backend is None:  # pragma: no cover - guarded by via_backend
-            raise ToolError("not_configured: PRC backend client is unavailable")
-        return prc_backend
-
     read_only_tool = audited_tool(mcp, require_access_token, annotations=READ_ONLY)
     append_only_tool = audited_tool(mcp, require_access_token, annotations=APPEND_ONLY_WRITE)
     update_tool = audited_tool(mcp, require_access_token, annotations=UPDATE_IN_PLACE)
@@ -278,11 +210,7 @@ def register_content_tools(
         markdown — the layer vocabulary, the reserved namespace, the bake stage
         — and is what to read before authoring. Read-only; pass one profile.
         """
-        normalized = profile.strip().lower()
-        if normalized not in PRC_TEMPLATE_PROFILES:
-            allowed = ", ".join(PRC_TEMPLATE_PROFILES)
-            raise ToolError(f"invalid_argument: profile must be one of {allowed}")
-        return {"status": "ok", **_backend_call(backend().template_rules, profile=normalized)}
+        return prc.template_rules(profile)
 
     @read_only_tool
     def solstice_prc_template(
@@ -374,34 +302,15 @@ def register_content_tools(
         Requires SOLSTICE_STAFF on the selected brand.
         """
         baker = None
-        if via_backend(tenant_slug, brand_id):
+        if prc.handles(tenant_slug, brand_id):
 
             def baker(*, operation_id: str, content_type: str, operation_bake_s3_key: str) -> dict[str, Any]:
-                """Bake through the Backend as a proof commit.
-
-                An operation bake IS a proof edit: the proof is supplied, and
-                the creative it wraps is the one the operation already holds.
-                """
-                committed = _backend_call(
-                    backend().commit_version,
+                return prc.commit_bake(
                     tenant_slug=tenant_slug,
                     actor_sub=require_subject(),
                     operation_id=operation_id,
-                    body={"kind": "proof", "proof": {"s3_key": operation_bake_s3_key}},
+                    proof_s3_key=operation_bake_s3_key,
                 )
-                head = str(committed.get("head_message_id") or "")
-                return {
-                    "operation_id": operation_id,
-                    "intent": committed.get("intent"),
-                    "message_id": _row_id_from_key(operation_bake_s3_key),
-                    "id": head,
-                    "s3_key": committed.get("content"),
-                    "prc_template_s3_key": committed.get("prc_template_s3_key"),
-                    # Not reported by the Backend, which stores the proof
-                    # rather than measuring it. Zero rather than a guess.
-                    "html_size_bytes": 0,
-                    "asset_url": committed.get("asset_url"),
-                }
 
         template = create_prc_template_version(
             require_subject(),
@@ -595,24 +504,12 @@ def register_content_tools(
         cause the call to be denied. Keep the user's intent in your own
         reasoning, not in this argument.
         """
-        if type == "html" and via_backend(tenant_slug):
-            prepared = _backend_call(
-                backend().prepare_upload,
+        if type == "html" and prc.handles(tenant_slug):
+            return prc.prepare_version(
                 tenant_slug=tenant_slug,
                 actor_sub=require_subject(),
                 operation_id=operation_id,
-                artifact="creative",
             )
-            return {
-                "operation_id": operation_id,
-                "type": type,
-                # The row id the Backend minted is embedded in the key it
-                # returned; the tool has always published it as message_id.
-                "message_id": _row_id_from_key(prepared["s3_key"]),
-                "s3_key": prepared["s3_key"],
-                "upload_url": prepared["upload_url"],
-                "expires_in": prepared["expires_in"],
-            }
         return prepare_operation_version(
             require_subject(),
             tenant_slug,
@@ -642,20 +539,12 @@ def register_content_tools(
         ``operation_bake_s3_key`` set to the returned key. Requires
         SOLSTICE_STAFF on the operation's brand.
         """
-        if via_backend(tenant_slug, brand_id):
-            prepared = _backend_call(
-                backend().prepare_upload,
+        if prc.handles(tenant_slug, brand_id):
+            return prc.prepare_bake(
                 tenant_slug=tenant_slug,
                 actor_sub=require_subject(),
                 operation_id=operation_id,
-                artifact="proof",
             )
-            return {
-                "operation_id": operation_id,
-                "prc_template_s3_key": prepared["s3_key"],
-                "upload_url": prepared["upload_url"],
-                "expires_in": prepared["expires_in"],
-            }
         return prepare_prc_template_bake(
             require_subject(),
             tenant_slug,
@@ -740,27 +629,14 @@ def register_content_tools(
         End your user-facing reply with ``[Open asset in Solstice](<asset_url>)``
         instead of handing the user the operation UUID.
         """
-        if type == "html" and via_backend(tenant_slug):
-            body: dict[str, Any] = {
-                "kind": "content",
-                "creative": {"s3_key": s3_key},
-                "confirmed": confirmed,
-            }
-            if base_message_id:
-                body["base_message_id"] = base_message_id
-            committed = _backend_call(
-                backend().commit_version,
+        if type == "html" and prc.handles(tenant_slug):
+            return prc.commit_version(
                 tenant_slug=tenant_slug,
                 actor_sub=require_subject(),
                 operation_id=operation_id,
-                body=body,
-            )
-            return _committed_response(
-                committed,
-                operation_id=operation_id,
-                kind=type,
                 s3_key=s3_key,
-                message_id=_row_id_from_key(s3_key),
+                base_message_id=base_message_id,
+                confirmed=confirmed,
             )
         return commit_operation_version(
             require_subject(),
@@ -857,24 +733,14 @@ def register_content_tools(
         End your user-facing reply with ``[Open asset in Solstice](<asset_url>)``
         instead of handing the user the operation UUID.
         """
-        if via_backend(tenant_slug):
-            published = _backend_call(
-                backend().publish_version,
+        if prc.handles(tenant_slug):
+            return prc.publish_version(
                 tenant_slug=tenant_slug,
                 actor_sub=require_subject(),
                 operation_id=operation_id,
                 message_id=message_id,
+                asset_url=build_asset_url(tenant_slug, operation_id),
             )
-            return {
-                "operation_id": operation_id,
-                "id": message_id,
-                "message_id": message_id,
-                "intent": "final",
-                "already_final": False,
-                "change_requests_resolved": published.get("change_requests_resolved", 0),
-                "requests_completed": published.get("requests_completed", 0),
-                "asset_url": build_asset_url(tenant_slug, operation_id),
-            }
         return approve_operation_version(
             require_subject(),
             tenant_slug,

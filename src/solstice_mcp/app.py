@@ -20,9 +20,12 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from solstice_mcp.auth import JWKSCache, MCPAccessTokenVerifier
+from solstice_mcp.client_credentials import Auth0ClientCredentials
 from solstice_mcp.gate import SolsticeAccessGate
-from solstice_mcp.memory_client import Auth0ClientCredentials, BackendMemoryClient
-from solstice_mcp.prc_client import PrcBackendClient
+from solstice_mcp.repositories.solstice_backend.memory import MemoryRepository
+from solstice_mcp.repositories.solstice_backend.prc import PrcRepository
+from solstice_mcp.repositories.solstice_backend.session import BackendSession
+from solstice_mcp.services.prc import PrcService
 from solstice_mcp.settings import Settings, settings
 from solstice_mcp.sibling_mcps import SiblingMCPRegistry
 from solstice_mcp.storage import S3Reader, TenantS3
@@ -202,8 +205,8 @@ def build_mcp_app(
     cache: TenantMembershipCache | None = None,
     jwks_cache: JWKSCache | None = None,
     s3: S3Reader | None = None,
-    backend_memory: BackendMemoryClient | None = None,
-    prc_backend: PrcBackendClient | None = None,
+    backend_memory: MemoryRepository | None = None,
+    prc_backend: PrcRepository | None = None,
     user_admin_auth0: Auth0UserAdmin | None = None,
     central_session_factory: CentralSessionFactory | None = None,
 ) -> FastMCP:
@@ -284,17 +287,19 @@ def build_mcp_app(
     # Absent credentials means the local path stays in use — the flag alone
     # cannot route a write somewhere the task cannot reach.
     if prc_backend is None and runtime_settings.prc_backend_configured:
-        prc_backend = PrcBackendClient(
-            base_url=runtime_settings.SOLSTICE_BACKEND_BASE_URL,
-            token_acquirer=Auth0ClientCredentials(
-                token_endpoint=f"{issuer.rstrip('/')}/oauth/token",
-                client_id=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_ID,
-                client_secret=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET,
-                audience=runtime_settings.SOLSTICE_BACKEND_AUTH0_AUDIENCE,
-                scope=runtime_settings.SOLSTICE_BACKEND_AUTH0_PRC_SCOPE,
-                timeout=float(runtime_settings.SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS),
-            ),
-            timeout=float(runtime_settings.SOLSTICE_BACKEND_PRC_TIMEOUT_SECONDS),
+        prc_backend = PrcRepository(
+            BackendSession(
+                base_url=runtime_settings.SOLSTICE_BACKEND_BASE_URL,
+                token_acquirer=Auth0ClientCredentials(
+                    token_endpoint=f"{issuer.rstrip('/')}/oauth/token",
+                    client_id=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_ID,
+                    client_secret=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET,
+                    audience=runtime_settings.SOLSTICE_BACKEND_AUTH0_AUDIENCE,
+                    scope=runtime_settings.SOLSTICE_BACKEND_AUTH0_PRC_SCOPE,
+                    timeout=float(runtime_settings.SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS),
+                ),
+                timeout=float(runtime_settings.SOLSTICE_BACKEND_PRC_TIMEOUT_SECONDS),
+            )
         )
 
     register_content_tools(
@@ -306,7 +311,7 @@ def build_mcp_app(
         s3=s3_reader,
         presign_expiry=runtime_settings.S3_PRESIGN_EXPIRY_SECONDS,
         max_inline_bytes=runtime_settings.S3_MAX_INLINE_BYTES,
-        prc_backend=prc_backend,
+        prc=PrcService(prc_backend),
     )
     register_brand_context_tools(
         mcp,
@@ -347,10 +352,12 @@ def build_mcp_app(
             scope=runtime_settings.SOLSTICE_BACKEND_AUTH0_SCOPE,
             timeout=float(runtime_settings.SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS),
         )
-        backend_client = BackendMemoryClient(
-            base_url=runtime_settings.SOLSTICE_BACKEND_BASE_URL,
-            token_acquirer=token_acquirer,
-            timeout=float(runtime_settings.SOLSTICE_BACKEND_TIMEOUT_SECONDS),
+        backend_client = MemoryRepository(
+            BackendSession(
+                base_url=runtime_settings.SOLSTICE_BACKEND_BASE_URL,
+                token_acquirer=token_acquirer,
+                timeout=float(runtime_settings.SOLSTICE_BACKEND_TIMEOUT_SECONDS),
+            )
         )
         register_memory_tools(
             mcp,

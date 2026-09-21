@@ -8,7 +8,6 @@ import urllib.parse
 from typing import Any
 from urllib.error import URLError
 
-import httpx
 import pytest
 from conftest import (
     BRAND_A1,
@@ -24,17 +23,16 @@ from conftest import (
 )
 from test_server import rpc, tool_payload
 
-from solstice_mcp import http_client
 from solstice_mcp.audit import AUDIT_EVENT_NAME, AUDIT_LOGGER_NAME
-from solstice_mcp.memory_client import (
-    Auth0ClientCredentials,
-    BackendMemoryClient,
+from solstice_mcp.repositories.solstice_backend.memory import (
     MemoryClientConflict,
     MemoryClientInvalidArgument,
     MemoryClientNotFound,
     MemoryClientUnauthorized,
     MemoryClientUnavailable,
+    MemoryRepository,
 )
+from solstice_mcp.repositories.solstice_backend.session import BackendSession
 
 TENANT = "tenant_a"
 TENANT_B = "tenant_b"
@@ -792,145 +790,18 @@ def test_audit_records_denied_brand_write(app_harness: AppHarness, mint_token,
 
 
 # ---------------------------------------------------------------------------
-# Auth0 client-credentials caching/validation
+# MemoryRepository direct error mapping and redaction
 # ---------------------------------------------------------------------------
 
 
-def _make_acquirer() -> Auth0ClientCredentials:
-    return Auth0ClientCredentials(
-        token_endpoint="https://test.auth0.local/oauth/token",
-        client_id="m2m-client",
-        client_secret="m2m-secret",
-        audience="https://backend.test",
-        scope="memory:invoke",
-        timeout=2.0,
-    )
-
-
-def _fake_token_request(body: bytes, *, status: int = 200):
-    from solstice_mcp.http_client import HttpResponse
-
-    def _request(method, url, **kwargs):
-        assert method == "POST"
-        assert url == "https://test.auth0.local/oauth/token"
-        headers = kwargs.get("headers") or {}
-        content = kwargs.get("content") or b""
-        assert headers.get("Content-Type") == "application/x-www-form-urlencoded"
-        decoded = content.decode("utf-8")
-        assert "grant_type=client_credentials" in decoded
-        assert "client_id=m2m-client" in decoded
-        return HttpResponse(status_code=status, content=body)
-
-    return _request
-
-
-def test_client_credentials_caches_until_near_expiry(monkeypatch):
-    calls: list[int] = []
-
-    def fake_request(method, url, **kwargs):
-        calls.append(1)
-        return _fake_token_request(
-            b'{"access_token":"tok-1","expires_in":3600,"token_type":"Bearer"}'
-        )(method, url, **kwargs)
-
-    monkeypatch.setattr("solstice_mcp.memory_client.http_client.request", fake_request)
-    acquirer = _make_acquirer()
-    assert acquirer.get_token() == "tok-1"
-    assert acquirer.get_token() == "tok-1"
-    assert len(calls) == 1
-
-
-def test_client_credentials_refetches_after_expiry(monkeypatch):
-    calls: list[int] = []
-
-    def fake_request(method, url, **kwargs):
-        calls.append(1)
-        return _fake_token_request(
-            b'{"access_token":"tok-N","expires_in":3600,"token_type":"Bearer"}'
-        )(method, url, **kwargs)
-
-    monkeypatch.setattr("solstice_mcp.memory_client.http_client.request", fake_request)
-    acquirer = _make_acquirer()
-    acquirer.get_token()
-    assert len(calls) == 1
-    acquirer._expires_at = 0.0  # force expiry
-    acquirer.get_token()
-    assert len(calls) == 2
-
-
-def test_client_credentials_rejects_invalid_response(monkeypatch):
-    monkeypatch.setattr(
-        "solstice_mcp.memory_client.http_client.request",
-        _fake_token_request(b'{"access_token":"tok"}'),  # no expires_in
-    )
-    acquirer = _make_acquirer()
-    with pytest.raises(MemoryClientUnauthorized, match="auth0_token_response_invalid"):
-        acquirer.get_token()
-
-
-def test_client_credentials_rejects_missing_config():
-    with pytest.raises(ValueError, match="Auth0 client-credentials requires"):
-        Auth0ClientCredentials(
-            token_endpoint="https://x/oauth/token",
-            client_id="",
-            client_secret="",
-            audience="",
-            scope="memory:invoke",
+def _direct_client(opener: FakeBackendOpener) -> MemoryRepository:
+    return MemoryRepository(
+        BackendSession(
+            base_url="https://backend.test",
+            token_acquirer=_FakeAcquirer(),
+            timeout=5.0,
+            opener=opener,
         )
-
-
-def test_client_credentials_maps_http_error(monkeypatch):
-    monkeypatch.setattr(
-        "solstice_mcp.memory_client.http_client.request",
-        _fake_token_request(b'{"error":"invalid_client"}', status=401),
-    )
-    acquirer = _make_acquirer()
-    with pytest.raises(MemoryClientUnauthorized, match="auth0_token_endpoint_failed"):
-        acquirer.get_token()
-
-
-def test_client_credentials_maps_unreachable(monkeypatch):
-    def fake_request(*_a, **_kw):
-        raise httpx.ConnectError("connection refused")
-
-    monkeypatch.setattr("solstice_mcp.memory_client.http_client.request", fake_request)
-    acquirer = _make_acquirer()
-    with pytest.raises(MemoryClientUnavailable, match="auth0_token_endpoint_unreachable"):
-        acquirer.get_token()
-
-
-def test_client_credentials_reuses_pooled_httpx_client(monkeypatch):
-    calls: list[Any] = []
-
-    def fake_once(method, url, *, headers, content, timeout, client):
-        calls.append(client)
-        return http_client.HttpResponse(
-            status_code=200,
-            content=b'{"access_token": "tok", "expires_in": 3600}',
-        )
-
-    monkeypatch.setattr(http_client, "_httpx_once", fake_once)
-    acquirer = _make_acquirer()
-    acquirer.get_token()
-    acquirer.invalidate()
-    acquirer.get_token()
-
-    assert len(calls) == 2
-    assert calls[0] is not None  # real pooled client, not client=None
-    assert calls[0] is calls[1]  # same instance reused, not recreated per fetch
-
-
-# ---------------------------------------------------------------------------
-# BackendMemoryClient direct error mapping and redaction
-# ---------------------------------------------------------------------------
-
-
-def _direct_client(opener: FakeBackendOpener) -> BackendMemoryClient:
-    return BackendMemoryClient(
-        base_url="https://backend.test",
-        token_acquirer=_FakeAcquirer(),
-        timeout=5.0,
-        opener=opener,
     )
 
 
@@ -948,7 +819,7 @@ def test_backend_client_redacts_5xx_body():
         500, b'{"detail":"internal db creds leak"}',
     )
     client = _direct_client(opener)
-    from solstice_mcp.memory_client import ActorEnvelope
+    from solstice_mcp.repositories.solstice_backend.memory import ActorEnvelope
 
     actor = ActorEnvelope(actor_sub="sub", tenant_slug="tenant_a", brand_id=BRAND_A1, user_id="u")
     with pytest.raises(MemoryClientUnavailable) as exc_info:
@@ -958,7 +829,7 @@ def test_backend_client_redacts_5xx_body():
 
 
 def test_backend_client_maps_404_409_403_422():
-    from solstice_mcp.memory_client import ActorEnvelope
+    from solstice_mcp.repositories.solstice_backend.memory import ActorEnvelope
 
     actor = ActorEnvelope(actor_sub="sub", tenant_slug="tenant_a", brand_id=BRAND_A1, user_id="u")
     for status, exc_type in [(404, MemoryClientNotFound), (409, MemoryClientConflict),
@@ -972,16 +843,18 @@ def test_backend_client_maps_404_409_403_422():
 
 
 def test_backend_client_unreachable_maps_to_unavailable():
-    from solstice_mcp.memory_client import ActorEnvelope
+    from solstice_mcp.repositories.solstice_backend.memory import ActorEnvelope
 
     class _FailOpener:
         def open(self, _request, timeout=None):
             raise URLError("refused")
 
-    client = BackendMemoryClient(
-        base_url="https://backend.test",
-        token_acquirer=_FakeAcquirer(),
-        opener=_FailOpener(),
+    client = MemoryRepository(
+        BackendSession(
+            base_url="https://backend.test",
+            token_acquirer=_FakeAcquirer(),
+            opener=_FailOpener(),
+        )
     )
     actor = ActorEnvelope(actor_sub="sub", tenant_slug="tenant_a", brand_id=BRAND_A1, user_id="u")
     with pytest.raises(MemoryClientUnavailable, match="backend_unreachable"):
@@ -990,7 +863,7 @@ def test_backend_client_unreachable_maps_to_unavailable():
 
 def test_backend_client_recall_emits_exact_query_and_headers():
     """Direct contract smoke test: pins the recall wire shape to the Backend contract."""
-    from solstice_mcp.memory_client import ActorEnvelope
+    from solstice_mcp.repositories.solstice_backend.memory import ActorEnvelope
 
     opener = FakeBackendOpener()
     _set_recall_response(opener)
@@ -1017,7 +890,7 @@ def test_backend_client_recall_emits_exact_query_and_headers():
 
 def test_backend_client_remember_emits_exact_body_and_headers():
     """Direct contract smoke test: pins the remember wire shape to the Backend contract."""
-    from solstice_mcp.memory_client import ActorEnvelope
+    from solstice_mcp.repositories.solstice_backend.memory import ActorEnvelope
 
     opener = FakeBackendOpener()
     _set_remember_response(opener)

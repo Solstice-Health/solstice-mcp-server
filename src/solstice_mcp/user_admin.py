@@ -44,7 +44,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from solstice_mcp import http_client
 from solstice_mcp.brands import Brand, BrandTeamMember, UserRole, require_brand_role
-from solstice_mcp.memory_client import Auth0ClientCredentials, MemoryClientError
+from solstice_mcp.client_credentials import Auth0ClientCredentials, CredentialsError
 from solstice_mcp.requests import require_staff_in_tenant
 from solstice_mcp.tenants import (
     SessionFactory,
@@ -208,7 +208,7 @@ class Auth0UserAdmin:
         if authenticated:
             try:
                 headers["Authorization"] = f"Bearer {self._token_acquirer.get_token()}"
-            except MemoryClientError as exc:
+            except CredentialsError as exc:
                 raise ToolError(f"auth0_unavailable: management token fetch failed ({exc.code})") from exc
         data: bytes | None = None
         if body is not None:

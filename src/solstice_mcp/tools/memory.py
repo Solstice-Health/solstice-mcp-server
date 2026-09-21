@@ -6,7 +6,7 @@ The MCP server stays stateless. Each tool:
 2. Rechecks tenant/brand membership and derives the role via
    ``require_brand_role`` (the only authorization input that grants authority).
 3. Builds a server-derived ``ActorEnvelope`` and calls the Backend-Server
-   internal memory routes through the confidential ``BackendMemoryClient``.
+   internal memory routes through the confidential ``MemoryRepository``.
 
 ``tenant_slug`` and ``brand_id`` arguments only select a resource; they never
 grant access. No tool accepts ``user_id`` or ``role`` as an argument. Brand
@@ -42,19 +42,19 @@ from solstice_mcp.brands import (
     require_brand_role,
     role_satisfies,
 )
-from solstice_mcp.memory_client import (
+from solstice_mcp.repositories.solstice_backend.memory import (
     MEMORY_SCOPE_BRAND,
     MEMORY_SCOPE_PERSONAL,
     MEMORY_SCOPE_TENANT_PERSONAL,
     MEMORY_SCOPES,
     ActorEnvelope,
-    BackendMemoryClient,
     MemoryClientConflict,
     MemoryClientError,
     MemoryClientInvalidArgument,
     MemoryClientNotFound,
     MemoryClientUnauthorized,
     MemoryClientUnavailable,
+    MemoryRepository,
 )
 from solstice_mcp.tenants import SessionFactory, TenantRegistry, resolve_tenant_identity
 
@@ -268,7 +268,7 @@ def register_memory_tools(
     require_access_token: Callable[[], Any],
     registry: TenantRegistry,
     session_factory: SessionFactory,
-    backend: BackendMemoryClient,
+    backend: MemoryRepository,
 ) -> None:
     read_only_tool = audited_tool(mcp, require_access_token, annotations=READ_ONLY)
     write_tool = audited_tool(mcp, require_access_token, annotations=EXPLICIT_WRITE)

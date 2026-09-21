@@ -1,30 +1,30 @@
-"""Confidential Backend client for the Solstice agent-memory domain.
+"""The Backend's agent-memory routes.
 
 The MCP server stays stateless: it validates the end-user OAuth subject,
-rechecks tenant/brand membership via ``require_brand_role``, then calls the
-Backend-Server internal memory routes with an RS256 Auth0 client-credentials
-bearer and a server-derived actor envelope. The MCP never touches the
-tenant Postgres store; Backend is the sole trust root for memory writes.
+rechecks tenant/brand membership via ``require_brand_role``, then calls these
+routes with a server-derived actor envelope. The MCP never touches the tenant
+Postgres store; Backend is the sole trust root for memory writes.
 
-The actor fields in the request query/body are revalidated against the
-tenant DB; they never grant access on their own. Caller-supplied roles are
-never sent.
+The actor fields in the request query/body are revalidated against the tenant
+DB; they never grant access on their own. Caller-supplied roles are never sent.
+Backend error bodies may carry internal detail, so failures here are mapped to
+a fixed set of codes and the body is never surfaced.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import threading
-import time
-import urllib.error
-import urllib.parse
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
-
-from solstice_mcp import http_client
+from solstice_mcp.repositories.solstice_backend.errors import (
+    BackendError,
+    BackendInvalidResponse,
+    BackendStatusError,
+    BackendUnauthenticated,
+    BackendUnreachable,
+)
+from solstice_mcp.repositories.solstice_backend.session import BackendSession
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +36,6 @@ MEMORY_SCOPES = (
     MEMORY_SCOPE_PERSONAL,
     MEMORY_SCOPE_BRAND,
 )
-
-_TOKEN_SKEW_SECONDS = 60.0
 
 
 class MemoryClientError(Exception):
@@ -84,136 +82,14 @@ class ActorEnvelope:
     user_id: str
 
 
-class Auth0ClientCredentials:
-    """Thread-safe, short-lived cache of one Auth0 client-credentials access token.
+class MemoryRepository:
+    """The ``/api/internal/agent-memory`` routes."""
 
-    ponytail: one token per process, refreshed ~60s before expiry. Replace with
-    a shared token cache if multiple workers duplicate the fetch under load.
-    """
-
-    def __init__(
-        self,
-        *,
-        token_endpoint: str,
-        client_id: str,
-        client_secret: str,
-        audience: str,
-        scope: str,
-        timeout: float = 5.0,
-        opener: Any | None = None,
-        http: httpx.Client | None = None,
-    ) -> None:
-        if not (token_endpoint and client_id and client_secret and audience):
-            raise ValueError("Auth0 client-credentials requires endpoint, client id, secret, and audience")
-        self._token_endpoint = token_endpoint
-        self._client_id = client_id
-        self._client_secret = client_secret
-        self._audience = audience
-        self._scope = scope
-        self._timeout = timeout
-        # opener set → urllib (tests). opener None → pooled httpx (production).
-        self._opener = opener
-        self._http = http if opener is None else None
-        self._owns_http = False
-        if self._opener is None and self._http is None:
-            self._http = httpx.Client(timeout=timeout)
-            self._owns_http = True
-        self._lock = threading.Lock()
-        self._token: str | None = None
-        self._expires_at: float = 0.0
+    def __init__(self, session: BackendSession) -> None:
+        self._session = session
 
     def close(self) -> None:
-        if self._owns_http and self._http is not None:
-            self._http.close()
-            self._http = None
-
-    def get_token(self) -> str:
-        with self._lock:
-            if self._token is not None and time.monotonic() < self._expires_at:
-                return self._token
-            token, expires_in = self._fetch()
-            self._token = token
-            # Refresh before the real expiry so a slow request never carries an expired token.
-            self._expires_at = time.monotonic() + max(expires_in - _TOKEN_SKEW_SECONDS, 1.0)
-            return token
-
-    def invalidate(self) -> None:
-        with self._lock:
-            self._token = None
-            self._expires_at = 0.0
-
-    def _fetch(self) -> tuple[str, float]:
-        body = urllib.parse.urlencode(
-            {
-                "grant_type": "client_credentials",
-                "client_id": self._client_id,
-                "client_secret": self._client_secret,
-                "audience": self._audience,
-                "scope": self._scope,
-            }
-        ).encode("utf-8")
-        try:
-            # client_credentials is safe to retry; Auth0 issues a new token
-            # without side effects. Mutating memory/Auth0 admin POSTs must NOT
-            # set retry_mutations (http_client defaults to no retries there).
-            response = http_client.request(
-                "POST",
-                self._token_endpoint,
-                headers={
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Accept": "application/json",
-                },
-                content=body,
-                timeout=self._timeout,
-                retry_mutations=True,
-                opener=self._opener,
-                client=self._http,
-            )
-        except (httpx.TransportError, TimeoutError, urllib.error.URLError, OSError) as exc:
-            raise MemoryClientUnavailable("auth0_token_endpoint_unreachable") from exc
-
-        if response.status_code >= 400:
-            raise MemoryClientUnauthorized(
-                "auth0_token_endpoint_failed", status=response.status_code
-            )
-        payload = _parse_json_bytes(response.content)
-
-        token = payload.get("access_token")
-        expires_in = payload.get("expires_in")
-        if not isinstance(token, str) or not isinstance(expires_in, (int, float)):
-            raise MemoryClientUnauthorized("auth0_token_response_invalid")
-        return token, float(expires_in)
-
-
-class BackendMemoryClient:
-    """HTTP client for the Backend-Server ``/api/internal/agent-memory`` routes."""
-
-    def __init__(
-        self,
-        *,
-        base_url: str,
-        token_acquirer: Auth0ClientCredentials,
-        timeout: float = 10.0,
-        opener: Any | None = None,
-        http: httpx.Client | None = None,
-    ) -> None:
-        if not base_url:
-            raise ValueError("Backend base URL is required for memory tools")
-        self._base_url = base_url.rstrip("/")
-        self._token_acquirer = token_acquirer
-        self._timeout = timeout
-        # opener set → urllib (tests). opener None → pooled httpx (production).
-        self._opener = opener
-        self._http = http if opener is None else None
-        self._owns_http = False
-        if self._opener is None and self._http is None:
-            self._http = httpx.Client(timeout=timeout)
-            self._owns_http = True
-
-    def close(self) -> None:
-        if self._owns_http and self._http is not None:
-            self._http.close()
-            self._http = None
+        self._session.close()
 
     def recall(
         self,
@@ -372,38 +248,12 @@ class BackendMemoryClient:
         params: dict[str, str] | None = None,
         json_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        url = self._base_url + path
-        if params:
-            url = f"{url}?{urllib.parse.urlencode(params)}"
-
-        token = self._token_acquirer.get_token()
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-            # TenantMiddleware requires this on every Backend API request.
-            "X-Tenant-Slug": tenant_slug,
-        }
-        data: bytes | None = None
-        if json_body is not None:
-            data = json.dumps(json_body, separators=(",", ":")).encode("utf-8")
-            headers["Content-Type"] = "application/json"
-
         try:
-            response = http_client.request(
-                method,
-                url,
-                headers=headers,
-                content=data,
-                timeout=self._timeout,
-                opener=self._opener,
-                client=self._http,
+            return self._session.request(
+                method, path, tenant_slug=tenant_slug, params=params, json_body=json_body
             )
-        except (httpx.TransportError, TimeoutError, urllib.error.URLError, OSError) as exc:
-            raise MemoryClientUnavailable("backend_unreachable") from exc
-
-        if response.status_code >= 400:
-            raise _map_http_status(response.status_code, body=response.content)
-        return _parse_json_bytes(response.content)
+        except BackendError as exc:
+            raise _redacted(exc) from exc
 
 
 def _mutation_body(
@@ -440,21 +290,18 @@ def _brand_id_for_scope(actor: ActorEnvelope, scope: str) -> str | None:
     return None if scope == MEMORY_SCOPE_TENANT_PERSONAL else actor.brand_id
 
 
-def _parse_json_bytes(raw: bytes) -> dict[str, Any]:
-    if not raw:
-        return {}
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise MemoryClientUnavailable("backend_response_invalid_json") from exc
-    if not isinstance(payload, dict):
-        raise MemoryClientUnavailable("backend_response_invalid_shape")
-    return payload
-
-
-def _map_http_status(status: int, *, body: bytes = b"") -> MemoryClientError:
-    # The response body may carry backend-internal detail; never surface it.
-    logger.debug("backend memory error body", extra={"status": status, "body_len": len(body)})
+def _redacted(exc: BackendError) -> MemoryClientError:
+    """A Backend failure as a stable code. Response bodies never travel."""
+    if isinstance(exc, BackendUnreachable):
+        return MemoryClientUnavailable("backend_unreachable")
+    if isinstance(exc, BackendUnauthenticated):
+        return MemoryClientUnauthorized(exc.code)
+    if isinstance(exc, BackendInvalidResponse):
+        return MemoryClientUnavailable(exc.code)
+    if not isinstance(exc, BackendStatusError):
+        return MemoryClientError("backend_unexpected_status")
+    status = exc.status
+    logger.debug("backend memory error", extra={"status": status})
     if status in (401, 403):
         return MemoryClientUnauthorized("backend_unauthorized", status=status)
     if status == 404:
@@ -474,12 +321,11 @@ __all__ = [
     "MEMORY_SCOPE_PERSONAL",
     "MEMORY_SCOPE_TENANT_PERSONAL",
     "ActorEnvelope",
-    "Auth0ClientCredentials",
-    "BackendMemoryClient",
     "MemoryClientConflict",
     "MemoryClientError",
     "MemoryClientInvalidArgument",
     "MemoryClientNotFound",
     "MemoryClientUnauthorized",
     "MemoryClientUnavailable",
+    "MemoryRepository",
 ]

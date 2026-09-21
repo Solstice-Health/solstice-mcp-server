@@ -25,9 +25,10 @@ from solstice_mcp.app import build_mcp_app
 from solstice_mcp.auth import JWKSCache
 from solstice_mcp.brand_context import ClinicalClaim, DesignLibrary, GuidelineAndRule
 from solstice_mcp.brands import Brand, BrandTeamMember
-from solstice_mcp.memory_client import BackendMemoryClient
 from solstice_mcp.operations import CgOperation, CgOperationMessage, PrcTemplateVersion, Project
 from solstice_mcp.rate_limit import default_limiter
+from solstice_mcp.repositories.solstice_backend.memory import MemoryRepository
+from solstice_mcp.repositories.solstice_backend.session import BackendSession
 from solstice_mcp.requests import AdminRequest
 from solstice_mcp.settings import Settings
 from solstice_mcp.tenants import Base, TenantMembershipCache, TenantRegistry, User
@@ -156,7 +157,7 @@ class AppHarness:
     session_factory: Callable[[str], Session]
     calls: Counter[str]
     s3: FakeS3
-    backend: BackendMemoryClient
+    backend: MemoryRepository
     backend_opener: FakeBackendOpener
     token_acquirer: FakeM2MTokenAcquirer
     auth0_opener: FakeBackendOpener
@@ -646,11 +647,13 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
     backend_base_url = "https://backend.test"
     token_acquirer = FakeM2MTokenAcquirer()
     backend_opener = FakeBackendOpener(backend_base_url)
-    backend_client = BackendMemoryClient(
-        base_url=backend_base_url,
-        token_acquirer=token_acquirer,
-        timeout=5.0,
-        opener=backend_opener,
+    backend_client = MemoryRepository(
+        BackendSession(
+            base_url=backend_base_url,
+            token_acquirer=token_acquirer,
+            timeout=5.0,
+            opener=backend_opener,
+        )
     )
 
     # Central auth DB (canonical user rows) + fake Auth0 for user-admin tools.
