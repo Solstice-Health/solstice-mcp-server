@@ -1,14 +1,19 @@
 """PRC writes: where they go, and what the agent hears when they fail.
 
-Two decisions live here. Which plane serves a write — the Backend when the
-tenant's flag says so and credentials exist, the local path otherwise — and how
-a Backend refusal becomes one of the ``ToolError`` strings the tool
-descriptions instruct the model against. That mapping is part of the agent
-contract: an agent told to re-read on ``not_latest_document`` will retry
-blindly instead if a conflict arrives as anything else.
+Both planes live behind these methods — the Backend when the tenant's flag
+says so and credentials exist, the local path otherwise — so a tool never
+learns there were two. Retiring the flag is then deleting the fallbacks here,
+not editing every call site.
+
+The other decision is how a Backend refusal becomes one of the ``ToolError``
+strings the tool descriptions instruct the model against. That mapping is part
+of the agent contract: an agent told to re-read on ``not_latest_document`` will
+retry blindly instead if a conflict arrives as anything else.
 
 Response shaping is here too, because the tool's published fields predate the
-Backend and must survive the cutover unchanged.
+Backend and must survive the cutover unchanged. Only the Backend branch is
+modelled: the local path also answers for ``pdf`` and ``source`` uploads, which
+have shapes of their own, so the dispatching methods return plain JSON.
 """
 
 from __future__ import annotations
@@ -20,6 +25,14 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict
 
 from solstice_mcp import feature_flags
+from solstice_mcp.operations import (
+    approve_operation_version,
+    build_asset_url,
+    commit_operation_version,
+    create_prc_template_version,
+    prepare_operation_version,
+    prepare_prc_template_bake,
+)
 from solstice_mcp.repositories.solstice_backend.errors import (
     BackendError,
     BackendStatusError,
@@ -32,6 +45,8 @@ from solstice_mcp.repositories.solstice_backend.prc import (
     PrcRepository,
     RuleSet,
 )
+from solstice_mcp.storage import S3Reader
+from solstice_mcp.tenants import SessionFactory, TenantRegistry
 
 # Backend code -> the string the tool descriptions teach the model to act on.
 # `content_conflict` is the Backend's name for what the tools call
@@ -137,10 +152,24 @@ class PublishedVersionResponse(ToolResponse):
 
 
 class PrcService:
-    def __init__(self, repository: PrcRepository | None) -> None:
+    def __init__(
+        self,
+        repository: PrcRepository | None,
+        *,
+        registry: TenantRegistry,
+        session_factory: SessionFactory,
+        s3: S3Reader,
+        presign_expiry: int = 600,
+        max_inline_bytes: int = 2_000_000,
+    ) -> None:
         self._repository = repository
+        self._registry = registry
+        self._session_factory = session_factory
+        self._s3 = s3
+        self._presign_expiry = presign_expiry
+        self._max_inline_bytes = max_inline_bytes
 
-    def handles(self, tenant_slug: str, brand_id: str | None = None) -> bool:
+    def _handles(self, tenant_slug: str, brand_id: str | None = None) -> bool:
         """True when this tenant's PRC writes belong to the Backend.
 
         Credentials gate the flag, not the other way round: a task without them
@@ -161,7 +190,7 @@ class PrcService:
             document=rules.document,
         )
 
-    def prepare_version(
+    def _prepare_version_via_backend(
         self, *, tenant_slug: str, actor_sub: str, operation_id: str
     ) -> PreparedVersionResponse:
         prepared = self._call(
@@ -178,7 +207,7 @@ class PrcService:
             expires_in=prepared.expires_in,
         )
 
-    def prepare_bake(
+    def _prepare_bake_via_backend(
         self, *, tenant_slug: str, actor_sub: str, operation_id: str
     ) -> PreparedBakeResponse:
         prepared = self._call(
@@ -194,7 +223,7 @@ class PrcService:
             expires_in=prepared.expires_in,
         )
 
-    def commit_bake(
+    def _commit_bake_via_backend(
         self, *, tenant_slug: str, actor_sub: str, operation_id: str, proof_s3_key: str
     ) -> CommittedBakeResponse:
         """An operation bake IS a proof edit: the proof is supplied, and the
@@ -215,7 +244,7 @@ class PrcService:
             asset_url=committed.asset_url,
         )
 
-    def commit_version(
+    def _commit_version_via_backend(
         self,
         *,
         tenant_slug: str,
@@ -245,7 +274,7 @@ class PrcService:
             message_id=row_id_from_key(s3_key),
         )
 
-    def publish_version(
+    def _publish_version_via_backend(
         self, *, tenant_slug: str, actor_sub: str, operation_id: str, message_id: str, asset_url: str
     ) -> PublishedVersionResponse:
         published = self._call(
@@ -261,6 +290,141 @@ class PrcService:
             change_requests_resolved=published.change_requests_resolved,
             requests_completed=published.requests_completed,
             asset_url=asset_url,
+        )
+
+    # -- dispatch -------------------------------------------------------------
+
+    def prepare_version(
+        self,
+        *,
+        subject: str,
+        tenant_slug: str,
+        operation_id: str,
+        kind: str,
+        file_name: str | None,
+    ) -> dict[str, Any]:
+        if kind == "html" and self._handles(tenant_slug):
+            return self._prepare_version_via_backend(
+                tenant_slug=tenant_slug, actor_sub=subject, operation_id=operation_id
+            ).model_dump()
+        return prepare_operation_version(
+            subject,
+            tenant_slug,
+            operation_id,
+            kind,
+            file_name,
+            registry=self._registry,
+            session_factory=self._session_factory,
+            s3=self._s3,
+            presign_expiry=self._presign_expiry,
+        )
+
+    def prepare_bake(
+        self, *, subject: str, tenant_slug: str, brand_id: str, operation_id: str, content_type: str
+    ) -> dict[str, Any]:
+        if self._handles(tenant_slug, brand_id):
+            return self._prepare_bake_via_backend(
+                tenant_slug=tenant_slug, actor_sub=subject, operation_id=operation_id
+            ).model_dump()
+        return prepare_prc_template_bake(
+            subject,
+            tenant_slug,
+            brand_id,
+            operation_id,
+            content_type,
+            registry=self._registry,
+            session_factory=self._session_factory,
+            s3=self._s3,
+            presign_expiry=self._presign_expiry,
+        )
+
+    def commit_version(
+        self,
+        *,
+        subject: str,
+        tenant_slug: str,
+        operation_id: str,
+        kind: str,
+        s3_key: str,
+        file_name: str | None,
+        show_source_on_ui: bool,
+        base_message_id: str | None,
+        confirmed: bool,
+    ) -> dict[str, Any]:
+        if kind == "html" and self._handles(tenant_slug):
+            return self._commit_version_via_backend(
+                tenant_slug=tenant_slug,
+                actor_sub=subject,
+                operation_id=operation_id,
+                s3_key=s3_key,
+                base_message_id=base_message_id,
+                confirmed=confirmed,
+            ).model_dump()
+        return commit_operation_version(
+            subject,
+            tenant_slug,
+            operation_id,
+            kind,
+            s3_key,
+            file_name,
+            show_source_on_ui,
+            base_message_id,
+            confirmed,
+            registry=self._registry,
+            session_factory=self._session_factory,
+            s3=self._s3,
+            max_inline_bytes=self._max_inline_bytes,
+        )
+
+    def publish_version(
+        self, *, subject: str, tenant_slug: str, operation_id: str, message_id: str
+    ) -> dict[str, Any]:
+        if self._handles(tenant_slug):
+            return self._publish_version_via_backend(
+                tenant_slug=tenant_slug,
+                actor_sub=subject,
+                operation_id=operation_id,
+                message_id=message_id,
+                asset_url=build_asset_url(tenant_slug, operation_id),
+            ).model_dump()
+        return approve_operation_version(
+            subject,
+            tenant_slug,
+            operation_id,
+            message_id,
+            registry=self._registry,
+            session_factory=self._session_factory,
+        )
+
+    def create_template_version(
+        self, *, subject: str, tenant_slug: str, brand_id: str, **fields: Any
+    ) -> dict[str, Any]:
+        """Always local: the library half never composes through the Backend.
+
+        Only the operation bake moves, and it moves as an injected callable
+        because this function owns the order of the two halves.
+        """
+        baker = None
+        if self._handles(tenant_slug, brand_id):
+
+            def baker(*, operation_id: str, content_type: str, operation_bake_s3_key: str) -> dict[str, Any]:
+                return self._commit_bake_via_backend(
+                    tenant_slug=tenant_slug,
+                    actor_sub=subject,
+                    operation_id=operation_id,
+                    proof_s3_key=operation_bake_s3_key,
+                ).model_dump()
+
+        return create_prc_template_version(
+            subject,
+            tenant_slug,
+            brand_id,
+            operation_baker=baker,
+            max_inline_bytes=self._max_inline_bytes,
+            registry=self._registry,
+            session_factory=self._session_factory,
+            s3=self._s3,
+            **fields,
         )
 
     @staticmethod

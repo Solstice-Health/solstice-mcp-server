@@ -12,20 +12,14 @@ from mcp.types import ToolAnnotations
 from solstice_mcp.audit import audited_tool
 from solstice_mcp.brands import list_brand_users
 from solstice_mcp.operations import (
-    approve_operation_version,
-    build_asset_url,
-    commit_operation_version,
     create_edit_operation,
     create_operation,
-    create_prc_template_version,
     get_operation_html,
     get_operation_info,
     get_project_info,
     list_operation_messages,
     list_operations_for_brand,
     list_projects_for_brand,
-    prepare_operation_version,
-    prepare_prc_template_bake,
     resolve_prc_template_for_brand,
     update_operation,
 )
@@ -301,24 +295,13 @@ def register_content_tools(
         ``solstice_prc_template_rules``, preview it, and retry only after approval.
         Requires SOLSTICE_STAFF on the selected brand.
         """
-        baker = None
-        if prc.handles(tenant_slug, brand_id):
-
-            def baker(*, operation_id: str, content_type: str, operation_bake_s3_key: str) -> dict[str, Any]:
-                return prc.commit_bake(
-                    tenant_slug=tenant_slug,
-                    actor_sub=require_subject(),
-                    operation_id=operation_id,
-                    proof_s3_key=operation_bake_s3_key,
-                ).model_dump()
-
-        template = create_prc_template_version(
-            require_subject(),
-            tenant_slug,
-            brand_id,
-            template_key,
-            content_type,
-            name,
+        template = prc.create_template_version(
+            subject=require_subject(),
+            tenant_slug=tenant_slug,
+            brand_id=brand_id,
+            template_key=template_key,
+            content_type=content_type,
+            name=name,
             confirmed=confirmed,
             html_template=html_template,
             operation_bake_html=operation_bake_html,
@@ -329,11 +312,6 @@ def register_content_tools(
             status=status,
             publish_target=publish_target,
             operation_id=operation_id,
-            operation_baker=baker,
-            max_inline_bytes=max_inline_bytes,
-            registry=registry,
-            session_factory=session_factory,
-            s3=s3,
         )
         return {
             "status": "ok",
@@ -504,22 +482,12 @@ def register_content_tools(
         cause the call to be denied. Keep the user's intent in your own
         reasoning, not in this argument.
         """
-        if type == "html" and prc.handles(tenant_slug):
-            return prc.prepare_version(
-                tenant_slug=tenant_slug,
-                actor_sub=require_subject(),
-                operation_id=operation_id,
-            ).model_dump()
-        return prepare_operation_version(
-            require_subject(),
-            tenant_slug,
-            operation_id,
-            type,
-            file_name,
-            registry=registry,
-            session_factory=session_factory,
-            s3=s3,
-            presign_expiry=presign_expiry,
+        return prc.prepare_version(
+            subject=require_subject(),
+            tenant_slug=tenant_slug,
+            operation_id=operation_id,
+            kind=type,
+            file_name=file_name,
         )
 
     @append_only_tool
@@ -539,22 +507,12 @@ def register_content_tools(
         ``operation_bake_s3_key`` set to the returned key. Requires
         SOLSTICE_STAFF on the operation's brand.
         """
-        if prc.handles(tenant_slug, brand_id):
-            return prc.prepare_bake(
-                tenant_slug=tenant_slug,
-                actor_sub=require_subject(),
-                operation_id=operation_id,
-            ).model_dump()
-        return prepare_prc_template_bake(
-            require_subject(),
-            tenant_slug,
-            brand_id,
-            operation_id,
-            content_type,
-            registry=registry,
-            session_factory=session_factory,
-            s3=s3,
-            presign_expiry=presign_expiry,
+        return prc.prepare_bake(
+            subject=require_subject(),
+            tenant_slug=tenant_slug,
+            brand_id=brand_id,
+            operation_id=operation_id,
+            content_type=content_type,
         )
 
     @append_only_tool
@@ -629,29 +587,16 @@ def register_content_tools(
         End your user-facing reply with ``[Open asset in Solstice](<asset_url>)``
         instead of handing the user the operation UUID.
         """
-        if type == "html" and prc.handles(tenant_slug):
-            return prc.commit_version(
-                tenant_slug=tenant_slug,
-                actor_sub=require_subject(),
-                operation_id=operation_id,
-                s3_key=s3_key,
-                base_message_id=base_message_id,
-                confirmed=confirmed,
-            ).model_dump()
-        return commit_operation_version(
-            require_subject(),
-            tenant_slug,
-            operation_id,
-            type,
-            s3_key,
-            file_name,
-            show_source_on_ui,
-            base_message_id,
-            confirmed,
-            registry=registry,
-            session_factory=session_factory,
-            s3=s3,
-            max_inline_bytes=max_inline_bytes,
+        return prc.commit_version(
+            subject=require_subject(),
+            tenant_slug=tenant_slug,
+            operation_id=operation_id,
+            kind=type,
+            s3_key=s3_key,
+            file_name=file_name,
+            show_source_on_ui=show_source_on_ui,
+            base_message_id=base_message_id,
+            confirmed=confirmed,
         )
 
     @read_only_tool
@@ -733,21 +678,11 @@ def register_content_tools(
         End your user-facing reply with ``[Open asset in Solstice](<asset_url>)``
         instead of handing the user the operation UUID.
         """
-        if prc.handles(tenant_slug):
-            return prc.publish_version(
-                tenant_slug=tenant_slug,
-                actor_sub=require_subject(),
-                operation_id=operation_id,
-                message_id=message_id,
-                asset_url=build_asset_url(tenant_slug, operation_id),
-            ).model_dump()
-        return approve_operation_version(
-            require_subject(),
-            tenant_slug,
-            operation_id,
-            message_id,
-            registry=registry,
-            session_factory=session_factory,
+        return prc.publish_version(
+            subject=require_subject(),
+            tenant_slug=tenant_slug,
+            operation_id=operation_id,
+            message_id=message_id,
         )
 
 
