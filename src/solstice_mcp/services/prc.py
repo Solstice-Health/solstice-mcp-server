@@ -24,9 +24,7 @@ from solstice_mcp.repositories.solstice_backend.errors import (
     BackendStatusError,
     BackendUnreachable,
 )
-from solstice_mcp.repositories.solstice_backend.prc import PrcActor, PrcRepository
-
-PRC_TEMPLATE_PROFILES = ("email", "banner", "social", "website")
+from solstice_mcp.repositories.solstice_backend.prc import PrcActor, PrcProfile, PrcRepository
 
 # Backend code -> the string the tool descriptions teach the model to act on.
 # `content_conflict` is the Backend's name for what the tools call
@@ -67,11 +65,8 @@ class PrcService:
         return feature_flags.prc_writes_via_backend(tenant_slug=tenant_slug, brand_id=brand_id)
 
     def template_rules(self, profile: str) -> dict[str, Any]:
-        normalized = profile.strip().lower()
-        if normalized not in PRC_TEMPLATE_PROFILES:
-            allowed = ", ".join(PRC_TEMPLATE_PROFILES)
-            raise ToolError(f"invalid_argument: profile must be one of {allowed}")
-        rules = self._call(self._backend().template_rules, profile=normalized)
+        parsed = _profile(profile)
+        rules = self._call(self._backend().template_rules, profile=parsed)
         return {"status": "ok", **rules}
 
     def prepare_version(self, *, tenant_slug: str, actor_sub: str, operation_id: str) -> dict[str, Any]:
@@ -191,6 +186,15 @@ class PrcService:
         if self._repository is None:  # pragma: no cover - guarded by handles()
             raise ToolError("not_configured: PRC backend client is unavailable")
         return self._repository
+
+
+def _profile(value: str) -> PrcProfile:
+    try:
+        return PrcProfile(value.strip().lower())
+    except ValueError:
+        raise ToolError(
+            f"invalid_argument: profile must be one of {', '.join(PrcProfile)}"
+        ) from None
 
 
 def row_id_from_key(s3_key: str) -> str:

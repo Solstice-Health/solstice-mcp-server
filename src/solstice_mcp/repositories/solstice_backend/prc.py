@@ -11,9 +11,23 @@ from model output.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 from solstice_mcp.repositories.solstice_backend.session import BackendSession
+
+
+class PrcProfile(StrEnum):
+    """The asset kinds the Backend states authoring rules for.
+
+    Mirrors ``PrcProfile`` in the Backend; an unknown value is refused here so
+    a typo costs no round trip.
+    """
+
+    EMAIL = "email"
+    BANNER = "banner"
+    SOCIAL = "social"
+    WEBSITE = "website"
 
 
 @dataclass(frozen=True)
@@ -34,9 +48,9 @@ class PrcRepository:
 
     # -- reads ----------------------------------------------------------------
 
-    def template_rules(self, *, profile: str) -> dict[str, Any]:
+    def template_rules(self, *, profile: PrcProfile) -> dict[str, Any]:
         return self._session.request(
-            "GET", "/api/v2/prc-template-rules", params={"profile": profile}
+            "GET", "/api/v2/prc-template-rules", params={"profile": profile.value}
         )
 
     # -- writes ---------------------------------------------------------------

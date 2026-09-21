@@ -10,7 +10,7 @@ import json
 import pytest
 
 from solstice_mcp.repositories.solstice_backend.errors import BackendStatusError, BackendUnreachable
-from solstice_mcp.repositories.solstice_backend.prc import PrcActor, PrcRepository
+from solstice_mcp.repositories.solstice_backend.prc import PrcActor, PrcProfile, PrcRepository
 from solstice_mcp.repositories.solstice_backend.session import BackendSession
 
 
@@ -65,7 +65,7 @@ def test_the_rules_read_sends_neither_tenant_nor_actor(repo):
     a slug the Backend will not use would mean inventing one."""
     _respond(repo, 200, {"contract_version": "v2", "profile": "email", "rules": {}, "document": "#"})
 
-    result = repo.template_rules(profile="email")
+    result = repo.template_rules(profile=PrcProfile.EMAIL)
 
     assert result["profile"] == "email"
     assert repo.sent["url"].endswith("/api/v2/prc-template-rules?profile=email")
@@ -119,7 +119,7 @@ def test_a_transport_failure_is_not_a_status(repo, monkeypatch):
     )
 
     with pytest.raises(BackendUnreachable):
-        repo.template_rules(profile="email")
+        repo.template_rules(profile=PrcProfile.EMAIL)
 
 
 def test_the_session_pools_one_httpx_client_across_calls(monkeypatch):
@@ -136,8 +136,8 @@ def test_the_session_pools_one_httpx_client_across_calls(monkeypatch):
     )
     repo = PrcRepository(BackendSession(base_url="https://backend.test", token_acquirer=_Token()))
 
-    repo.template_rules(profile="email")
-    repo.template_rules(profile="banner")
+    repo.template_rules(profile=PrcProfile.EMAIL)
+    repo.template_rules(profile=PrcProfile.BANNER)
 
     assert clients[0] is not None
     assert clients[0] is clients[1]
