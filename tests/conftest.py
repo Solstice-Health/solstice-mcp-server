@@ -197,7 +197,7 @@ def _default_rules_payload(profile: str) -> dict:
             ],
             "must_not": [{"id": "common.callout_chrome", "text": "Do not draw callouts.", "enforcement": "advisory"}],
         },
-        "source": "prc-template-recreation/references/renderer-contract.md",
+        "source": "src_v2/prc_templates/references/renderer-contract.md",
     }
 
 
