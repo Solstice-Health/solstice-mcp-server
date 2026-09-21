@@ -26,6 +26,7 @@ import base64
 import json
 import os
 import sys
+import urllib.parse
 import uuid
 from typing import Any
 
@@ -176,7 +177,15 @@ def main() -> int:
         "message_id is the key's row id",
         prepared.get("message_id") == s3_key.rsplit("/", 1)[-1].removesuffix(".html"),
     )
-    check("upload_url presigned", "Signature" in upload_url or "X-Amz-Signature" in upload_url)
+    # SigV2 signs as `Signature`, SigV4 as `X-Amz-Signature`; us-east-1 still
+    # issues the former. What matters is that the key is in the path and the
+    # query carries a signature at all — a presigned POST form has neither.
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(upload_url).query)
+    check(
+        "upload_url is a signed PUT for this key",
+        s3_key in upload_url and bool({"Signature", "X-Amz-Signature"} & set(query)),
+        f"query keys {sorted(query)}",
+    )
     _created["prepared_key"] = s3_key
 
     # 3. The upload the agent would do. A PUT that the Backend then reads back
@@ -188,8 +197,20 @@ def main() -> int:
     if not check("PUT to presigned url", put.status_code in (200, 204), f"HTTP {put.status_code} {put.text[:200]}"):
         return _report()
 
-    # 4. Commit. The Backend composes the proof from what it just read.
+    # 4. Commit, declaring the base the way the tool descriptions instruct:
+    #    read the head, edit on top of it, name it. A commit without one is a
+    #    compare-and-swap with nothing to compare, and is refused.
     print("\ncommit")
+    before, error = mcp.tool(
+        "solstice_operation_messages",
+        {"tenant_slug": TENANT_SLUG, "operation_id": OPERATION_ID},
+    )
+    if not check("head readable before the commit", before is not None, error or ""):
+        return _report()
+    assert before is not None
+    base = before.get("head_message_id")
+    print(f"  base_message_id = {base}")
+
     committed, error = mcp.tool(
         "solstice_commit_operation_version",
         {
@@ -197,6 +218,7 @@ def main() -> int:
             "operation_id": OPERATION_ID,
             "type": "html",
             "s3_key": s3_key,
+            **({"base_message_id": base} if base else {}),
         },
     )
     if not check("commit accepted", committed is not None, error or ""):
