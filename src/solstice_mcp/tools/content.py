@@ -270,13 +270,13 @@ def register_content_tools(
 
     @read_only_tool
     def solstice_prc_template_rules(profile: str) -> dict[str, Any]:
-        """Return Contract v2 authoring rules for email, banner, social, or website.
+        """Return the Contract v2 authoring contract for email, banner, social, or website.
 
-        Served by the Backend that enforces them, so the rules and the checks
-        that reject a save cannot drift. Each rule carries ``enforcement``:
-        ``backend`` rules are rejected on write, ``engine`` rules are flagged in
-        the editor, ``advisory`` rules are guidance. Read-only; pass exactly one
-        profile.
+        Served by the Backend that enforces it, so the contract and the checks
+        that reject a save cannot drift. ``rules`` is the enforceable subset as
+        structured bullets; ``document`` is the whole authoring contract as
+        markdown — the layer vocabulary, the reserved namespace, the bake stage
+        — and is what to read before authoring. Read-only; pass one profile.
         """
         normalized = profile.strip().lower()
         if normalized not in PRC_TEMPLATE_PROFILES:

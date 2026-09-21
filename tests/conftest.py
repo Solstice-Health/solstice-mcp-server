@@ -189,15 +189,13 @@ def _default_rules_payload(profile: str) -> dict:
         "profile": profile,
         "rules": {
             "must": [
-                {"id": "common.declaration", "text": "Declare the contract.", "enforcement": "backend"},
-                {"id": f"{profile}.profile", "text": "Name the profile.", "enforcement": "backend"},
+                {"id": "common.declaration", "text": "Declare the contract."},
+                {"id": f"{profile}.profile", "text": "Name the profile."},
             ],
-            "should": [
-                {"id": f"{profile}.cover_not_required", "text": "A cover is optional.", "enforcement": "advisory"}
-            ],
-            "must_not": [{"id": "common.callout_chrome", "text": "Do not draw callouts.", "enforcement": "advisory"}],
+            "should": [{"id": f"{profile}.cover_not_required", "text": "A cover is optional."}],
+            "must_not": [{"id": "common.callout_chrome", "text": "Do not draw callouts."}],
         },
-        "source": "src_v2/prc_templates/references/renderer-contract.md",
+        "document": f"# Solstice PRC Template Contract v2\n\nprofile: {profile}\n",
     }
 
 

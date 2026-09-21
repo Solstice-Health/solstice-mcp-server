@@ -1502,11 +1502,9 @@ def test_prc_template_rules_comes_from_the_backend_unchanged(
     served = app_harness.prc_backend.template_rules(profile=profile)
     assert app_harness.prc_backend.calls[0] == ("template_rules", {"profile": profile})
     assert payload == {"status": "ok", **served}
-    # `enforcement` is why this endpoint exists rather than a shipped file: it
-    # says which rules reject a save, which no document alone can know.
-    assert {
-        rule["enforcement"] for bucket in payload["rules"].values() for rule in bucket
-    } <= {"backend", "engine", "advisory"}
+    # The document is why the tool still serves what the shipped file used to:
+    # the rules are the enforceable subset, not the whole authoring contract.
+    assert payload["document"].startswith("# Solstice PRC Template Contract v2")
 
 
 def test_prc_template_rules_rejects_an_unknown_profile(app_harness: AppHarness, mint_token):
