@@ -19,9 +19,6 @@ class PrcRepository:
     def __init__(self, session: BackendSession) -> None:
         self._session = session
 
-    def close(self) -> None:
-        self._session.close()
-
     # -- reads ----------------------------------------------------------------
 
     def template_rules(self, *, profile: str) -> dict[str, Any]:

@@ -88,9 +88,6 @@ class MemoryRepository:
     def __init__(self, session: BackendSession) -> None:
         self._session = session
 
-    def close(self) -> None:
-        self._session.close()
-
     def recall(
         self,
         *,
