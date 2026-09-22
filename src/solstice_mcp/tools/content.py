@@ -286,6 +286,9 @@ def register_content_tools(
         Library / both: after the HTML preview, ask separately for display
         name and template key, then ``confirmed=true``. This inserts a new
         library version. Reserved auto-resolving key prefixes are rejected.
+        ``html_template`` is validated against Contract v2 on the way in: a
+        shell that cannot bake is refused with every condition it failed, each
+        naming the ``solstice_prc_template_rules`` id to repair it against.
 
         Operation / both: ``solstice_prepare_prc_template_bake``, PUT the bake
         HTML to ``upload_url``, then pass ``operation_id``,

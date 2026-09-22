@@ -74,6 +74,22 @@ class PublishedVersion(BackendModel):
     requests_completed: int = 0
 
 
+class CatalogTemplateVersion(BackendModel):
+    """One published catalog row. ``html_template`` comes back and is dropped:
+    the tool echoes a size, never the body it was just given."""
+
+    id: str
+    template_key: str
+    version_number: int
+    content_type: str
+    name: str
+    description: str | None = None
+    config_schema: dict[str, Any] | None = None
+    default_field_values: dict[str, Any] | None = None
+    status: str
+    created_at: str | None = None
+
+
 class Rule(BackendModel):
     id: str
     text: str
@@ -128,6 +144,23 @@ class PrcRepository:
             self._session.request(
                 "POST",
                 f"/api/v2/operations/{operation_id}/versions",
+                tenant_slug=actor.tenant_slug,
+                json_body={**body, "actor_sub": actor.actor_sub},
+            )
+        )
+
+    def create_template_version(
+        self, *, actor: PrcActor, body: dict[str, Any]
+    ) -> CatalogTemplateVersion:
+        """Append a catalog version, validated against Contract v2 on the way in.
+
+        Still the legacy prefix: the URL the app already calls did not move, only
+        the gate in front of it, which now admits this machine credential.
+        """
+        return CatalogTemplateVersion.model_validate(
+            self._session.request(
+                "POST",
+                "/api/content-generation-new/prc-template-versions",
                 tenant_slug=actor.tenant_slug,
                 json_body={**body, "actor_sub": actor.actor_sub},
             )

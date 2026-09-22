@@ -1374,9 +1374,10 @@ def create_prc_template_version(
     default_field_values: dict[str, Any] | None = None,
     status: str = "published",
     publish_target: str = "library",
-    # Supplied when the operation bake belongs to the Backend. The library half
-    # never composes, so it stays here either way.
+    # Supplied when the write belongs to the Backend: the bake composes there,
+    # and the catalog append validates there. Absent, both halves stay local.
     operation_baker: Callable[..., dict[str, Any]] | None = None,
+    library_publisher: Callable[..., dict[str, Any]] | None = None,
     operation_id: str | None = None,
     base_message_id: str | None = None,
     *,
@@ -1480,7 +1481,32 @@ def create_prc_template_version(
 
     library: dict[str, Any] | None = None
     now = datetime.now(UTC)
-    if wants_library:
+    if wants_library and library_publisher is not None:
+        published = library_publisher(
+            template_key=normalized_key,
+            content_type=normalized_content_type,
+            name=normalized_name,
+            description=description.strip() if description and description.strip() else None,
+            html_template=catalog_html,
+            config_schema=config_schema,
+            default_field_values=default_field_values,
+            status=normalized_status,
+        )
+        library = {
+            "id": published["id"],
+            "template_key": published["template_key"],
+            "version_number": published["version_number"],
+            "content_type": published["content_type"],
+            "name": published["name"],
+            "description": published["description"],
+            "config_schema": published["config_schema"],
+            "default_field_values": published["default_field_values"],
+            "template_status": published["status"],
+            "created_at": published["created_at"],
+            "html_size_bytes": html_size_bytes,
+            "brand_selection_updated": False,
+        }
+    elif wants_library:
         with tenant_session(tenant_slug, session_factory) as session:
             brand = session.scalar(
                 select(Brand).where(Brand.id == brand_id, Brand.deleted_at.is_(None)).with_for_update()

@@ -420,12 +420,13 @@ class PrcService:
     def create_template_version(
         self, *, subject: str, tenant_slug: str, brand_id: str, **fields: Any
     ) -> dict[str, Any]:
-        """Always local: the library half never composes through the Backend.
-
-        Only the operation bake moves, and it moves as an injected callable
-        because this function owns the order of the two halves.
+        """Both halves move as injected callables, because this function owns
+        the order of the two: the bake composes on the Backend, and the catalog
+        append is validated there against the same Contract v2 that rejects a
+        bake. Without the flag both stay local, and the catalog is unvalidated.
         """
         baker = None
+        librarian = None
         if self._handles(tenant_slug, brand_id):
 
             def baker(
@@ -443,11 +444,19 @@ class PrcService:
                     base_message_id=base_message_id,
                 ).model_dump()
 
+            def librarian(**payload: Any) -> dict[str, Any]:
+                return self._call(
+                    self._backend().create_template_version,
+                    actor=PrcActor(tenant_slug, subject),
+                    body=payload,
+                ).model_dump()
+
         return create_prc_template_version(
             subject,
             tenant_slug,
             brand_id,
             operation_baker=baker,
+            library_publisher=librarian,
             max_inline_bytes=self._max_inline_bytes,
             registry=self._registry,
             session_factory=self._session_factory,
@@ -542,6 +551,10 @@ def tool_error(exc: BackendError) -> ToolError:
         return ToolError(f"not_available: {exc}")
     if exc.code in ("content_conflict", "not_latest_document"):
         return ToolError("conflict: not_latest_document")
+    if exc.code == "invalid_template":
+        # The Backend's message already names the shell; only the prefix the
+        # tool descriptions instruct against is added.
+        return ToolError(f"invalid_request: {exc.detail}{_failure_report(exc.failures)}")
     if exc.code == "invalid_proof":
         return ToolError(
             f"invalid_request: operation bake must satisfy baked contract v2: {exc.detail}"

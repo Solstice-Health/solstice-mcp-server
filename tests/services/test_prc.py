@@ -311,22 +311,24 @@ def test_only_html_moves_to_the_backend(via_backend, local, kind):
     assert repo.calls == []
 
 
-def test_a_bake_is_offered_to_the_backend_as_a_callable(via_backend, local):
-    """The library half never composes remotely, so this one stays local and
-    takes the Backend path as an injected baker rather than a branch."""
+def test_both_halves_are_offered_to_the_backend_as_callables(via_backend, local):
+    """One function owns the order of bake and catalog append, so each plane
+    arrives as an injected callable rather than a branch inside it."""
     _service(_Repo()).create_template_version(
         subject="a", tenant_slug="acme", brand_id="b", template_key="k"
     )
 
     assert local["create_prc_template_version"]["operation_baker"] is not None
+    assert local["create_prc_template_version"]["library_publisher"] is not None
 
 
-def test_without_credentials_the_bake_is_offered_no_baker(via_backend, local):
+def test_without_credentials_neither_half_is_offered_a_callable(via_backend, local):
     _service(None).create_template_version(
         subject="a", tenant_slug="acme", brand_id="b", template_key="k"
     )
 
     assert local["create_prc_template_version"]["operation_baker"] is None
+    assert local["create_prc_template_version"]["library_publisher"] is None
 
 
 def test_the_kill_switch_reaches_the_dispatch(monkeypatch, local):
@@ -343,12 +345,19 @@ def test_the_kill_switch_reaches_the_dispatch(monkeypatch, local):
     assert repo.calls == []
 
 
-def test_a_validating_refusal_carries_every_condition_it_failed():
-    """The refusal is the only place the author learns what to repair, so it
-    names every condition rather than the first one that tripped."""
+@pytest.mark.parametrize(
+    ("code", "opening"),
+    [
+        ("invalid_template", "invalid_request: missing the Contract v2 declaration"),
+        ("invalid_proof", "invalid_request: operation bake must satisfy baked contract v2"),
+    ],
+)
+def test_a_validating_refusal_carries_every_condition_it_failed(code, opening):
+    """The refusal is the only place the author learns what to repair, so both
+    surfaces name every condition rather than the first one that tripped."""
     failure = BackendStatusError(
         status=400,
-        code="invalid_proof",
+        code=code,
         detail="missing the Contract v2 declaration",
         failures=[
             {
@@ -360,7 +369,7 @@ def test_a_validating_refusal_carries_every_condition_it_failed():
             {
                 "check": "L4",
                 "message": "missing the config seed",
-                "hint": 'add <script id="sol-prc-config">',
+                "hint": "add <script id=\"sol-prc-config\">",
                 "rule": "common.config",
             },
         ],
@@ -368,6 +377,6 @@ def test_a_validating_refusal_carries_every_condition_it_failed():
 
     message = str(tool_error(failure))
 
-    assert message.startswith("invalid_request: operation bake must satisfy baked contract v2")
+    assert message.startswith(opening)
     assert "[rule: common.declaration]" in message
     assert "[rule: common.config]" in message
