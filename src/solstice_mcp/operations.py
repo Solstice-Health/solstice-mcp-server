@@ -1378,6 +1378,7 @@ def create_prc_template_version(
     # never composes, so it stays here either way.
     operation_baker: Callable[..., dict[str, Any]] | None = None,
     operation_id: str | None = None,
+    base_message_id: str | None = None,
     *,
     max_inline_bytes: int,
     registry: TenantRegistry,
@@ -1461,6 +1462,7 @@ def create_prc_template_version(
                 operation_id=operation_id or "",
                 content_type=normalized_content_type,
                 operation_bake_s3_key=operation_bake_s3_key or "",
+                base_message_id=base_message_id,
             )
         else:
             operation_bake = bake_prc_template_to_operation(

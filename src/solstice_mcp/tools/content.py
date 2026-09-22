@@ -269,6 +269,7 @@ def register_content_tools(
         status: str = "published",
         publish_target: str = "library",
         operation_id: str | None = None,
+        base_message_id: str | None = None,
     ) -> dict[str, Any]:
         """Publish a PRC proof template to the library, bake it onto an operation, or both.
 
@@ -287,8 +288,12 @@ def register_content_tools(
         library version. Reserved auto-resolving key prefixes are rejected.
 
         Operation / both: ``solstice_prepare_prc_template_bake``, PUT the bake
-        HTML to ``upload_url``, then pass ``operation_id`` and
-        ``operation_bake_s3_key``. Size does not matter — never inline the bake
+        HTML to ``upload_url``, then pass ``operation_id``,
+        ``operation_bake_s3_key``, and ``base_message_id`` — the ``id`` of the
+        current html head from ``solstice_operation_messages``. A bake appends
+        onto that head; a stale or omitted one is refused as
+        ``conflict: not_latest_document``, so re-read the head and retry.
+        Size does not matter — never inline the bake
         as ``operation_bake_html``. Upload the approved, self-contained Contract v2
         operation bake, not a reusable catalog shell. It is rebound to the current
         creative and appended as one complete draft version. If validation fails, repair it against
@@ -312,6 +317,7 @@ def register_content_tools(
             status=status,
             publish_target=publish_target,
             operation_id=operation_id,
+            base_message_id=base_message_id,
         )
         return {
             "status": "ok",

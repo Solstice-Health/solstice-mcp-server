@@ -231,15 +231,29 @@ class PrcService:
         )
 
     def _commit_bake_via_backend(
-        self, *, tenant_slug: str, actor_sub: str, operation_id: str, proof_s3_key: str
+        self,
+        *,
+        tenant_slug: str,
+        actor_sub: str,
+        operation_id: str,
+        proof_s3_key: str,
+        base_message_id: str | None = None,
     ) -> CommittedBakeResponse:
         """An operation bake IS a proof edit: the proof is supplied, and the
-        creative it wraps is the one the operation already holds."""
+        creative it wraps is the one the operation already holds.
+
+        The Backend compare-and-swaps a proof commit against the html head the
+        same way it does a content commit, so an omitted base reads as "no head
+        expected" and conflicts against every operation that has one.
+        """
+        body: dict[str, Any] = {"kind": "proof", "proof": {"s3_key": proof_s3_key}}
+        if base_message_id:
+            body["base_message_id"] = base_message_id
         committed = self._call(
             self._backend().commit_version,
             actor=PrcActor(tenant_slug, actor_sub),
             operation_id=operation_id,
-            body={"kind": "proof", "proof": {"s3_key": proof_s3_key}},
+            body=body,
         )
         return CommittedBakeResponse(
             operation_id=operation_id,
@@ -414,12 +428,19 @@ class PrcService:
         baker = None
         if self._handles(tenant_slug, brand_id):
 
-            def baker(*, operation_id: str, content_type: str, operation_bake_s3_key: str) -> dict[str, Any]:
+            def baker(
+                *,
+                operation_id: str,
+                content_type: str,
+                operation_bake_s3_key: str,
+                base_message_id: str | None = None,
+            ) -> dict[str, Any]:
                 return self._commit_bake_via_backend(
                     tenant_slug=tenant_slug,
                     actor_sub=subject,
                     operation_id=operation_id,
                     proof_s3_key=operation_bake_s3_key,
+                    base_message_id=base_message_id,
                 ).model_dump()
 
         return create_prc_template_version(
