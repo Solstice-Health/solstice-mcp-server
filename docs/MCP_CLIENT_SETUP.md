@@ -13,7 +13,7 @@ Production is dual-pointed by host:
 
 There is no `api-staging` MCP service. Both non-prod servers run on the shared dev ECS cluster and call their matching Backend, but they serve the same full tenant list as prod — the environment picks which Backend and which deployed code you get, not which tenants you can see. The AgentCore gateway fronts prod only, so non-prod clients always use the ECS-direct round trip.
 
-Each MCP URL is also its Auth0 audience. The issuer is `https://login-solstice.us.auth0.com/`. Clients request `mcp:connect openid email`.
+Each MCP URL is also its Auth0 audience. The issuer is `https://login-solstice.us.auth0.com/`. Clients request `mcp:connect openid email offline_access`. Access JWTs stay short (~1 hour); `offline_access` + the Auth0 `refresh_token` grant let hosts refresh without a full browser re-login. Without those grants, hosts must re-OAuth when the access token expires.
 
 **ECS path (Cursor / Claude):** the client obtains an Auth0 access token whose audience is `https://api.solsticehealth.co/mcp` and calls ECS directly. The MCP server validates the RS256 token (JWKS, issuer, audience, expiry, `mcp:connect`) and enforces tenant membership, brand membership, roles, and draft visibility. No AgentCore OBO hop or Cedar PromptAttack on this path.
 
@@ -33,24 +33,24 @@ The Cursor adapter is `plugins/solstice-platform/mcp.json` (Cursor prefers `.mcp
 The round trip is:
 
 1. Cursor connects to `https://api.solsticehealth.co/mcp` and receives protected-resource metadata.
-2. Cursor starts Authorization Code with PKCE for the configured public client, ECS audience, and scopes `mcp:connect openid email`.
-3. Auth0 redirects to an allowed Cursor callback and Cursor exchanges the code plus PKCE verifier for an RS256 access token.
+2. Cursor starts Authorization Code with PKCE for the configured public client, ECS audience, and scopes `mcp:connect openid email offline_access`.
+3. Auth0 redirects to an allowed Cursor callback and Cursor exchanges the code plus PKCE verifier for an RS256 access token (and a refresh token when `offline_access` is granted).
 4. Cursor sends the access token as a Bearer credential to ECS.
 5. The MCP server validates the token, then applies tenant and brand authorization.
 
-If validation fails, the server returns 401 for a missing, malformed, expired, wrong-issuer, or wrong-audience token. A valid token without `mcp:connect` receives 403. Reconnect OAuth rather than editing credentials.
+If validation fails, the server returns 401 for a missing, malformed, expired, wrong-issuer, or wrong-audience token. A valid token without `mcp:connect` receives 403. When the access JWT expires, hosts should refresh via the stored refresh token; only reconnect OAuth if refresh fails or no refresh token was minted (for example after Auth0 grant changes, reconnect once so a refresh token is issued).
 
 ## Claude Code authentication round trip
 
-The Claude adapter is `plugins/solstice-platform/.mcp.json`. It uses Streamable HTTP, callback `http://localhost:8787/callback`, and scopes `mcp:connect openid email`.
+The Claude adapter is `plugins/solstice-platform/.mcp.json`. It uses Streamable HTTP, callback `http://localhost:8787/callback`, and scopes `mcp:connect openid email offline_access`.
 
 For the local pilot, the adapter temporarily uses the existing public Cursor client ID. After the Backend-Server Terraform change is applied, retrieve `claude_client_id` and update `.mcp.json` through a reviewed pull request. The callback, audience, URL, and scopes stay unchanged.
 
 The round trip is:
 
 1. Claude Code loads the plugin and connects to `https://api.solsticehealth.co/mcp` (same ECS URL as Cursor; shared `.mcp.json`).
-2. Claude Code starts Authorization Code with PKCE for the configured public client, ECS audience, and scopes `mcp:connect openid email`.
-3. Auth0 redirects to `http://localhost:8787/callback`, then Claude Code exchanges the code plus PKCE verifier for an RS256 access token.
+2. Claude Code starts Authorization Code with PKCE for the configured public client, ECS audience, and scopes `mcp:connect openid email offline_access`.
+3. Auth0 redirects to `http://localhost:8787/callback`, then Claude Code exchanges the code plus PKCE verifier for an RS256 access token (and a refresh token when `offline_access` is granted).
 4. Claude Code stores the user's token in its credential flow and sends it as a Bearer credential to ECS.
 5. The MCP server performs the same token, tenant, brand, role, and draft-visibility checks used for Cursor.
 
@@ -58,7 +58,7 @@ Authenticate from `/mcp`, or use `claude mcp login solstice-platform` when avail
 
 ## Codex authentication round trip
 
-The Codex adapter is `plugins/solstice-platform/codex.mcp.json`. It uses Streamable HTTP, a pre-registered public client ID, the **AgentCore** gateway URL as both endpoint and `oauth_resource` audience, and scopes `mcp:connect openid email`. Codex 0.142.0 or newer is required for static MCP OAuth client IDs.
+The Codex adapter is `plugins/solstice-platform/codex.mcp.json`. It uses Streamable HTTP, a pre-registered public client ID, the **AgentCore** gateway URL as both endpoint and `oauth_resource` audience, and scopes `mcp:connect openid email offline_access`. Codex 0.142.0 or newer is required for static MCP OAuth client IDs.
 
 Set `mcp_oauth_callback_port = 8788` at the top level of `~/.codex/config.toml`. For the AgentCore production URL, Codex derives the callback `http://127.0.0.1:8788/callback/TL-8G9qfe5UK`; Auth0 must contain that exact value.
 
@@ -92,8 +92,9 @@ Other clients need their own registered public Auth0 client, exact callback URL,
 
 ## Troubleshooting
 
-- **401:** reconnect OAuth. Check that the token's issuer and audience match the selected MCP environment.
+- **401:** try refresh first; reconnect OAuth only if refresh fails. Check that the token's issuer and audience match the selected MCP environment.
 - **403:** reauthorize with `mcp:connect`.
+- **Hourly password / full re-login:** Auth0 MCP APIs must allow offline access and plugin clients must have the `refresh_token` grant and request `offline_access`. Without that stack, access JWTs die at ~1h and hosts force a full OAuth again. After enabling refresh in Auth0, reconnect once so a refresh token is minted.
 - **Callback failure:** confirm the client uses an Auth0-registered callback. Claude Code must use port `8787`; Codex must use port `8788` and the production callback ID shown above.
 - **`not_member`:** call `solstice_list_tenants` again. The workspace may be unknown, belong to another environment, or no longer contain a live membership.
 - **Access denied or not found:** do not infer that an inaccessible resource exists. Re-list the parent collection and choose only from returned results.
