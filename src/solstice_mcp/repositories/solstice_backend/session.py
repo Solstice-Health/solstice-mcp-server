@@ -98,8 +98,10 @@ class BackendSession:
             raise BackendUnreachable("backend_unreachable") from exc
 
         if response.status_code >= 400:
-            code, detail = _error_detail(response.content)
-            raise BackendStatusError(status=response.status_code, code=code, detail=detail)
+            code, detail, failures = _error_detail(response.content)
+            raise BackendStatusError(
+                status=response.status_code, code=code, detail=detail, failures=failures
+            )
         return _payload(response.content)
 
 
@@ -115,17 +117,19 @@ def _payload(raw: bytes) -> dict[str, Any]:
     return parsed
 
 
-def _error_detail(body: bytes) -> tuple[str | None, str]:
-    """``(code, message)`` from an error body, tolerating any shape."""
+def _error_detail(body: bytes) -> tuple[str | None, str, list[dict[str, Any]]]:
+    """``(code, message, failures)`` from an error body, tolerating any shape."""
     try:
         parsed = json.loads(body or b"{}")
     except (ValueError, TypeError):
-        return None, "backend error"
+        return None, "backend error", []
     detail = parsed.get("detail") if isinstance(parsed, dict) else None
     if isinstance(detail, dict):
         code = detail.get("code")
         message = detail.get("message") or "backend error"
-        return (code if isinstance(code, str) else None), str(message)
+        raw = detail.get("failures")
+        failures = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+        return (code if isinstance(code, str) else None), str(message), failures
     if isinstance(detail, str):
-        return None, detail
-    return None, "backend error"
+        return None, detail, []
+    return None, "backend error", []

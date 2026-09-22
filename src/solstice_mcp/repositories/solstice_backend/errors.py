@@ -8,6 +8,8 @@ contract depend on transport.
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class BackendError(Exception):
     """A Backend call that produced no usable payload."""
@@ -34,10 +36,23 @@ class BackendInvalidResponse(BackendError):
 
 
 class BackendStatusError(BackendError):
-    """A 4xx or 5xx. ``code`` is the Backend's own error code when it sent one."""
+    """A 4xx or 5xx. ``code`` is the Backend's own error code when it sent one.
 
-    def __init__(self, *, status: int, code: str | None, detail: str) -> None:
+    ``failures`` is the per-condition report a validating refusal carries. The
+    refusal is the only place the caller learns what to repair, so dropping it
+    here costs a whole author-upload-apply round trip per condition.
+    """
+
+    def __init__(
+        self,
+        *,
+        status: int,
+        code: str | None,
+        detail: str,
+        failures: list[dict[str, Any]] | None = None,
+    ) -> None:
         super().__init__(detail)
         self.status = status
         self.code = code
         self.detail = detail
+        self.failures = failures or []

@@ -19,7 +19,7 @@ from solstice_mcp.repositories.solstice_backend.errors import (
     BackendUnreachable,
 )
 from solstice_mcp.repositories.solstice_backend.prc import CommittedVersion
-from solstice_mcp.services.prc import PrcService, committed_response, row_id_from_key
+from solstice_mcp.services.prc import PrcService, committed_response, row_id_from_key, tool_error
 from solstice_mcp.tenants import TenantRegistry
 
 
@@ -341,3 +341,33 @@ def test_the_kill_switch_reaches_the_dispatch(monkeypatch, local):
 
     assert "approve_operation_version" in local
     assert repo.calls == []
+
+
+def test_a_validating_refusal_carries_every_condition_it_failed():
+    """The refusal is the only place the author learns what to repair, so it
+    names every condition rather than the first one that tripped."""
+    failure = BackendStatusError(
+        status=400,
+        code="invalid_proof",
+        detail="missing the Contract v2 declaration",
+        failures=[
+            {
+                "check": "L0",
+                "message": "missing the Contract v2 declaration",
+                "hint": 'add <meta name="sol-prc-contract" content="v2">',
+                "rule": "common.declaration",
+            },
+            {
+                "check": "L4",
+                "message": "missing the config seed",
+                "hint": 'add <script id="sol-prc-config">',
+                "rule": "common.config",
+            },
+        ],
+    )
+
+    message = str(tool_error(failure))
+
+    assert message.startswith("invalid_request: operation bake must satisfy baked contract v2")
+    assert "[rule: common.declaration]" in message
+    assert "[rule: common.config]" in message

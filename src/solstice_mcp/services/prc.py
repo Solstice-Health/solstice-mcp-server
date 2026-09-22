@@ -509,6 +509,30 @@ def committed_response(
     )
 
 
+def _failure_report(failures: list[dict[str, Any]]) -> str:
+    """Every condition the proof failed, so one repair pass can fix them all.
+
+    Without this the agent learns one violation per author-upload-apply cycle.
+    ``rule`` is the ``solstice_prc_template_rules`` id, which is what the agent
+    re-reads to repair.
+    """
+    if not failures:
+        return ""
+    lines = []
+    for failure in failures:
+        check = str(failure.get("check") or "").strip()
+        message = str(failure.get("message") or "").strip()
+        hint = str(failure.get("hint") or "").strip()
+        rule = str(failure.get("rule") or "").strip()
+        line = f"- {check}: {message}" if check else f"- {message}"
+        if hint:
+            line += f" — {hint}"
+        if rule:
+            line += f" [rule: {rule}]"
+        lines.append(line)
+    return "\n" + "\n".join(lines)
+
+
 def tool_error(exc: BackendError) -> ToolError:
     if isinstance(exc, BackendUnreachable):
         return ToolError("not_available: backend unreachable")
@@ -521,6 +545,7 @@ def tool_error(exc: BackendError) -> ToolError:
     if exc.code == "invalid_proof":
         return ToolError(
             f"invalid_request: operation bake must satisfy baked contract v2: {exc.detail}"
+            f"{_failure_report(exc.failures)}"
         )
     prefix = _CODE_PREFIXES.get(exc.code or "") or _STATUS_PREFIXES.get(exc.status, "not_available")
     return ToolError(f"{prefix}: {exc.detail}")
