@@ -100,7 +100,7 @@ Restart Codex after an update or uninstall.
 
 ## Temporary OAuth client IDs
 
-The Claude adapter temporarily uses the existing public Cursor Auth0 client ID for the local pilot. It uses callback `http://localhost:8787/callback` and requests `mcp:connect openid email`. This client is public and has no secret.
+The Claude adapter temporarily uses the existing public Cursor Auth0 client ID for the local pilot. It uses callback `http://localhost:8787/callback` and requests `mcp:connect openid email offline_access`. This client is public and has no secret.
 
 The Codex adapter also temporarily uses the Cursor public client ID. Backend-Server Terraform registers Codex's fixed `http://127.0.0.1:8788/callback/TL-8G9qfe5UK` callback on that pilot client and provisions a dedicated Codex client.
 

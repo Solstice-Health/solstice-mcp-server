@@ -5,12 +5,12 @@
       "url": "https://api.solsticehealth.co/mcp",
       "auth": {
         "CLIENT_ID": "uoOiEXHZxyDBkkBEfnOQEp6IhqcnAgTP",
-        "scopes": ["mcp:connect", "openid", "email"]
+        "scopes": ["mcp:connect", "openid", "email", "offline_access"]
       },
       "oauth": {
         "clientId": "uoOiEXHZxyDBkkBEfnOQEp6IhqcnAgTP",
         "callbackPort": 8787,
-        "scopes": "mcp:connect openid email"
+        "scopes": "mcp:connect openid email offline_access"
       }
     }
   }

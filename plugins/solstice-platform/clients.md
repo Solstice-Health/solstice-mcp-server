@@ -14,7 +14,7 @@ AgentCore gateway (Codex + manual fallback):
 
 `https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp`
 
-Each URL is also its Auth0 audience. Scopes stay `mcp:connect openid email`. After switching endpoints, reconnect OAuth (new audience).
+Each URL is also its Auth0 audience. Scopes stay `mcp:connect openid email offline_access`. After switching endpoints, reconnect OAuth (new audience). After Auth0 enables refresh, reconnect once so a refresh token is minted.
 
 ## Support matrix
 
@@ -56,7 +56,7 @@ Each URL is also its Auth0 audience. Scopes stay `mcp:connect openid email`. Aft
 For another MCP-capable client that should keep AgentCore guardrails:
 
 1. Configure `https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp` as a remote Streamable HTTP server.
-2. Use a registered public Auth0 client with PKCE, the same URL as the audience, and scopes `mcp:connect openid email`.
+2. Use a registered public Auth0 client with PKCE, the same URL as the audience, and scopes `mcp:connect openid email offline_access`.
 3. Register the client's exact OAuth callback URL in Auth0.
 4. Complete OAuth as the individual user.
 5. If the client supports Agent Skills, copy `skills/solstice-platform/SKILL.md` and its `references/` directory to that client's documented skill location.
