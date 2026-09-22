@@ -22,7 +22,7 @@ claim is missing the gate fails closed: the caller sees an empty sibling MCP
 list. The directory is the authorization surface — non-Solstice users see
 nothing.
 
-The Cursor, Claude Code, and Codex clients request `mcp:connect openid email`
+The Cursor, Claude Code, and Codex clients request `mcp:connect openid email offline_access`
 scopes (see the host adapters in `plugins/solstice-platform`). Auth0 mints the `email` claim into the
 access token only when an Auth0 Action adds it; the default behavior puts
 `email` in the ID token, not the access token. The Action below is the bridge.
