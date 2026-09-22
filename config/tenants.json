@@ -1,6 +1,7 @@
 {
   "_comment": "Tenant config map copied from Backend-Server. Only db_name and env are used by this service.",
   "sanofi": {"db_name": "sanofi", "s3_bucket": "solstice-sanofi", "redis_db": 1, "env": "production"},
+  "amneal": {"db_name": "amneal", "s3_bucket": "solstice-amneal", "redis_db": 25, "env": "production"},
   "pfizer": {"db_name": "pfizer", "s3_bucket": "solstice-pfizer", "redis_db": 2, "env": "production"},
   "astrazeneca": {"db_name": "astrazeneca", "s3_bucket": "solstice-astrazeneca", "redis_db": 3, "env": "production"},
   "incyte": {"db_name": "incyte", "s3_bucket": "solstice-incyte", "redis_db": 4, "env": "production"},
