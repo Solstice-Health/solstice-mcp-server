@@ -7,14 +7,14 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 PLUGIN = ROOT / "plugins" / "solstice-platform"
 PLUGIN_NAME = "solstice-platform"
-PLUGIN_VERSION = "0.3.28"
+PLUGIN_VERSION = "0.3.29"
 # Cursor/Claude → ECS direct (full tools/list). Codex → AgentCore (Cedar/OBO).
 ECS_URL = "https://api.solsticehealth.co/mcp"
 GATEWAY_URL = (
     "https://solstice-mcp-l6apghhxpf.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
 )
 CURSOR_CLIENT_ID = "uoOiEXHZxyDBkkBEfnOQEp6IhqcnAgTP"
-SCOPES = {"mcp:connect", "openid", "email"}
+SCOPES = {"mcp:connect", "openid", "email", "offline_access"}
 # Codex callback ID is SHA256-derived from the gateway URL (codex.mcp.json target).
 CODEX_CALLBACK_ID = "TL-8G9qfe5UK"
 
