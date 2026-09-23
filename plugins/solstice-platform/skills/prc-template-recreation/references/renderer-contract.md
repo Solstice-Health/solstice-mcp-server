@@ -275,14 +275,18 @@ contract and every `data-sol-prc-annotation-*` marker say "callout".
    its assigned page.
 4. **Collision:** callouts on the same side stack vertically in anchor order;
    connectors route to the stacked positions.
-5. **Override:** manual drag is the only placement override. Dragging the
+5. **Override:** a reviewer drag and an agent edit of
+   `script#sol-prc-annotation-positions` are both placement overrides. Dragging the
    callout moves the box while preserving its anchor. Dragging the arrowhead
    moves only the anchor endpoint while pinning the box. A click (not a drag)
    on the arrowhead selects the callout for marker / stroke width / dash,
    connector colour, and box copy colour — the last two are separate controls.
    The first measured layout freezes both endpoints into the operation bake as
    `script#sol-prc-annotation-positions[type="application/json"]` with
-   source-page ID plus page-space coordinates (`left`, `top`, `anchor`).
+   source-page ID plus page-space coordinates (`left`, `top`, `anchor`, and
+   `callout` when the box was placed by hand). An agent may rewrite that JSON
+   on the operation bake to move, add, hide, or restyle a callout, and must
+   keep `coordinateSpace: "page"` and `pageId`. It must not paint overlay DOM.
    Later commits, saves, and composes keep that script. Catalog templates must
    not include it. Do not copy the pins into `#sol-prc-proof-engine-config`.
    Legacy `__prc_annotation_positions` metadata is copied into the script by
@@ -331,7 +335,7 @@ there is no Python copy of these rules.
 - `common.inserted_fields`: If inserting Text, Image, or Button during cover-edit, stamp `data-sol-prc-field="inserted_{kind}_{n}"` plus `data-sol-prc-inserted="{kind}"` on that page only; freeze the node in the next bake. The engine also extends the same scheme with two overlay-only kinds: `fpo` (the magenta FPO sticker, `inserted_fpo_{n}` / `data-sol-prc-inserted="fpo"`) and `brackets` / `bracket-left` / `bracket-right` (magenta proof brackets, `inserted_brackets_{n}` / `data-sol-prc-inserted="brackets|bracket-left|bracket-right"`). FPO and brackets are engine extensions, not catalog-template authoring kinds.
 - `common.slot_geometry_in_bake`: If a creative slot is moved or resized, keep it inside its page and write the box onto `[data-sol-prc-slot]` in the next bake, falling back to the iframe when that marker is absent.
 - `common.annotation_pages`: Provide unique page boundaries and real anchors; the runtime ignores creative anchors clipped outside the iframe viewport and keeps each callout and arrow endpoint bound to its source page.
-- `common.annotation_positions_in_bake`: On first layout after generate, and on every later commit, save, and compose, freeze page-space box and arrow pins in `script#sol-prc-annotation-positions` inside the operation bake. Do not copy those pins into `#sol-prc-proof-engine-config`. Catalog templates must not include the script.
+- `common.annotation_positions_in_bake`: On first layout after generate, and on every later commit, save, and compose, freeze page-space box and arrow pins in `script#sol-prc-annotation-positions` inside the operation bake. An agent may edit that script's JSON on the bake to move, add, hide, or restyle a callout. Do not copy those pins into `#sol-prc-proof-engine-config`. Catalog templates must not include the script.
 - `common.slot_fits_page`: Size full-content surfaces only — email and website render slots, banner focus/render slots, and explicit banner ISI slots — to the existing zoom-adjusted parent-space iframe height plus bottom padding, then size the page from its authored floor and the current fitted slot bottoms plus padding on every pass so it can shrink again. Banner storyboard scene slots are exempt: keep their native stage height and intentional clipping.
 - `common.layer_separation`: Keep reusable proof-template chrome separate from operation creative, values, and bake-resident runtime data.
 - `common.zoom_safe_measurement`: When template JS writes a measured size back as a CSS length, use `offsetWidth` / `offsetHeight` / `scrollHeight`, never `getBoundingClientRect()` or `window.innerWidth`. VIEW zooms the proof body, so a client-rect write-back clips the element; local and export run at zoom 1 and will not catch it.
@@ -349,7 +353,7 @@ there is no Python copy of these rules.
 - `common.field_overrides`: Author `__prc_field_overrides`, generated field-override CSS, or a catalog-template `script#sol-prc-annotation-positions`.
 - `common.field_value_lock`: Assign a different field ID only because the value renders on another page, clone, or dimension — use the same canonical ID and mirror it.
 - `common.authored_derived`: Author `data-sol-prc-derived` for any ID other than the banner cumulative duration (`frame_cumulative_INDEX`). Derived is reserved for values the runtime recomputes and that one ID is the entire legitimate set. Marking authored copy derived locks it permanently — it never becomes focusable, never accepts a keystroke, and reports no authoring error, so the defect ships silently.
-- `common.callout_chrome`: Author callout boxes, connector lines or SVG, dots, gutters, annotation stages (`.prc-render-stage`), overlays, callout CSS, or callout geometry JavaScript. `data-sol-prc-stage` for template framing is `common.chrome_stage_marker`.
+- `common.callout_chrome`: Author callout boxes, connector lines or SVG, dots, gutters, annotation stages (`.prc-render-stage`), overlays, callout CSS, or callout geometry JavaScript. Editing `script#sol-prc-annotation-positions` on an operation bake is `common.annotation_positions_in_bake`, not this rule. `data-sol-prc-stage` for template framing is `common.chrome_stage_marker`.
 - `common.legacy_annotation_migration`: Declare Contract v2 while any legacy annotation format or owner survives. Adding L0-L5 is not a migration: remove legacy annotation DOM, CSS, JavaScript, stages, gutters, SVG, dots, callout boxes, geometry scripts, `data-sol-prc-annotation-*` markup, `__prc_annotation_positions`, and generated position stores. Preserve creative anchors and href values, and retain only normalized page-bound `script#sol-prc-annotation-positions` in an operation bake.
 - `common.catalog_positions`: Author `script#sol-prc-annotation-positions` in a reusable catalog template. Only an operation bake carries it, written on first layout and kept on every later compose.
 - `common.canvas_chrome`: Author the canvas outside the pages, including an html or body backdrop, the gap or margin between pages, page centering, or a page drop shadow.
