@@ -5,7 +5,6 @@ import json
 import re
 from dataclasses import replace
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -1482,40 +1481,15 @@ def test_create_prc_template_version_returns_typed_concurrent_conflict(
         ) is None
 
 
-def _doc_rules(profile: str) -> dict[str, dict[str, str]]:
-    """Collect a profile's rules straight from the shipped contract markdown.
-
-    Derived independently of the tool's parser so a hardcoded Python rule list,
-    or a doc edit the payload never picks up, fails this test.
-    """
-    text = (
-        Path(__file__).parents[1]
-        / "plugins/solstice-platform/skills/prc-template-recreation/references/renderer-contract.md"
-    ).read_text()
-    block = text.split("<!-- PRC_RULES_START -->")[1].split("<!-- PRC_RULES_END -->")[0]
-    sections = re.split(r"^### ", block, flags=re.MULTILINE)[1:]
-    wanted = {"all profiles", profile}
-    rules = {"must": {}, "should": {}, "must_not": {}}
-    bucket_names = {"MUST": "must", "SHOULD": "should", "MUST NOT": "must_not"}
-    for section in sections:
-        if section.splitlines()[0].strip().lower() not in wanted:
-            continue
-        for heading, contents in re.findall(
-            r"^#### (MUST|SHOULD|MUST NOT)\n(.*?)(?=^#### |\Z)",
-            section,
-            flags=re.MULTILINE | re.DOTALL,
-        ):
-            bucket = rules[bucket_names[heading]]
-            bucket.update(re.findall(r"^- `([^`]+)`: (.+)$", contents, flags=re.MULTILINE))
-    return rules
-
-
 @pytest.mark.parametrize("profile", ["email", "banner", "social", "website"])
-def test_prc_template_rules_serves_contract_v2_per_profile(
+def test_prc_template_rules_comes_from_the_backend_unchanged(
     app_harness: AppHarness,
     mint_token,
     profile: str,
 ):
+    """The rules live with the validator now, so this tool is a passthrough.
+    Anything it reshapes here is drift of exactly the kind the move removed —
+    the document's own content is asserted where the document lives."""
     payload = tool_payload(
         rpc(
             app_harness,
@@ -1525,38 +1499,12 @@ def test_prc_template_rules_serves_contract_v2_per_profile(
         )
     )
 
-    assert payload["status"] == "ok"
-    assert payload["contract_version"] == "v2"
-    assert payload["profile"] == profile
-    assert set(payload["rules"]) == {"must", "should", "must_not"}
-    assert all(payload["rules"][bucket] for bucket in payload["rules"])
-
-    served_rules = {
-        bucket: {rule["id"]: rule["text"] for rule in rules}
-        for bucket, rules in payload["rules"].items()
-    }
-    served = {rule_id for rules in served_rules.values() for rule_id in rules}
-    assert served_rules == _doc_rules(profile)
-    assert all(rule_id.startswith(("common.", f"{profile}.")) for rule_id in served)
-    assert all(
-        rule["text"].strip() and rule["text"][0].isupper()
-        for bucket in payload["rules"].values()
-        for rule in bucket
-    )
-    # Templates never draw annotations: the prohibition must reach every profile.
-    assert "common.callout_chrome" in {rule["id"] for rule in payload["rules"]["must_not"]}
-    assert "common.slot_fits_page" in served_rules["must"]
-    assert "full-content" in served_rules["must"]["common.slot_fits_page"]
-    assert "storyboard" in served_rules["must"]["common.slot_fits_page"]
-    assert "common.legacy_annotation_migration" in served_rules["must_not"]
-    assert "L0-L5" in served_rules["must_not"]["common.legacy_annotation_migration"]
-    if profile == "banner":
-        assert "banner.static_frames" in served_rules["must"]
-        assert "Content tab" in served_rules["must"]["banner.static_frames"]
-    assert f"{profile}.cover_not_required" in served_rules["should"]
-    if profile == "email":
-        assert "email.cover" in served_rules["must"]
-        assert served_rules["must"]["email.cover"].startswith("If a cover page is present")
+    served = app_harness.prc_backend.template_rules(profile=profile)
+    assert app_harness.prc_backend.calls[0] == ("template_rules", {"profile": profile})
+    assert payload == {"status": "ok", **served.model_dump()}
+    # The document is why the tool still serves what the shipped file used to:
+    # the rules are the enforceable subset, not the whole authoring contract.
+    assert payload["document"].startswith("# Solstice PRC Template Contract v2")
 
 
 def test_prc_template_rules_rejects_an_unknown_profile(app_harness: AppHarness, mint_token):
@@ -1568,6 +1516,9 @@ def test_prc_template_rules_rejects_an_unknown_profile(app_harness: AppHarness, 
     )
 
     assert "invalid_argument: profile must be one of" in _tool_error_text(response)
+    # Refused here rather than by the endpoint, so a typo costs no round trip
+    # and the wording an agent is instructed on stays the tool's own.
+    assert app_harness.prc_backend.calls == []
 
 
 def test_create_prc_template_version_points_authors_at_the_contract(app_harness: AppHarness, mint_token):

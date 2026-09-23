@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -13,22 +12,18 @@ from mcp.types import ToolAnnotations
 from solstice_mcp.audit import audited_tool
 from solstice_mcp.brands import list_brand_users
 from solstice_mcp.operations import (
-    approve_operation_version,
-    commit_operation_version,
     create_edit_operation,
     create_operation,
-    create_prc_template_version,
     get_operation_html,
     get_operation_info,
     get_project_info,
     list_operation_messages,
     list_operations_for_brand,
     list_projects_for_brand,
-    prepare_operation_version,
-    prepare_prc_template_bake,
     resolve_prc_template_for_brand,
     update_operation,
 )
+from solstice_mcp.services.prc import PrcService
 from solstice_mcp.storage import S3Reader
 from solstice_mcp.tenants import SessionFactory, TenantRegistry
 
@@ -55,78 +50,6 @@ UPDATE_IN_PLACE = ToolAnnotations(
     openWorldHint=False,
 )
 
-PRC_TEMPLATE_PROFILES = ("email", "banner", "social", "website")
-PRC_TEMPLATE_CONTRACT_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "plugins/solstice-platform/skills/prc-template-recreation/references/renderer-contract.md"
-)
-PRC_RULES_START = "<!-- PRC_RULES_START -->"
-PRC_RULES_END = "<!-- PRC_RULES_END -->"
-
-
-def _load_prc_template_rules(profile: str) -> dict[str, Any]:
-    """Parse one profile's rules from the shipped renderer contract."""
-    normalized_profile = profile.strip().lower()
-    if normalized_profile not in PRC_TEMPLATE_PROFILES:
-        allowed = ", ".join(PRC_TEMPLATE_PROFILES)
-        raise ToolError(f"invalid_argument: profile must be one of {allowed}")
-
-    try:
-        contract = PRC_TEMPLATE_CONTRACT_PATH.read_text(encoding="utf-8")
-    except OSError as exc:
-        # The contract ships as a plugin file (Dockerfile COPY), so a deployment
-        # that drops it must fail loudly here rather than serve stale rules.
-        raise ToolError("contract_error: renderer contract is not readable") from exc
-    version_line = next(
-        (line for line in contract.splitlines() if line.startswith("Contract version: `")),
-        "",
-    )
-    contract_version = version_line.removeprefix("Contract version: `").removesuffix("`")
-    rules_block = contract.partition(PRC_RULES_START)[2].partition(PRC_RULES_END)[0]
-    if not contract_version or not rules_block:
-        raise ToolError("contract_error: renderer contract is missing its version or rules block")
-
-    parsed: dict[str, dict[str, list[dict[str, str]]]] = {}
-    scope = ""
-    rule_type = ""
-    rule_headings = {"MUST": "must", "SHOULD": "should", "MUST NOT": "must_not"}
-
-    for line in rules_block.splitlines():
-        if line.startswith("### "):
-            scope = line.removeprefix("### ").strip().lower()
-            parsed.setdefault(scope, {key: [] for key in rule_headings.values()})
-            rule_type = ""
-        elif line.startswith("#### "):
-            rule_type = rule_headings.get(line.removeprefix("#### ").strip(), "")
-        elif line.startswith("- `") and scope and rule_type:
-            rule_id, separator, text = line.removeprefix("- `").partition("`: ")
-            if not separator or not rule_id or not text:
-                raise ToolError("contract_error: malformed rule bullet in renderer contract")
-            parsed[scope][rule_type].append({"id": rule_id, "text": text})
-
-    scopes = ("all profiles", normalized_profile)
-    if any(scope_name not in parsed for scope_name in scopes):
-        raise ToolError(f"contract_error: renderer contract has no rules for {normalized_profile}")
-
-    rules = {
-        rule_type: [
-            rule
-            for scope_name in scopes
-            for rule in parsed[scope_name][rule_type]
-        ]
-        for rule_type in rule_headings.values()
-    }
-    if any(not entries for entries in rules.values()):
-        raise ToolError(f"contract_error: incomplete renderer contract rules for {normalized_profile}")
-
-    return {
-        "contract_version": contract_version,
-        "profile": normalized_profile,
-        "rules": rules,
-        "source": "prc-template-recreation/references/renderer-contract.md",
-    }
-
-
 def register_content_tools(
     mcp: FastMCP,
     *,
@@ -137,6 +60,7 @@ def register_content_tools(
     s3: S3Reader,
     presign_expiry: int,
     max_inline_bytes: int,
+    prc: PrcService,
 ) -> None:
     read_only_tool = audited_tool(mcp, require_access_token, annotations=READ_ONLY)
     append_only_tool = audited_tool(mcp, require_access_token, annotations=APPEND_ONLY_WRITE)
@@ -272,13 +196,15 @@ def register_content_tools(
 
     @read_only_tool
     def solstice_prc_template_rules(profile: str) -> dict[str, Any]:
-        """Return Contract v2 authoring rules for email, banner, social, or website.
+        """Return the Contract v2 authoring contract for email, banner, social, or website.
 
-        The payload is parsed from the shipped renderer-contract.md on every
-        call, so this tool cannot drift from the contract document. Read-only;
-        pass exactly one profile.
+        Served by the Backend that enforces it, so the contract and the checks
+        that reject a save cannot drift. ``rules`` is the enforceable subset as
+        structured bullets; ``document`` is the whole authoring contract as
+        markdown — the layer vocabulary, the reserved namespace, the bake stage
+        — and is what to read before authoring. Read-only; pass one profile.
         """
-        return {"status": "ok", **_load_prc_template_rules(profile)}
+        return prc.template_rules(profile).model_dump()
 
     @read_only_tool
     def solstice_prc_template(
@@ -318,9 +244,7 @@ def register_content_tools(
             session_factory=session_factory,
         )
         if template is None:
-            raise ToolError(
-                f"not_found: no PRC template for content_type {content_type.strip().lower()!r}"
-            )
+            raise ToolError(f"not_found: no PRC template for content_type {content_type.strip().lower()!r}")
         return {
             "status": "ok",
             "tenant_slug": tenant_slug,
@@ -345,6 +269,7 @@ def register_content_tools(
         status: str = "published",
         publish_target: str = "library",
         operation_id: str | None = None,
+        base_message_id: str | None = None,
     ) -> dict[str, Any]:
         """Publish a PRC proof template to the library, bake it onto an operation, or both.
 
@@ -361,23 +286,30 @@ def register_content_tools(
         Library / both: after the HTML preview, ask separately for display
         name and template key, then ``confirmed=true``. This inserts a new
         library version. Reserved auto-resolving key prefixes are rejected.
+        ``html_template`` is validated against Contract v2 on the way in: a
+        shell that cannot bake is refused with every condition it failed, each
+        naming the ``solstice_prc_template_rules`` id to repair it against.
 
         Operation / both: ``solstice_prepare_prc_template_bake``, PUT the bake
-        HTML to ``upload_url``, then pass ``operation_id`` and
-        ``operation_bake_s3_key``. Size does not matter — never inline the bake
+        HTML to ``upload_url``, then pass ``operation_id``,
+        ``operation_bake_s3_key``, and ``base_message_id`` — the ``id`` of the
+        current html head from ``solstice_operation_messages``. A bake appends
+        onto that head; a stale or omitted one is refused as
+        ``conflict: not_latest_document``, so re-read the head and retry.
+        Size does not matter — never inline the bake
         as ``operation_bake_html``. Upload the approved, self-contained Contract v2
         operation bake, not a reusable catalog shell. It is rebound to the current
         creative and appended as one complete draft version. If validation fails, repair it against
         ``solstice_prc_template_rules``, preview it, and retry only after approval.
         Requires SOLSTICE_STAFF on the selected brand.
         """
-        template = create_prc_template_version(
-            require_subject(),
-            tenant_slug,
-            brand_id,
-            template_key,
-            content_type,
-            name,
+        template = prc.create_template_version(
+            subject=require_subject(),
+            tenant_slug=tenant_slug,
+            brand_id=brand_id,
+            template_key=template_key,
+            content_type=content_type,
+            name=name,
             confirmed=confirmed,
             html_template=html_template,
             operation_bake_html=operation_bake_html,
@@ -388,10 +320,7 @@ def register_content_tools(
             status=status,
             publish_target=publish_target,
             operation_id=operation_id,
-            max_inline_bytes=max_inline_bytes,
-            registry=registry,
-            session_factory=session_factory,
-            s3=s3,
+            base_message_id=base_message_id,
         )
         return {
             "status": "ok",
@@ -562,16 +491,12 @@ def register_content_tools(
         cause the call to be denied. Keep the user's intent in your own
         reasoning, not in this argument.
         """
-        return prepare_operation_version(
-            require_subject(),
-            tenant_slug,
-            operation_id,
-            type,
-            file_name,
-            registry=registry,
-            session_factory=session_factory,
-            s3=s3,
-            presign_expiry=presign_expiry,
+        return prc.prepare_version(
+            subject=require_subject(),
+            tenant_slug=tenant_slug,
+            operation_id=operation_id,
+            kind=type,
+            file_name=file_name,
         )
 
     @append_only_tool
@@ -591,16 +516,12 @@ def register_content_tools(
         ``operation_bake_s3_key`` set to the returned key. Requires
         SOLSTICE_STAFF on the operation's brand.
         """
-        return prepare_prc_template_bake(
-            require_subject(),
-            tenant_slug,
-            brand_id,
-            operation_id,
-            content_type,
-            registry=registry,
-            session_factory=session_factory,
-            s3=s3,
-            presign_expiry=presign_expiry,
+        return prc.prepare_bake(
+            subject=require_subject(),
+            tenant_slug=tenant_slug,
+            brand_id=brand_id,
+            operation_id=operation_id,
+            content_type=content_type,
         )
 
     @append_only_tool
@@ -675,20 +596,16 @@ def register_content_tools(
         End your user-facing reply with ``[Open asset in Solstice](<asset_url>)``
         instead of handing the user the operation UUID.
         """
-        return commit_operation_version(
-            require_subject(),
-            tenant_slug,
-            operation_id,
-            type,
-            s3_key,
-            file_name,
-            show_source_on_ui,
-            base_message_id,
-            confirmed,
-            registry=registry,
-            session_factory=session_factory,
-            s3=s3,
-            max_inline_bytes=max_inline_bytes,
+        return prc.commit_version(
+            subject=require_subject(),
+            tenant_slug=tenant_slug,
+            operation_id=operation_id,
+            kind=type,
+            s3_key=s3_key,
+            file_name=file_name,
+            show_source_on_ui=show_source_on_ui,
+            base_message_id=base_message_id,
+            confirmed=confirmed,
         )
 
     @read_only_tool
@@ -770,13 +687,11 @@ def register_content_tools(
         End your user-facing reply with ``[Open asset in Solstice](<asset_url>)``
         instead of handing the user the operation UUID.
         """
-        return approve_operation_version(
-            require_subject(),
-            tenant_slug,
-            operation_id,
-            message_id,
-            registry=registry,
-            session_factory=session_factory,
+        return prc.publish_version(
+            subject=require_subject(),
+            tenant_slug=tenant_slug,
+            operation_id=operation_id,
+            message_id=message_id,
         )
 
 

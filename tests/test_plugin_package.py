@@ -170,7 +170,7 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
     ):
         assert phrase in body_lower
 
-    references = {"reconstruction-workflow.md", "renderer-contract.md"}
+    references = {"reconstruction-workflow.md"}
     assert {path.name for path in (skill_dir / "references").glob("*.md")} == references
     for reference in references:
         assert f"(references/{reference})" in body
@@ -210,30 +210,7 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
     assert "#prc-cover-data" not in workflow
     assert "no previous-template lookup" not in workflow
 
-    contract = (skill_dir / "references" / "renderer-contract.md").read_text()
-    for seam in (
-        "#sol-prc-config",
-        ".prc-render-stage",
-        ".prc-render-frame",
-        ".prc-callout-gutter",
-        ".prc-connector-svg",
-        "#banner-template-data",
-        "#banner-scene-adapter",
-        "[data-banner-section]",
-        "#prc-platform-page-tpl",
-        "VIEWPORT|Links to:",
-        "__prc_field_overrides",
-        "--sol-prc-annotation-line-width",
-        "`common.field_instances`",
-        "`common.field_overrides`",
-        "`common.hosted_fonts`",
-    ):
-        assert seam in contract
-    assert "banner-standard-srcdoc-shell" not in contract
-    assert "do not copy layout, palette, typography, or chrome from a live catalog" in contract.lower()
-    assert "exemplar" not in contract.lower()
-
-    authoring_guidance = "\n".join((body, workflow, contract)).lower()
+    authoring_guidance = "\n".join((body, workflow)).lower()
     for stale_annotation_model in ("cross-page", "re-home", "nearest page"):
         assert stale_annotation_model not in authoring_guidance
     for frontend_dependency in (

@@ -39,7 +39,8 @@ class Settings:
     AWS_REGION: str = "us-east-1"
     S3_PRESIGN_EXPIRY_SECONDS: int = 600
     S3_MAX_INLINE_BYTES: int = 2_000_000
-    # Backend-Server internal memory routes. Empty base URL disables memory tools.
+    # Backend-Server's machine plane (memory and PRC). Empty base URL or
+    # credentials disable both.
     SOLSTICE_BACKEND_BASE_URL: str = ""
     SOLSTICE_BACKEND_TIMEOUT_SECONDS: int = 10
     SOLSTICE_BACKEND_AUTH0_CLIENT_ID: str = ""
@@ -47,6 +48,7 @@ class Settings:
     SOLSTICE_BACKEND_AUTH0_AUDIENCE: str = ""
     SOLSTICE_BACKEND_AUTH0_SCOPE: str = "memory:invoke"
     SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS: int = 5
+    SOLSTICE_BACKEND_AUTH0_PRC_SCOPE: str = "prc:write"
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -65,6 +67,32 @@ class Settings:
     @property
     def central_auth_db_configured(self) -> bool:
         return _env_configured(self.CENTRAL_AUTH_DB)
+
+    @property
+    def backend_m2m_scope(self) -> str:
+        """Every scope the machine token must carry.
+
+        The planes keep separate scope names so the Backend can pin its own,
+        but one Auth0 client asking twice mints two tokens for one credential.
+        Deployments set the memory scope explicitly, so the two are joined here
+        rather than defaulted together.
+        """
+        requested = (self.SOLSTICE_BACKEND_AUTH0_SCOPE, self.SOLSTICE_BACKEND_AUTH0_PRC_SCOPE)
+        return " ".join(dict.fromkeys(scope for part in requested for scope in part.split()))
+
+    @property
+    def backend_m2m_configured(self) -> bool:
+        """True when this task can mint a machine token for the Backend.
+
+        One credential serves every machine plane, so memory and PRC gate on
+        the same answer.
+        """
+        return bool(
+            self.SOLSTICE_BACKEND_BASE_URL.strip()
+            and _env_configured(self.SOLSTICE_BACKEND_AUTH0_CLIENT_ID)
+            and _env_configured(self.SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET)
+            and _env_configured(self.SOLSTICE_BACKEND_AUTH0_AUDIENCE)
+        )
 
     @property
     def tenant_environment(self) -> str:

@@ -25,9 +25,18 @@ from solstice_mcp.app import build_mcp_app
 from solstice_mcp.auth import JWKSCache
 from solstice_mcp.brand_context import ClinicalClaim, DesignLibrary, GuidelineAndRule
 from solstice_mcp.brands import Brand, BrandTeamMember
-from solstice_mcp.memory_client import BackendMemoryClient
 from solstice_mcp.operations import CgOperation, CgOperationMessage, PrcTemplateVersion, Project
 from solstice_mcp.rate_limit import default_limiter
+from solstice_mcp.repositories.solstice_backend.memory import MemoryRepository
+from solstice_mcp.repositories.solstice_backend.prc import (
+    CommittedVersion,
+    PrcActor,
+    PrcProfile,
+    PreparedUpload,
+    PublishedVersion,
+    TemplateRules,
+)
+from solstice_mcp.repositories.solstice_backend.session import BackendSession
 from solstice_mcp.requests import AdminRequest
 from solstice_mcp.settings import Settings
 from solstice_mcp.tenants import Base, TenantMembershipCache, TenantRegistry, User
@@ -156,11 +165,97 @@ class AppHarness:
     session_factory: Callable[[str], Session]
     calls: Counter[str]
     s3: FakeS3
-    backend: BackendMemoryClient
+    backend: MemoryRepository
     backend_opener: FakeBackendOpener
     token_acquirer: FakeM2MTokenAcquirer
     auth0_opener: FakeBackendOpener
     central_session_factory: Callable[[], Session]
+    prc_backend: FakePrcBackend
+
+
+class FakePrcBackend:
+    """Stands in for the Backend's PRC routes.
+
+    Answers with the repository's own models, so a payload the real Backend
+    could not produce fails here rather than passing through to a tool. Every
+    method the cutover reaches is implemented: with the flag on, a tool call
+    that lands somewhere unimplemented is a hole in the cutover, not in this.
+
+    ``raises`` makes the next call fail, for the paths where what an agent
+    hears is the thing under test.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self.rules: dict[str, dict] = {}
+        self.raises: Exception | None = None
+
+    def _record(self, name: str, **kwargs: object) -> None:
+        self.calls.append((name, kwargs))
+        if self.raises is not None:
+            raise self.raises
+
+    def template_rules(self, *, profile: PrcProfile) -> TemplateRules:
+        self._record("template_rules", profile=profile)
+        return TemplateRules.model_validate(
+            self.rules.get(profile, _default_rules_payload(profile))
+        )
+
+    def prepare_upload(
+        self, *, actor: PrcActor, operation_id: str, artifact: str
+    ) -> PreparedUpload:
+        self._record("prepare_upload", actor=actor, operation_id=operation_id, artifact=artifact)
+        prefix = "cg_operation_msg_html" if artifact == "creative" else "cg_operation_prc_template"
+        return PreparedUpload(
+            artifact=artifact,
+            s3_key=f"{prefix}/{operation_id}/{PREPARED_ROW_ID}.html",
+            upload_url=f"https://s3.test/{prefix}/{operation_id}?signed",
+            expires_in=600,
+        )
+
+    def commit_version(
+        self, *, actor: PrcActor, operation_id: str, body: dict
+    ) -> CommittedVersion:
+        self._record("commit_version", actor=actor, operation_id=operation_id, body=body)
+        return CommittedVersion(
+            head_message_id=COMMITTED_HEAD_ID,
+            intent="final",
+            creative_s3_key=f"cg_operation_msg_html/{operation_id}/{PREPARED_ROW_ID}.html",
+            prc_template_s3_key=f"cg_operation_prc_template/{operation_id}/{COMMITTED_HEAD_ID}.html",
+            asset_url=f"https://app.test/home/assets/{operation_id}",
+        )
+
+    def publish_version(
+        self, *, actor: PrcActor, operation_id: str, message_id: str
+    ) -> PublishedVersion:
+        self._record("publish_version", actor=actor, operation_id=operation_id, message_id=message_id)
+        return PublishedVersion(
+            operation_id=operation_id,
+            message_id=message_id,
+            intent="final",
+            change_requests_resolved=2,
+            requests_completed=1,
+        )
+
+
+PREPARED_ROW_ID = "11111111-2222-3333-4444-555555555555"
+COMMITTED_HEAD_ID = "99999999-8888-7777-6666-555555555555"
+
+
+def _default_rules_payload(profile: str) -> dict:
+    return {
+        "contract_version": "v2",
+        "profile": profile,
+        "rules": {
+            "must": [
+                {"id": "common.declaration", "text": "Declare the contract."},
+                {"id": f"{profile}.profile", "text": "Name the profile."},
+            ],
+            "should": [{"id": f"{profile}.cover_not_required", "text": "A cover is optional."}],
+            "must_not": [{"id": "common.callout_chrome", "text": "Do not draw callouts."}],
+        },
+        "document": f"# Solstice PRC Template Contract v2\n\nprofile: {profile}\n",
+    }
 
 
 class FakeM2MTokenAcquirer:
@@ -610,11 +705,13 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
     backend_base_url = "https://backend.test"
     token_acquirer = FakeM2MTokenAcquirer()
     backend_opener = FakeBackendOpener(backend_base_url)
-    backend_client = BackendMemoryClient(
-        base_url=backend_base_url,
-        token_acquirer=token_acquirer,
-        timeout=5.0,
-        opener=backend_opener,
+    backend_client = MemoryRepository(
+        BackendSession(
+            base_url=backend_base_url,
+            token_acquirer=token_acquirer,
+            timeout=5.0,
+            opener=backend_opener,
+        )
     )
 
     # Central auth DB (canonical user rows) + fake Auth0 for user-admin tools.
@@ -652,6 +749,7 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
         token_acquirer=FakeM2MTokenAcquirer("mgmt-bearer"),
     )
 
+    prc_backend = FakePrcBackend()
     mcp = build_mcp_app(
         runtime_settings=settings,
         registry=registry,
@@ -660,6 +758,7 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
         jwks_cache=JWKSCache(f"{TEST_ISSUER}.well-known/jwks.json", initial=jwks),
         s3=fake_s3,
         backend_memory=backend_client,
+        prc_backend=prc_backend,
         user_admin_auth0=user_admin_auth0,
         central_session_factory=open_central_session,
     )
@@ -667,6 +766,7 @@ def app_harness(tmp_path: Path, signing_material: tuple[bytes, dict[str, Any]]) 
         yield AppHarness(
             client, registry, open_session, calls, fake_s3, backend_client,
             backend_opener, token_acquirer, auth0_opener, open_central_session,
+            prc_backend,
         )
 
 

@@ -20,8 +20,13 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from solstice_mcp.auth import JWKSCache, MCPAccessTokenVerifier
+from solstice_mcp.client_credentials import Auth0ClientCredentials
 from solstice_mcp.gate import SolsticeAccessGate
-from solstice_mcp.memory_client import Auth0ClientCredentials, BackendMemoryClient
+from solstice_mcp.repositories.solstice_backend.memory import MemoryRepository
+from solstice_mcp.repositories.solstice_backend.prc import PrcRepository
+from solstice_mcp.repositories.solstice_backend.session import BackendSession
+from solstice_mcp.services.memory import MemoryService
+from solstice_mcp.services.prc import PrcService
 from solstice_mcp.settings import Settings, settings
 from solstice_mcp.sibling_mcps import SiblingMCPRegistry
 from solstice_mcp.storage import S3Reader, TenantS3
@@ -201,7 +206,8 @@ def build_mcp_app(
     cache: TenantMembershipCache | None = None,
     jwks_cache: JWKSCache | None = None,
     s3: S3Reader | None = None,
-    backend_memory: BackendMemoryClient | None = None,
+    backend_memory: MemoryRepository | None = None,
+    prc_backend: PrcRepository | None = None,
     user_admin_auth0: Auth0UserAdmin | None = None,
     central_session_factory: CentralSessionFactory | None = None,
 ) -> FastMCP:
@@ -278,6 +284,27 @@ def build_mcp_app(
         access_gate=access_gate,
         sibling_registry=sibling_registry,
     )
+    # One machine credential, one token, one pooled connection: the planes
+    # differ only by the scope each pins, and both travel in the same token.
+    # Absent credentials means the local PRC path stays in use — the flag alone
+    # cannot route a write somewhere the task cannot reach.
+    backend_session = None
+    if runtime_settings.backend_m2m_configured:
+        backend_session = BackendSession(
+            base_url=runtime_settings.SOLSTICE_BACKEND_BASE_URL,
+            token_acquirer=Auth0ClientCredentials(
+                token_endpoint=f"{issuer.rstrip('/')}/oauth/token",
+                client_id=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_ID,
+                client_secret=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET,
+                audience=runtime_settings.SOLSTICE_BACKEND_AUTH0_AUDIENCE,
+                scope=runtime_settings.backend_m2m_scope,
+                timeout=float(runtime_settings.SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS),
+            ),
+            timeout=float(runtime_settings.SOLSTICE_BACKEND_TIMEOUT_SECONDS),
+        )
+    if prc_backend is None and backend_session is not None:
+        prc_backend = PrcRepository(backend_session)
+
     register_content_tools(
         mcp,
         require_subject=require_subject,
@@ -287,6 +314,14 @@ def build_mcp_app(
         s3=s3_reader,
         presign_expiry=runtime_settings.S3_PRESIGN_EXPIRY_SECONDS,
         max_inline_bytes=runtime_settings.S3_MAX_INLINE_BYTES,
+        prc=PrcService(
+            prc_backend,
+            registry=tenant_registry,
+            session_factory=open_session,
+            s3=s3_reader,
+            presign_expiry=runtime_settings.S3_PRESIGN_EXPIRY_SECONDS,
+            max_inline_bytes=runtime_settings.S3_MAX_INLINE_BYTES,
+        ),
     )
     register_brand_context_tools(
         mcp,
@@ -305,40 +340,19 @@ def build_mcp_app(
         session_factory=open_session,
     )
 
-    # Memory tools are registered when an injected client is provided (tests) or
-    # when the Backend base URL and Auth0 client-credentials contract are
-    # configured. When absent (e.g. local dev without the M2M client), memory
-    # tools are simply not exposed.
+    # Memory tools are registered when an injected repository is provided
+    # (tests) or when the machine credential is configured. When absent (e.g.
+    # local dev without the M2M client), they are simply not exposed.
+    if backend_memory is None and backend_session is not None:
+        backend_memory = MemoryRepository(backend_session)
     if backend_memory is not None:
         register_memory_tools(
             mcp,
             require_subject=require_subject,
             require_access_token=require_access_token,
-            registry=tenant_registry,
-            session_factory=open_session,
-            backend=backend_memory,
-        )
-    elif runtime_settings.SOLSTICE_BACKEND_BASE_URL and runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_ID:
-        token_acquirer = Auth0ClientCredentials(
-            token_endpoint=f"{issuer.rstrip('/')}/oauth/token",
-            client_id=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_ID,
-            client_secret=runtime_settings.SOLSTICE_BACKEND_AUTH0_CLIENT_SECRET,
-            audience=runtime_settings.SOLSTICE_BACKEND_AUTH0_AUDIENCE,
-            scope=runtime_settings.SOLSTICE_BACKEND_AUTH0_SCOPE,
-            timeout=float(runtime_settings.SOLSTICE_BACKEND_AUTH0_TOKEN_TIMEOUT_SECONDS),
-        )
-        backend_client = BackendMemoryClient(
-            base_url=runtime_settings.SOLSTICE_BACKEND_BASE_URL,
-            token_acquirer=token_acquirer,
-            timeout=float(runtime_settings.SOLSTICE_BACKEND_TIMEOUT_SECONDS),
-        )
-        register_memory_tools(
-            mcp,
-            require_subject=require_subject,
-            require_access_token=require_access_token,
-            registry=tenant_registry,
-            session_factory=open_session,
-            backend=backend_client,
+            memory=MemoryService(
+                backend_memory, registry=tenant_registry, session_factory=open_session
+            ),
         )
 
     # User-admin tools need Auth0 Management credentials and the central auth
