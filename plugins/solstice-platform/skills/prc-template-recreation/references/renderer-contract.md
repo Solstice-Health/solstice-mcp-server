@@ -97,7 +97,14 @@ internal scrollbar. The v1 fallback that injected into every iframe is not
 part of v2.
 
 Banner keeps one authored `[data-banner-section]`; the platform clones it for
-multiple dimensions. Banner slot iframes can live in `#frame-template` and
+multiple dimensions. On compose — first creative injection and every later
+save, including dimension adapt — it splits the creative on `<!DOCTYPE html>`
+boundaries, clones that section once per document in that order, stamps
+`data-banner-index` to the array index, and restamps `data-sol-prc-page` ids
+unique (`page_banner_0`, `page_banner_1`, …). One cloned section is one
+dimension’s page set (storyboard, plus an ISI page when the template authored
+one inside the section); the template must not clone sections itself. Banner
+slot iframes can live in `#frame-template` and
 `#isi-region-template`, but they still carry
 `data-sol-prc-creative="banner"`. Social clone cells come from
 `#prc-variant-cell-tpl` and `#prc-frame-cell-tpl` the same way. The movable,
@@ -123,7 +130,13 @@ values or platform state.
 
 Banner retains the executable behavior seams `#banner-scene-adapter`,
 `#banner-placeholder-srcdoc`, `[data-banner-section]`, `#frame-template`, and
-`#isi-region-template`. Social retains `#prc-platform-page-tpl`,
+`#isi-region-template`. The platform publishes
+`window.__BANNER_TEMPLATE_SRCDOCS__` as that per-document array, including
+when the array has one entry. Index `i` is the only creative for the section
+with `data-banner-index="i"`. A new compose does not publish
+`window.__BANNER_TEMPLATE_SRCDOC__`. Readers may still fall back to that
+global when an old bake has no array entry.
+Social retains `#prc-platform-page-tpl`,
 `#prc-variant-cell-tpl`, `#prc-storyboard-page-tpl`, and
 `#prc-frame-cell-tpl`. Those seams build profile pages; they do not draw
 annotations.
@@ -226,8 +239,10 @@ A v2 template must never author:
   locks it permanently and reports no authoring error;
 - `__prc_annotation_positions`, which is legacy operation draft data;
 - `__prc_field_overrides` or generated field-override CSS, which are legacy;
-- `script#sol-prc-annotation-positions` in a **catalog** template (operation
-  bakes may carry it after a drag; overlay DOM is still injected);
+- `script#sol-prc-annotation-positions` in a **catalog** template (an operation
+  bake carries it from first layout on; overlay DOM is still injected);
+- `annotations.positions` on `#sol-prc-proof-engine-config` (that config is
+  view chrome and is stripped on save; pins live only in the positions script);
 - `window.__BANNER_TEMPLATE_*`, `#sol-prc-template-runtime*`, or
   `#sol-prc-banner-template-data`, which compose injects;
 - the canvas outside the pages: a backdrop on `html` or `body`, the gap or
@@ -251,8 +266,8 @@ contract and every `data-sol-prc-annotation-*` marker say "callout".
 1. **Anchors:** the runtime discovers creative `a[href]`, cover fields, and
    manual points. A creative anchor counts only when its center lies inside the
    iframe viewport; clipped overflow does not produce an annotation. Generated identity remains
-   `VIEWPORT|Links to: URL|INDEX`; coordinates are absent so overrides survive
-   reflow.
+   `VIEWPORT|Links to: URL|INDEX`. Page-space coordinates live in the positions
+   script, not in the key.
 2. **Default placement:** the callout is placed at a fixed inset from the page
    border on the side nearest its anchor and aligned vertically to that anchor.
 3. **Bounding:** the runtime clamps the full callout and its arrow endpoint
@@ -265,11 +280,13 @@ contract and every `data-sol-prc-annotation-*` marker say "callout".
    moves only the anchor endpoint while pinning the box. A click (not a drag)
    on the arrowhead selects the callout for marker / stroke width / dash,
    connector colour, and box copy colour — the last two are separate controls.
-   Pins freeze into the operation bake as
+   The first measured layout freezes both endpoints into the operation bake as
    `script#sol-prc-annotation-positions[type="application/json"]` with
-   source-page ID plus page-space coordinates. Catalog templates must not
-   include that script. Legacy `__prc_annotation_positions` draft extras fold
-   into the bake script on the next save.
+   source-page ID plus page-space coordinates (`left`, `top`, `anchor`).
+   Later commits, saves, and composes keep that script. Catalog templates must
+   not include it. Do not copy the pins into `#sol-prc-proof-engine-config`.
+   Legacy `__prc_annotation_positions` metadata is copied into the script by
+   `materialize_legacy_prc_fields` when the script is absent.
 6. **Rendering:** the runtime paints boxes, connectors, and dots on one overlay
    per page. Overlay DOM is stripped on bake and re-injected on adapt. Templates
    do not host or script that overlay. They may theme it
@@ -314,7 +331,7 @@ there is no Python copy of these rules.
 - `common.inserted_fields`: If inserting Text, Image, or Button during cover-edit, stamp `data-sol-prc-field="inserted_{kind}_{n}"` plus `data-sol-prc-inserted="{kind}"` on that page only; freeze the node in the next bake. The engine also extends the same scheme with two overlay-only kinds: `fpo` (the magenta FPO sticker, `inserted_fpo_{n}` / `data-sol-prc-inserted="fpo"`) and `brackets` / `bracket-left` / `bracket-right` (magenta proof brackets, `inserted_brackets_{n}` / `data-sol-prc-inserted="brackets|bracket-left|bracket-right"`). FPO and brackets are engine extensions, not catalog-template authoring kinds.
 - `common.slot_geometry_in_bake`: If a creative slot is moved or resized, keep it inside its page and write the box onto `[data-sol-prc-slot]` in the next bake, falling back to the iframe when that marker is absent.
 - `common.annotation_pages`: Provide unique page boundaries and real anchors; the runtime ignores creative anchors clipped outside the iframe viewport and keeps each callout and arrow endpoint bound to its source page.
-- `common.annotation_positions_in_bake`: After a callout drag or arrow-style change, freeze page-space pins in `script#sol-prc-annotation-positions` inside the operation bake; catalog templates must not include that script.
+- `common.annotation_positions_in_bake`: On first layout after generate, and on every later commit, save, and compose, freeze page-space box and arrow pins in `script#sol-prc-annotation-positions` inside the operation bake. Do not copy those pins into `#sol-prc-proof-engine-config`. Catalog templates must not include the script.
 - `common.slot_fits_page`: Size full-content surfaces only — email and website render slots, banner focus/render slots, and explicit banner ISI slots — to the existing zoom-adjusted parent-space iframe height plus bottom padding, then size the page from its authored floor and the current fitted slot bottoms plus padding on every pass so it can shrink again. Banner storyboard scene slots are exempt: keep their native stage height and intentional clipping.
 - `common.layer_separation`: Keep reusable proof-template chrome separate from operation creative, values, and bake-resident runtime data.
 - `common.zoom_safe_measurement`: When template JS writes a measured size back as a CSS length, use `offsetWidth` / `offsetHeight` / `scrollHeight`, never `getBoundingClientRect()` or `window.innerWidth`. VIEW zooms the proof body, so a client-rect write-back clips the element; local and export run at zoom 1 and will not catch it.
@@ -334,7 +351,7 @@ there is no Python copy of these rules.
 - `common.authored_derived`: Author `data-sol-prc-derived` for any ID other than the banner cumulative duration (`frame_cumulative_INDEX`). Derived is reserved for values the runtime recomputes and that one ID is the entire legitimate set. Marking authored copy derived locks it permanently — it never becomes focusable, never accepts a keystroke, and reports no authoring error, so the defect ships silently.
 - `common.callout_chrome`: Author callout boxes, connector lines or SVG, dots, gutters, annotation stages (`.prc-render-stage`), overlays, callout CSS, or callout geometry JavaScript. `data-sol-prc-stage` for template framing is `common.chrome_stage_marker`.
 - `common.legacy_annotation_migration`: Declare Contract v2 while any legacy annotation format or owner survives. Adding L0-L5 is not a migration: remove legacy annotation DOM, CSS, JavaScript, stages, gutters, SVG, dots, callout boxes, geometry scripts, `data-sol-prc-annotation-*` markup, `__prc_annotation_positions`, and generated position stores. Preserve creative anchors and href values, and retain only normalized page-bound `script#sol-prc-annotation-positions` in an operation bake.
-- `common.catalog_positions`: Author `script#sol-prc-annotation-positions` in a reusable catalog template; only an operation bake may carry it after a drag.
+- `common.catalog_positions`: Author `script#sol-prc-annotation-positions` in a reusable catalog template. Only an operation bake carries it, written on first layout and kept on every later compose.
 - `common.canvas_chrome`: Author the canvas outside the pages, including an html or body backdrop, the gap or margin between pages, page centering, or a page drop shadow.
 - `common.print_rules`: Author `@page` or `@media print` rules; the platform owns export pagination and print geometry.
 - `common.external_fonts`: Link a font sheet from any host but `fonts.googleapis.com` or `use.typekit.net`; prefer platform-listed or inlined fonts.
@@ -368,6 +385,8 @@ there is no Python copy of these rules.
 #### MUST
 - `banner.profile`: Use `body[data-sol-prc-proof="banner"]` and `data-profile="banner"` in the v2 declaration.
 - `banner.section`: Author exactly one `[data-banner-section]` under `main[data-sol-prc-pages]`; the platform owns multi-dimension cloning.
+- `banner.dimension_pages`: On compose (first creative injection and every later save, including dimension adapt), split the creative on `<!DOCTYPE html>` boundaries. Clone the single authored `[data-banner-section]` once per document, in that order. Stamp `data-banner-index` to the array index. Restamp `data-sol-prc-page` ids so they are unique (`page_banner_0`, `page_banner_1`, …). One section is one dimension’s page set (storyboard, plus an ISI page when the template authored one inside the section). The template must not clone sections itself.
+- `banner.srcdocs`: Publish `window.__BANNER_TEMPLATE_SRCDOCS__` as that array, including a one-element array. Index `i` is the only creative for the section with `data-banner-index="i"`. Do not publish `window.__BANNER_TEMPLATE_SRCDOC__` on a new compose. Readers may fall back to a stored `SRCDOC` when the array entry is missing. Never set `SRCDOC` to the joined multi-document string.
 - `banner.page`: Give the banner section a stable page marker with `data-sol-prc-page-type="storyboard"`.
 - `banner.behavior_seams`: Preserve `#banner-scene-adapter` and `#banner-placeholder-srcdoc` as executable behavior seams.
 - `banner.clone_templates`: Provide `#frame-template` and `#isi-region-template` with their required slots and `iframe[data-sol-prc-creative="banner"]`.
@@ -392,6 +411,9 @@ there is no Python copy of these rules.
 - `social.source_slot`: Provide one source `iframe[data-sol-prc-creative="social"]` that receives the full social creative.
 - `social.canonical_payload`: Consume the injected social creative as one or more complete platform documents whose top-level shell is `.social-container[data-platform]`; pass an already-canonical payload through unchanged, wrap a bare creative exactly once at the platform compose boundary, and never place one social platform shell inside another shell's `.sol-media` iframe.
 - `social.shell_intrinsic_width`: When fitting a canonical social document, measure `.social-container[data-platform]` itself for intrinsic width; do not use `body.scrollWidth`, `documentElement.scrollWidth`, or another viewport-sized value after widening the iframe as a probe, because a normal block body reports the probe width and incorrectly shrinks a fixed-width platform shell.
+- `social.shell_box`: Size the variant iframe to the shell's `offsetWidth` and `offsetHeight` plus the body's padding on each axis. The wrap is `overflow: hidden`; the border box alone clips the card edge.
+- `social.pages_once`: If `#prc-pages` already contains `[data-sol-prc-page]`, `build()` returns. A saved bake must not append another platform page or storyboard.
+- `social.not_banner_frame`: A `data-sol-prc-creative="social"` iframe is a platform shell. Do not replace its srcdoc with the raw creative.
 - `social.page_fit_width`: Size each social proof page to its rendered columns, gaps, and horizontal padding without unused horizontal slack; excess page width lowers the host fit scale below the selected user zoom and makes otherwise correctly fitted social and ISI frames render too small.
 - `social.builders`: Preserve `#prc-platform-page-tpl`, `#prc-variant-cell-tpl`, `#prc-storyboard-page-tpl`, and `#prc-frame-cell-tpl` with their canonical slots.
 - `social.inner_render_slot`: Wrap the source social iframe and every creative iframe inside `#prc-variant-cell-tpl` and `#prc-frame-cell-tpl` with `[data-sol-prc-slot]` so cloned platform and storyboard cells expose a selectable inner render frame.
