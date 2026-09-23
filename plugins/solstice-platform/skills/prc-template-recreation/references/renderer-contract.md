@@ -130,12 +130,14 @@ values or platform state.
 
 Banner retains the executable behavior seams `#banner-scene-adapter`,
 `#banner-placeholder-srcdoc`, `[data-banner-section]`, `#frame-template`, and
-`#isi-region-template`. The platform publishes
-`window.__BANNER_TEMPLATE_SRCDOCS__` as that per-document array, including
-when the array has one entry. Index `i` is the only creative for the section
-with `data-banner-index="i"`. A new compose does not publish
-`window.__BANNER_TEMPLATE_SRCDOC__`. Readers may still fall back to that
-global when an old bake has no array entry.
+`#isi-region-template`. Compose always publishes
+`window.__BANNER_TEMPLATE_SRCDOC__` set to the creative HTML it received,
+including when that string joins several documents. When the creative splits
+into more than one document on `<!DOCTYPE html>` boundaries, compose also
+publishes `window.__BANNER_TEMPLATE_SRCDOCS__` as that array. Index `i` is
+the creative for the section with `data-banner-index="i"`. A one-document
+creative does not get a one-element array. A banner proof with no `SRCDOC`
+fails validation.
 Social retains `#prc-platform-page-tpl`,
 `#prc-variant-cell-tpl`, `#prc-storyboard-page-tpl`, and
 `#prc-frame-cell-tpl`. Those seams build profile pages; they do not draw
@@ -390,7 +392,7 @@ there is no Python copy of these rules.
 - `banner.profile`: Use `body[data-sol-prc-proof="banner"]` and `data-profile="banner"` in the v2 declaration.
 - `banner.section`: Author exactly one `[data-banner-section]` under `main[data-sol-prc-pages]`; the platform owns multi-dimension cloning.
 - `banner.dimension_pages`: On compose (first creative injection and every later save, including dimension adapt), split the creative on `<!DOCTYPE html>` boundaries. Clone the single authored `[data-banner-section]` once per document, in that order. Stamp `data-banner-index` to the array index. Restamp `data-sol-prc-page` ids so they are unique (`page_banner_0`, `page_banner_1`, …). One section is one dimension’s page set (storyboard, plus an ISI page when the template authored one inside the section). The template must not clone sections itself.
-- `banner.srcdocs`: Publish `window.__BANNER_TEMPLATE_SRCDOCS__` as that array, including a one-element array. Index `i` is the only creative for the section with `data-banner-index="i"`. Do not publish `window.__BANNER_TEMPLATE_SRCDOC__` on a new compose. Readers may fall back to a stored `SRCDOC` when the array entry is missing. Never set `SRCDOC` to the joined multi-document string.
+- `banner.srcdocs`: Always publish `window.__BANNER_TEMPLATE_SRCDOC__` as the creative HTML compose received (one document, or the joined multi-document string). When that creative splits into more than one `<!DOCTYPE html>` document, also publish `window.__BANNER_TEMPLATE_SRCDOCS__` as that array. Index `i` is the only creative for the section with `data-banner-index="i"`. Do not publish a one-element `SRCDOCS` array in place of `SRCDOC`.
 - `banner.page`: Give the banner section a stable page marker with `data-sol-prc-page-type="storyboard"`.
 - `banner.behavior_seams`: Preserve `#banner-scene-adapter` and `#banner-placeholder-srcdoc` as executable behavior seams.
 - `banner.clone_templates`: Provide `#frame-template` and `#isi-region-template` with their required slots and `iframe[data-sol-prc-creative="banner"]`.
