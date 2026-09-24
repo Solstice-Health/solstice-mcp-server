@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import re
 from dataclasses import replace
@@ -83,6 +84,7 @@ BANNER_TEMPLATE = (
 )
 
 
+@pytest.mark.parametrize("with_positions", [False, True])
 @pytest.mark.parametrize(
     ("content_type", "template", "slot"),
     [
@@ -95,9 +97,26 @@ def test_compose_prc_proof_normalizes_fleet_templates_and_preserves_edits(
     content_type: str,
     template: str,
     slot: str,
+    with_positions: bool,
 ):
+    positions = (
+        '<script id="sol-prc-annotation-positions" type="application/json">\n'
+        '{"desktop|Links to: https://example.com/":{"coordinateSpace":"page","pageId":"desktop",'
+        '"left":48,"top":120,"anchor":{"x":320,"y":140}},'
+        '"manual|note":{"coordinateSpace":"page","pageId":"desktop","left":24,"top":280,'
+        '"anchor":{"x":200,"y":300},"manual":true,"hidden":true,"text":"Keep & verify","color":"#ef8006"}}\n'
+        '</script>'
+    )
+    if with_positions:
+        template = template.replace("</body>", f"{positions}</body>")
     proof = compose_prc_proof(template, CREATIVE, content_type)
 
+    if with_positions:
+        assert positions in proof
+        assert proof.count('id="sol-prc-annotation-positions"') == 1
+        assert positions in compose_prc_proof(proof, CREATIVE, content_type)
+    else:
+        assert "sol-prc-annotation-positions" not in proof
     assert 'name="sol-prc-contract-baked" content="v2"' in proof
     assert 'id="sol-prc-config"' in proof
     assert f'data-sol-prc-proof="{content_type}"' in proof
@@ -139,6 +158,50 @@ def test_compose_prc_proof_injects_every_duplicate_social_slot():
     assert proof.count("NEW CREATIVE") == 3
     assert "old one" not in proof
     assert "old two" not in proof
+
+
+def _email_template_with_slot(slot_html: str) -> str:
+    return EMAIL_TEMPLATE.replace('srcdoc="old"', f'srcdoc="{html.escape(slot_html, quote=True)}"')
+
+
+STYLED_CREATIVE = CREATIVE.replace(
+    "NEW CREATIVE", '<span style="color:magenta">NEW CREATIVE</span>'
+)
+
+
+def test_compose_prc_proof_keeps_restyled_slot_when_words_match():
+    """Proof-only styling the caller baked into the slot survives: same words,
+    different markup, so the slot is not rewritten from the creative."""
+    template = _email_template_with_slot(STYLED_CREATIVE)
+
+    proof = compose_prc_proof(template, CREATIVE, "email", keep_restyled_slots=True)
+
+    assert "color:magenta" in proof
+    assert "NEW CREATIVE" in proof
+
+
+def test_compose_prc_proof_reinjects_when_slot_words_differ():
+    """A slot that rewords the creative is stale, not restyled — the gate must
+    not protect it."""
+    stale = CREATIVE.replace("NEW CREATIVE", '<span style="color:magenta">OLD CREATIVE</span>')
+    template = _email_template_with_slot(stale)
+
+    proof = compose_prc_proof(template, CREATIVE, "email", keep_restyled_slots=True)
+
+    assert "color:magenta" not in proof
+    assert "OLD CREATIVE" not in proof
+    assert "NEW CREATIVE" in proof
+
+
+def test_compose_prc_proof_reinjects_restyled_slot_without_opt_in():
+    """Prior-bake and catalog composes keep today's behavior: the gate is
+    opt-in, so a same-words restyle is still overwritten by default."""
+    template = _email_template_with_slot(STYLED_CREATIVE)
+
+    proof = compose_prc_proof(template, CREATIVE, "email")
+
+    assert "color:magenta" not in proof
+    assert "NEW CREATIVE" in proof
 
 
 def test_validate_prc_proof_rejects_empty_duplicate_social_slot():
@@ -1646,6 +1709,39 @@ def test_supplied_operation_bake_normalizes_legacy_annotations_before_strict_val
     assert "callout-overlay" not in proof
     assert "layoutStage" not in proof
     validate_prc_proof(proof, "email")
+
+
+def test_supplied_operation_bake_keeps_restyled_slot_markup():
+    """An uploaded bake whose slot only restyles the current creative keeps its
+    markup; this is the path a proof-only annotation is saved through."""
+    creative = "<!doctype html><html>creative</html>"
+    styled = '<!doctype html><html><span style="color:magenta">creative</span></html>'
+    supplied = OPERATION_BAKE_EMAIL.replace(
+        'srcdoc="&lt;!doctype html&gt;&lt;html&gt;creative&lt;/html&gt;"',
+        f'srcdoc="{html.escape(styled, quote=True)}"',
+    )
+
+    proof = operations._compose_supplied_prc_proof(supplied, creative, "email")
+
+    assert "color:magenta" in proof
+    validate_prc_proof(proof, "email")
+
+
+def test_supplied_operation_bake_reinjects_when_creative_changed():
+    """The same upload path still refuses a stale slot: different words means
+    the bake predates the creative and must be rewritten."""
+    styled = '<!doctype html><html><span style="color:magenta">creative</span></html>'
+    supplied = OPERATION_BAKE_EMAIL.replace(
+        'srcdoc="&lt;!doctype html&gt;&lt;html&gt;creative&lt;/html&gt;"',
+        f'srcdoc="{html.escape(styled, quote=True)}"',
+    )
+
+    proof = operations._compose_supplied_prc_proof(
+        supplied, "<!doctype html><html>updated creative</html>", "email"
+    )
+
+    assert "color:magenta" not in proof
+    assert "updated creative" in proof
 
 
 def test_operation_bake_carries_metadata_from_exact_current_head(

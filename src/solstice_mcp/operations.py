@@ -774,8 +774,11 @@ def _compose_supplied_prc_proof(
         # A structurally baked proof may still carry template-owned annotation
         # chrome. Composition removes recognized legacy engines and performs a
         # strict final validation before this write path can persist the result.
+        # keep_restyled_slots: the caller composed this bake against this exact
+        # creative, so proof-only slot styling (magenta-wrapped tokens) survives
+        # when the words match. Prior-bake and catalog composes still reinject.
         validate_prc_proof(supplied_proof, content_type, allow_legacy_annotations=True)
-        return compose_prc_proof(supplied_proof, creative, content_type)
+        return compose_prc_proof(supplied_proof, creative, content_type, keep_restyled_slots=True)
     except InvalidPrcProofError as exc:
         raise ToolError(
             f"invalid_request: operation bake must satisfy baked contract v2: {exc}"

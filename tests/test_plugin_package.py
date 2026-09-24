@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 PLUGIN = ROOT / "plugins" / "solstice-platform"
 PLUGIN_NAME = "solstice-platform"
-PLUGIN_VERSION = "0.3.30"
+PLUGIN_VERSION = "0.3.31"
 # Cursor/Claude → ECS direct (full tools/list). Codex → AgentCore (Cedar/OBO).
 ECS_URL = "https://api.solsticehealth.co/mcp"
 GATEWAY_URL = (
@@ -232,6 +232,22 @@ def test_prc_template_recreation_skill_carries_renderer_and_exemplar_contracts()
     assert "banner-standard-srcdoc-shell" not in contract
     assert "do not copy layout, palette, typography, or chrome from a live catalog" in contract.lower()
     assert "exemplar" not in contract.lower()
+    for handoff_contract in (
+        "must not autosave",
+        "Chat/export snapshots create no row",
+        "browser-measured FINAL composed snapshot",
+        "general content edits may remain unpinned",
+        "HTML parsing cannot derive rendered coordinates",
+        "lacks the production annotation",
+    ):
+        assert handoff_contract in contract
+    for stale_freeze in (
+        "from first layout on",
+        "first measured layout freezes",
+        "On first layout after generate",
+        "written on first layout",
+    ):
+        assert stale_freeze not in contract
 
     authoring_guidance = "\n".join((body, workflow, contract)).lower()
     for stale_annotation_model in ("cross-page", "re-home", "nearest page"):
