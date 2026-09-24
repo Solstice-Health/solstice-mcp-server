@@ -242,7 +242,8 @@ A v2 template must never author:
 - `__prc_annotation_positions`, which is legacy operation draft data;
 - `__prc_field_overrides` or generated field-override CSS, which are legacy;
 - `script#sol-prc-annotation-positions` in a **catalog** template (an operation
-  bake carries it from first layout on; overlay DOM is still injected);
+  bake may carry supplied positions; automatic browse layout is ephemeral
+  and overlay DOM is still injected);
 - `annotations.positions` on `#sol-prc-proof-engine-config` (that config is
   view chrome and is stripped on save; pins live only in the positions script);
 - `window.__BANNER_TEMPLATE_*`, `#sol-prc-template-runtime*`, or
@@ -283,14 +284,11 @@ contract and every `data-sol-prc-annotation-*` marker say "callout".
    moves only the anchor endpoint while pinning the box. A click (not a drag)
    on the arrowhead selects the callout for marker / stroke width / dash,
    connector colour, and box copy colour — the last two are separate controls.
-   The first measured layout freezes both endpoints into the operation bake as
-   `script#sol-prc-annotation-positions[type="application/json"]` with
-   source-page ID plus page-space coordinates (`left`, `top`, `anchor`, and
-   `callout` when the box was placed by hand). An agent may rewrite that JSON
-   on the operation bake to move, add, hide, or restyle a callout, and must
-   keep `coordinateSpace: "page"` and `pageId`. It must not paint overlay DOM.
-   Later commits, saves, and composes keep that script. Catalog templates must
-   not include it. Do not copy the pins into `#sol-prc-proof-engine-config`.
+   Edit page-space `left`, `top`, `anchor` and optional `callout` in that JSON,
+   keeping `coordinateSpace: "page"`, `pageId`, and untouched hidden/manual
+   entries, text and styling. Ready capture means current frames, fonts, images,
+   static scenes and fitting have settled; never pass a partial capture as ready.
+   See `common.annotation_positions_in_bake` below for handoff and persistence.
    Legacy `__prc_annotation_positions` metadata is copied into the script by
    `materialize_legacy_prc_fields` when the script is absent.
 6. **Rendering:** the runtime paints boxes, connectors, and dots on one overlay
@@ -305,6 +303,14 @@ contract and every `data-sol-prc-annotation-*` marker say "callout".
 
 The model is identical for email, banner, social, and website. There is no
 profile-specific annotation stage.
+
+**MCP geometry boundary:** HTML parsing cannot derive rendered coordinates.
+Request caller measurement of the final proof, not a catalog shell or stale
+creative; report geometry work unsupported if that snapshot is unavailable.
+
+**Agent visual limit:** `render_proof` lacks the production annotation overlay
+runtime. Coordinates remain inspectable in `prc/shell.html`, but its screenshot
+and `compare_proof` do not prove callout parity. Verify in the production viewer.
 
 ## Per-profile normative rules
 
@@ -337,7 +343,7 @@ there is no Python copy of these rules.
 - `common.inserted_fields`: If inserting Text, Image, or Button during cover-edit, stamp `data-sol-prc-field="inserted_{kind}_{n}"` plus `data-sol-prc-inserted="{kind}"` on that page only; freeze the node in the next bake. The engine also extends the same scheme with two overlay-only kinds: `fpo` (the magenta FPO sticker, `inserted_fpo_{n}` / `data-sol-prc-inserted="fpo"`) and `brackets` / `bracket-left` / `bracket-right` (magenta proof brackets, `inserted_brackets_{n}` / `data-sol-prc-inserted="brackets|bracket-left|bracket-right"`). FPO and brackets are engine extensions, not catalog-template authoring kinds.
 - `common.slot_geometry_in_bake`: If a creative slot is moved or resized, keep it inside its page and write the box onto `[data-sol-prc-slot]` in the next bake, falling back to the iframe when that marker is absent.
 - `common.annotation_pages`: Provide unique page boundaries and real anchors; the runtime ignores creative anchors clipped outside the iframe viewport and keeps each callout and arrow endpoint bound to its source page.
-- `common.annotation_positions_in_bake`: On first layout after generate, and on every later commit, save, and compose, freeze page-space box and arrow pins in `script#sol-prc-annotation-positions` inside the operation bake. An agent may edit that script's JSON on the bake to move, add, hide, or restyle a callout. Do not copy those pins into `#sol-prc-proof-engine-config`. Catalog templates must not include the script.
+- `common.annotation_positions_in_bake`: V1 may omit `script#sol-prc-annotation-positions`; browsing must not autosave. Proof-edit handoff/export requires a ready browser-measured FINAL composed snapshot in that existing script. Preserve supplied pins through composition; fill missing endpoints on a copy and edit only requested coordinates/styles. Missing geometry requires a measured snapshot from the caller, never invented coordinates; general content edits may remain unpinned at any version. Chat/export snapshots create no row, nor does rejection; only manual Save, acceptance or explicit MCP commit persists a new version. Do not copy pins into `#sol-prc-proof-engine-config`.
 - `common.slot_fits_page`: Size full-content surfaces only — email and website render slots, banner focus/render slots, and explicit banner ISI slots — to the existing zoom-adjusted parent-space iframe height plus bottom padding, then size the page from its authored floor and the current fitted slot bottoms plus padding on every pass so it can shrink again. Banner storyboard scene slots are exempt: keep their native stage height and intentional clipping.
 - `common.layer_separation`: Keep reusable proof-template chrome separate from operation creative, values, and bake-resident runtime data.
 - `common.zoom_safe_measurement`: When template JS writes a measured size back as a CSS length, use `offsetWidth` / `offsetHeight` / `scrollHeight`, never `getBoundingClientRect()` or `window.innerWidth`. VIEW zooms the proof body, so a client-rect write-back clips the element; local and export run at zoom 1 and will not catch it.
@@ -357,7 +363,7 @@ there is no Python copy of these rules.
 - `common.authored_derived`: Author `data-sol-prc-derived` for any ID other than the banner cumulative duration (`frame_cumulative_INDEX`). Derived is reserved for values the runtime recomputes and that one ID is the entire legitimate set. Marking authored copy derived locks it permanently — it never becomes focusable, never accepts a keystroke, and reports no authoring error, so the defect ships silently.
 - `common.callout_chrome`: Author callout boxes, connector lines or SVG, dots, gutters, annotation stages (`.prc-render-stage`), overlays, callout CSS, or callout geometry JavaScript. Editing `script#sol-prc-annotation-positions` on an operation bake is `common.annotation_positions_in_bake`, not this rule. `data-sol-prc-stage` for template framing is `common.chrome_stage_marker`.
 - `common.legacy_annotation_migration`: Declare Contract v2 while any legacy annotation format or owner survives. Adding L0-L5 is not a migration: remove legacy annotation DOM, CSS, JavaScript, stages, gutters, SVG, dots, callout boxes, geometry scripts, `data-sol-prc-annotation-*` markup, `__prc_annotation_positions`, and generated position stores. Preserve creative anchors and href values, and retain only normalized page-bound `script#sol-prc-annotation-positions` in an operation bake.
-- `common.catalog_positions`: Author `script#sol-prc-annotation-positions` in a reusable catalog template. Only an operation bake carries it, written on first layout and kept on every later compose.
+- `common.catalog_positions`: Author `script#sol-prc-annotation-positions` in a reusable catalog template. It belongs only in operation snapshots/bakes.
 - `common.canvas_chrome`: Author the canvas outside the pages, including an html or body backdrop, the gap or margin between pages, page centering, or a page drop shadow.
 - `common.print_rules`: Author `@page` or `@media print` rules; the platform owns export pagination and print geometry.
 - `common.external_fonts`: Link a font sheet from any host but `fonts.googleapis.com` or `use.typekit.net`; prefer platform-listed or inlined fonts.
