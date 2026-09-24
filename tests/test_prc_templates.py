@@ -84,6 +84,7 @@ BANNER_TEMPLATE = (
 )
 
 
+@pytest.mark.parametrize("with_positions", [False, True])
 @pytest.mark.parametrize(
     ("content_type", "template", "slot"),
     [
@@ -96,9 +97,26 @@ def test_compose_prc_proof_normalizes_fleet_templates_and_preserves_edits(
     content_type: str,
     template: str,
     slot: str,
+    with_positions: bool,
 ):
+    positions = (
+        '<script id="sol-prc-annotation-positions" type="application/json">\n'
+        '{"desktop|Links to: https://example.com/":{"coordinateSpace":"page","pageId":"desktop",'
+        '"left":48,"top":120,"anchor":{"x":320,"y":140}},'
+        '"manual|note":{"coordinateSpace":"page","pageId":"desktop","left":24,"top":280,'
+        '"anchor":{"x":200,"y":300},"manual":true,"hidden":true,"text":"Keep & verify","color":"#ef8006"}}\n'
+        '</script>'
+    )
+    if with_positions:
+        template = template.replace("</body>", f"{positions}</body>")
     proof = compose_prc_proof(template, CREATIVE, content_type)
 
+    if with_positions:
+        assert positions in proof
+        assert proof.count('id="sol-prc-annotation-positions"') == 1
+        assert positions in compose_prc_proof(proof, CREATIVE, content_type)
+    else:
+        assert "sol-prc-annotation-positions" not in proof
     assert 'name="sol-prc-contract-baked" content="v2"' in proof
     assert 'id="sol-prc-config"' in proof
     assert f'data-sol-prc-proof="{content_type}"' in proof
